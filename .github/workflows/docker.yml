@@ -4,9 +4,10 @@ name: docker
 # Tests gate the image. A published `latest` that fails its own suite is worse
 # than no published image, because somebody else is now running it.
 
+
+run-name: ${{ format('action:publish:pool:private:tag:{0}', inputs.release_tag) }}
 on:
-  push:
-    tags: ["v*"]
+
   workflow_dispatch:
     inputs:
       action:
@@ -19,6 +20,10 @@ on:
         type: choice
         options: [private]
         required: true
+      release_tag:
+        description: Existing v* release tag on the default branch
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -26,7 +31,7 @@ permissions:
 # Keep main builds independent so a newer push cannot cancel an earlier
 # candidate. Release tags share a queue so stable aliases stay in release order.
 concurrency:
-  group: docker-${{ startsWith(github.ref, 'refs/tags/v') && 'stable-releases' || github.run_id }}
+  group: docker-${{ inputs.release_tag != '' && 'stable-releases' || github.run_id }}
   queue: max
   cancel-in-progress: false
 
@@ -49,6 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -98,7 +104,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.release_tag || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+
+      - name: Verify selected release tag is on the default branch
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+          git fetch --no-tags origin main
+          tag_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor "$tag_commit" origin/main
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -122,7 +143,7 @@ jobs:
         )
       ) &&
       (
-        github.event_name != 'push' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        github.event_name != 'push' || github.ref == 'refs/heads/main' || inputs.release_tag != ''
       )
     runs-on: ${{ fromJSON(format('{{"group":"ng-shared-main-jit","labels":["self-hosted","linux","x64","ng-shared-main-romarrng","ng-main-run-{0}","gha-{0}-{1}-acquisition-proof"]}}', github.run_id, strategy.job-index)) }}
     strategy:
@@ -132,6 +153,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.release_tag || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Build native test image
         run: docker build --build-arg TARGETARCH=amd64 -f "${{ matrix.dockerfile }}" -t romarrng:acquisition-proof .
@@ -153,16 +176,17 @@ jobs:
         )
       ) &&
       (
-        always() && needs.test.result == 'success' && needs.acquisition-proof.result == 'success' && (needs.release-notes.result == 'success' || needs.release-notes.result == 'skipped') && (github.event_name != 'push' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
+        always() && needs.test.result == 'success' && needs.acquisition-proof.result == 'success' && (needs.release-notes.result == 'success' || needs.release-notes.result == 'skipped') && (github.event_name != 'push' || github.ref == 'refs/heads/main' || inputs.release_tag != '') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
       )
     runs-on: ${{ fromJSON(format('{{"group":"ng-shared-main-jit","labels":["self-hosted","linux","x64","ng-shared-main-romarrng","ng-main-run-{0}","gha-{0}-image"]}}', github.run_id)) }}
     env:
-      BUILDKIT_EGRESS_PROXY: ${{ (contains(fromJSON('["push","workflow_dispatch","schedule","release","repository_dispatch"]'), github.event_name) && (github.ref == 'refs/heads/main' || (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')))) && 'http://10.0.2.100:3128' || '' }}
+      BUILDKIT_EGRESS_PROXY: ${{ (contains(fromJSON('["push","workflow_dispatch","schedule","release","repository_dispatch"]'), github.event_name) && (github.ref == 'refs/heads/main' || ((github.event_name == 'workflow_dispatch' && inputs.release_tag != '') && startsWith(inputs.release_tag, 'v')))) && 'http://10.0.2.100:3128' || '' }}
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -174,10 +198,10 @@ jobs:
         run: python scripts/check_image_alias_policy.py
 
       - name: Validate release tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: inputs.release_tag != ''
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           version="$(sed -n 's/^VERSION = "\([^"]*\)"/\1/p' romarr/app.py | head -n 1)"
@@ -331,7 +355,7 @@ jobs:
         )
       ) &&
       (
-        always() && needs.image.result == 'success' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
+        always() && needs.image.result == 'success' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || inputs.release_tag != '') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
       )
     runs-on: ${{ fromJSON(format('{{"group":"ng-shared-main-jit","labels":["self-hosted","linux","x64","ng-shared-main-romarrng","ng-main-run-{0}","gha-{0}-image_publish"]}}', github.run_id)) }}
     permissions:
@@ -343,6 +367,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -372,10 +397,11 @@ jobs:
             org.opencontainers.image.title=ROMarrNG
             org.opencontainers.image.description=ROMarrNG adds a SeerrNG request and library contract to ROMarr
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=main,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=master,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+            type=raw,value=main,enable=${{ (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+            type=raw,value=master,enable=${{ (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+            type=raw,value=stable,enable=${{ (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+            type=raw,value=${{ inputs.release_tag }},enable=${{ inputs.release_tag != '' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
@@ -441,6 +467,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.release_tag || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -470,7 +498,7 @@ jobs:
         )
       ) &&
       (
-        always() && github.event_name != 'pull_request' && needs.image.result == 'success' && (needs.release-notes.result == 'success' || needs.release-notes.result == 'skipped') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
+        always() && github.event_name != 'pull_request' && needs.image.result == 'success' && (needs.release-notes.result == 'success' || needs.release-notes.result == 'skipped') && (github.ref == 'refs/heads/main' || inputs.release_tag != '') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
       )
     runs-on: ${{ fromJSON(format('{{"group":"ng-shared-main-jit","labels":["self-hosted","linux","x64","ng-shared-main-romarrng","ng-main-run-{0}","gha-{0}-image_browser_publish"]}}', github.run_id)) }}
     permissions:
@@ -482,6 +510,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -511,11 +540,12 @@ jobs:
             org.opencontainers.image.title=ROMarrNG (browser edition)
             org.opencontainers.image.description=ROMarrNG on Debian with the Playwright client for the Headless Browser download client
           tags: |
-            type=raw,value=browser,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=main-browser,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=master-browser,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=latest-browser,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=stable-browser,enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=browser,enable=${{ (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+            type=raw,value=main-browser,enable=${{ (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+            type=raw,value=master-browser,enable=${{ (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+            type=raw,value=latest-browser,enable=${{ (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+            type=raw,value=stable-browser,enable=${{ (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+            type=raw,value=${{ inputs.release_tag }}-browser,enable=${{ inputs.release_tag != '' }}
             type=semver,pattern={{version}}-browser
             type=semver,pattern={{major}}.{{minor}}-browser
             type=sha,format=short,suffix=-browser
@@ -571,7 +601,7 @@ jobs:
         )
       ) &&
       (
-        always() && github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || (needs.image_publish.result == 'success' && needs.image_browser_publish.result == 'success'))
+        always() && github.event_name != 'pull_request' && (inputs.release_tag != '' || (needs.image_publish.result == 'success' && needs.image_browser_publish.result == 'success'))
       )
     runs-on: ${{ fromJSON(format('{{"group":"ng-shared-main-jit","labels":["self-hosted","linux","x64","ng-shared-main-romarrng","ng-main-run-{0}","gha-{0}-verify-stable-image-tags"]}}', github.run_id)) }}
     permissions:
@@ -579,6 +609,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.release_tag || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -606,7 +638,7 @@ jobs:
         )
       ) &&
       (
-        always() && startsWith(github.ref, 'refs/tags/v') && needs.image_publish.result == 'success' && needs.image_browser_publish.result == 'success' && needs.verify-stable-image-tags.result == 'success'
+        always() && inputs.release_tag != '' && needs.image_publish.result == 'success' && needs.image_browser_publish.result == 'success' && needs.verify-stable-image-tags.result == 'success'
       )
     needs: [image_publish, image_browser_publish, verify-stable-image-tags]
     runs-on: ${{ fromJSON(format('{{"group":"ng-shared-main-jit","labels":["self-hosted","linux","x64","ng-shared-main-romarrng","ng-main-run-{0}","gha-{0}-release"]}}', github.run_id)) }}
@@ -616,6 +648,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -624,7 +657,7 @@ jobs:
 
       - name: Extract changelog entry
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.release_tag }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/romarrng
         shell: bash
         run: |
@@ -655,17 +688,17 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ROMarrNG ${{ github.ref_name }}
+          tag_name: ${{ inputs.release_tag }}
+          name: ROMarrNG ${{ inputs.release_tag }}
           body_path: release-notes.md
           draft: false
 
       - name: Announce release to Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.release_tag }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/romarrng
-          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.release_tag }}
           WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |
