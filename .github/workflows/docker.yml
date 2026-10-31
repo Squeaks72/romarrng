@@ -5,7 +5,7 @@ name: docker
 # than no published image, because somebody else is now running it.
 
 
-run-name: ${{ format('action:publish:pool:private:tag:{0}', inputs.release_tag) }}
+run-name: ${{ format('action:{0}:pool:{1}:tag:{2}', inputs.action, inputs.runner_pool, inputs.release_tag) }}
 on:
 
   workflow_dispatch:
