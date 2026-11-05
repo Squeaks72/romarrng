@@ -73,10 +73,7 @@ def test_queue_view_shows_progress_for_a_row_with_no_recorded_hash():
             return {"d4559742": {"name": "ICO [PS2] [PAL]", "progress": 8.0, "eta": 600,
                                  "speed": 1000, "dl_state": "downloading", "total": 1}}
     svc.clients = [Client()]
-    svc.store = type("S", (), {"queue": [item]})()
-    svc.__class__.queue = property(lambda self: self.store.queue)
-    try:
+    from unittest.mock import PropertyMock, patch
+    with patch.object(ROMarr, "queue", new_callable=PropertyMock, return_value=[item]):
         view = svc.queue_view(refresh=True)
-    finally:
-        del svc.__class__.queue
     assert view[0]["progress"] == 8.0 and view[0]["dl_state"] == "downloading"
