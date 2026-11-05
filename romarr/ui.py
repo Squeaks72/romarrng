@@ -448,6 +448,24 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent-line);
 .swu-dlc{margin:6px 0 0;padding-inline-start:18px;font-size:13px}
 .swu-dlc li{margin:3px 0}
 .swu-dlc code{color:var(--dim);font-size:11.5px;margin:0 6px}
+/* ---- Global search palette ---- */
+#palette-btn kbd{font:inherit;font-size:11px;color:var(--dim);border:1px solid var(--line);
+  border-radius:5px;padding:0 5px;margin-inline-start:6px}
+.cp{position:fixed;inset:0;z-index:90;background:color-mix(in srgb,#000 50%,transparent);
+  display:flex;justify-content:center;align-items:flex-start;padding:12vh 16px 16px}
+.cp-box{width:min(660px,100%);background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-lg);box-shadow:var(--shadow-3);overflow:hidden;display:flex;flex-direction:column;max-height:70vh}
+.cp-in{border:0;border-bottom:1px solid var(--line);border-radius:0;padding:15px 18px;font-size:15px;background:var(--surface)}
+.cp-list{overflow-y:auto;padding:6px}
+.cp-h{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);padding:10px 12px 4px}
+.cp-i{display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:var(--r-sm);cursor:pointer}
+.cp-i.act{background:var(--accent-soft)}
+.cp-art{flex:none;width:30px;height:40px;border-radius:4px;background:var(--art) center/cover no-repeat}
+.cp-t{min-width:0;flex:1}
+.cp-t b{font-weight:600;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cp-t small{color:var(--dim);font-size:12px}
+.cp-k{color:var(--dim);font-size:11.5px;white-space:nowrap}
+.cp-foot{border-top:1px solid var(--line);padding:7px 14px;color:var(--dim);font-size:11.5px}
 /* Searchable single-choice picker: stands in for a <select> when the list is
    long (49 platforms). The hidden input keeps the id and .value, so code that
    reads $('#id').value is unchanged. */
@@ -2190,6 +2208,7 @@ RENDER.add=async()=>{
     });
   };
   $('#a-go').onclick=run;
+  if(ADD_PREFILL){ $('#a-q').value=ADD_PREFILL; ADD_PREFILL=''; run(); }
   let t=null; $('#a-q').oninput=()=>{clearTimeout(t);t=setTimeout(run,450);};
   $('#a-q').onkeydown=e=>{ if(e.key==='Enter'){clearTimeout(t);run();} };
   $('#a-q').focus();
@@ -2235,6 +2254,107 @@ RENDER.switchupdates=async(renderEpoch=routeEpoch,refresh=false)=>{
   $('#swu-gaps').onclick=()=>{SWU_GAPS=!SWU_GAPS; RENDER.switchupdates(routeEpoch);};
   $('#swu-scan').onclick=()=>RENDER.switchupdates(routeEpoch,true);
 };
+
+
+// ---- Global search palette: Ctrl/Cmd+K or "/" --------------------------------
+let ADD_PREFILL='';
+// Keywords that route a search to the settings page that owns them.
+const PALETTE_KEYWORDS={
+  profiles:'region regions ntsc pal video standard format formats chd iso nsz release scoring prefer seeders size beta hacks',
+  media:'rename import library layout folders organise organize overwrite path mapping',
+  general:'romm url public address friends clock schedule rss interval protocol',
+  indexers:'prowlarr torznab newznab usenet trackers',
+  clients:'qbittorrent sabnzbd download client browser playwright hub',
+  libraries:'romm gaseous retrom library backend',
+  connections:'notifications discord webhook telegram email',
+  metadata:'igdb token api key provider cover',
+  hub:'plugins plugin sandbox archive.org',
+  switchupdates:'nintendo switch update dlc titledb version missing',
+  missing:'wanted wishlist monitored',
+  add:'search new game request grab download interactive',
+  queue:'progress eta downloading torrent',
+  tasks:'jobs sweep scheduled',
+  logs:'errors debug',
+};
+function openPalette(){
+  if(document.querySelector('.cp')) return;
+  const el=document.createElement('div'); el.className='cp';
+  el.innerHTML=`<div class="cp-box" role="dialog" aria-modal="true" aria-label="Search everything">
+    <input class="cp-in" type="search" placeholder="Search games, settings, pages… or a game to add" autocomplete="off"
+      role="combobox" aria-expanded="true" aria-controls="cp-list">
+    <div class="cp-list" id="cp-list" role="listbox"></div>
+    <div class="cp-foot">↑↓ to move · Enter to open · Esc to close</div></div>`;
+  document.body.appendChild(el);
+  const input=el.querySelector('.cp-in'), list=el.querySelector('.cp-list');
+  const prevFocus=document.activeElement;
+  let rows=[], act=0, seq=0, wanted=null;
+  const close=()=>{ el.remove(); if(prevFocus&&prevFocus.focus) prevFocus.focus(); };
+  const pages=()=>[...document.querySelectorAll('.nav[data-page]')].map(n=>({
+    kind:'page',key:n.dataset.page,title:(n.querySelector('.lbl')||n).textContent.trim(),
+    hay:((n.querySelector('.lbl')||n).textContent+' '+n.dataset.page+' '+(PALETTE_KEYWORDS[n.dataset.page]||'')).toLowerCase()}));
+  const go_=r=>{
+    close();
+    if(r.kind==='game'){ location.hash='game/'+encodeURIComponent(r.slug)+'/'+encodeURIComponent(r.id); }
+    else if(r.kind==='wanted'){ location.hash=gameHref(r.slug,'',r.title).slice(1); }
+    else if(r.kind==='page'){ location.hash=r.key; }
+    else if(r.kind==='add'){ ADD_PREFILL=r.q; if(location.hash==='#add') RENDER.add(); else location.hash='add'; }
+  };
+  const paint=()=>{
+    if(act>=rows.length) act=Math.max(0,rows.length-1);
+    let last='';
+    list.innerHTML=rows.map((r,i)=>{
+      const head=r.group!==last?`<div class="cp-h">${esc(r.group)}</div>`:''; last=r.group;
+      const art=r.cover?`<div class="cp-art" style="background-image:url('${esc(r.cover)}')"></div>`:'';
+      return `${head}<div class="cp-i${i===act?' act':''}" role="option" data-i="${i}" id="cp-o${i}">${art}
+        <div class="cp-t"><b lang="und" dir="auto">${esc(r.title)}</b>${r.sub?`<small>${esc(r.sub)}</small>`:''}</div>
+        ${r.hint?`<span class="cp-k">${esc(r.hint)}</span>`:''}</div>`;}).join('')
+      ||'<div class="cp-h">Type to search</div>';
+    input.setAttribute('aria-activedescendant',rows.length?'cp-o'+act:'');
+    const a=list.querySelector('.act'); if(a&&a.scrollIntoView) a.scrollIntoView({block:'nearest'});
+  };
+  const run=async()=>{
+    const q=input.value.trim(), ql=q.toLowerCase(), mine=++seq;
+    if(!q){ rows=pages().slice(0,8).map(p=>({...p,group:'Pages',hint:'Go to'})); act=0; paint(); return; }
+    const pageHits=pages().filter(p=>ql.split(/\s+/).every(w=>p.hay.includes(w))).slice(0,6)
+      .map(p=>({...p,group:'Pages & settings',hint:'Open'}));
+    let games=[];
+    if(q.length>=2){
+      const d=await j('/api/v1/game?limit=8&q='+encodeURIComponent(q)).catch(()=>({items:[]}));
+      if(mine!==seq) return;
+      games=(d.items||[]).slice(0,8).map(g=>({kind:'game',id:g.id,slug:g.platform_slug||'',title:g.name,
+        sub:g.platform,cover:g.cover,group:'In your library',hint:'Open'}));
+      if(wanted===null) wanted=(await j('/api/v1/wanted/missing').catch(()=>({items:[]}))).items||[];
+    }
+    const wantedHits=(wanted||[]).filter(w=>w.game.toLowerCase().includes(ql)).slice(0,4)
+      .map(w=>({kind:'wanted',slug:w.platform,title:w.game,sub:w.platform+(w.monitored===false?' · wishlist':' · wanted'),
+        group:'Wanted',hint:'Open'}));
+    const add={kind:'add',q,title:`Search for “${q}” to add it`,
+      sub:games.length||wantedHits.length?'Not what you own? Find it online and add it':'Nothing in your library matches — find it and add it',
+      group:'Add a game',hint:'Search'};
+    // When nothing you own matches, the way to get it is the first thing offered.
+    rows=(games.length||wantedHits.length)?[...games,...wantedHits,...pageHits,add]:[add,...pageHits];
+    act=0; paint();
+  };
+  let t=null; input.oninput=()=>{clearTimeout(t);t=setTimeout(run,180);};
+  input.onkeydown=e=>{
+    if(e.key==='ArrowDown'){e.preventDefault();act=Math.min(act+1,rows.length-1);paint();}
+    else if(e.key==='ArrowUp'){e.preventDefault();act=Math.max(act-1,0);paint();}
+    else if(e.key==='Enter'){e.preventDefault(); if(rows[act]) go_(rows[act]);}
+    else if(e.key==='Escape'){e.preventDefault();close();}
+  };
+  list.onmousedown=e=>e.preventDefault();
+  list.onclick=e=>{const i=e.target.closest('.cp-i'); if(i&&rows[Number(i.dataset.i)]) go_(rows[Number(i.dataset.i)]);};
+  list.onmousemove=e=>{const i=e.target.closest('.cp-i'); if(i&&Number(i.dataset.i)!==act){act=Number(i.dataset.i);
+    list.querySelectorAll('.cp-i').forEach((n,k)=>n.classList.toggle('act',k===act));}};
+  el.onmousedown=e=>{ if(e.target===el) close(); };
+  input.focus(); run();
+}
+document.addEventListener('keydown',e=>{
+  const tag=(e.target.tagName||'').toLowerCase(), typing=['input','textarea','select'].includes(tag)||e.target.isContentEditable;
+  if((e.key==='k'||e.key==='K')&&(e.ctrlKey||e.metaKey)){e.preventDefault();openPalette();}
+  else if(e.key==='/'&&!typing&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();openPalette();}
+});
+document.addEventListener('click',e=>{ if(e.target.closest&&e.target.closest('#palette-btn')) openPalette(); });
 
 // ---- The game page ---------------------------------------------------------
 RENDER.game=async(renderEpoch=routeEpoch)=>{
@@ -6275,7 +6395,9 @@ def page() -> str:
     <h1 id="page-title" tabindex="-1" data-i18n="ui.games.d9dae78103">Games</h1>
     <label class="sr-only" for="search" data-i18n-key="ui.filter-games.32633ce2ef">Filter games</label>
     <input id="search" data-i18n-placeholder="ui.filter.be331aa8d8" placeholder="Filter…"
-      aria-label="Filter games" data-i18n-aria-label="ui.filter-games.32633ce2ef" autocomplete="off" lang="und" dir="auto"></header>
+      aria-label="Filter games" data-i18n-aria-label="ui.filter-games.32633ce2ef" autocomplete="off" lang="und" dir="auto">
+    <button id="palette-btn" class="btn ghost" type="button" aria-haspopup="dialog"
+      style="margin-inline-start:auto;padding:6px 12px;font-size:12.5px">Search everything <kbd>Ctrl K</kbd></button></header>
   <div class="page" id="page"></div>
 </main>
 <script>{I18N_RUNTIME}</script><script>{JS}</script></body></html>"""
