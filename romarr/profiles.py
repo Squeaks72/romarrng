@@ -51,6 +51,23 @@ def _matches(term: str, haystack: str) -> bool:
     return term.lower() in haystack
 
 
+#: How much a matching / opposing video standard moves a release. Larger than
+#: the gap between USA and Europe on the built-in region ladder (20), so a stated
+#: preference wins over it, but far below a verified dump (50) plus availability.
+VIDEO_STANDARD_POINTS = 30
+
+#: NTSC: North America and Japan. PAL: Europe and Australasia. Word-bounded so
+#: "usa" never matches inside another word; the single letters are the
+#: GoodTools codes, which only count inside brackets.
+_NTSC_MARKERS = re.compile(
+    r"(?<![a-z0-9])(?:ntsc(?:[- ]?[ujm])?|usa|japan)(?![a-z0-9])"
+    r"|[(\[](?:u|j|ju|uj)[)\]]")
+_PAL_MARKERS = re.compile(
+    r"(?<![a-z0-9])(?:pal(?:[- ]?[a-z])?|europe|australia|germany|france|spain|italy"
+    r"|netherlands|sweden)(?![a-z0-9])"
+    r"|[(\[](?:e|eu|eur)[)\]]")
+
+
 @dataclass
 class ReleaseProfile:
     """Preferred, excluded and required terms.
@@ -67,6 +84,12 @@ class ReleaseProfile:
     excluded: list[str] = field(default_factory=list)
     #: Every term must appear, or the release is refused.
     required: list[str] = field(default_factory=list)
+    #: "ntsc", "pal" or "" (no preference). North America and Japan are NTSC;
+    #: Europe and Australia are PAL. Ranking only, unless `video_strict`.
+    video_standard: str = ""
+    #: Refuse a release that names only the other standard, instead of just
+    #: ranking it lower. A release naming both (USA, Europe) or neither is kept.
+    video_strict: bool = False
 
     @classmethod
     def from_settings(cls, settings: dict) -> "ReleaseProfile":
@@ -89,14 +112,36 @@ class ReleaseProfile:
                 term, points = str(entry), 25
             if term:
                 preferred.append((term, points))
+        standard = str(settings.get("video_standard") or "").strip().lower()
         return cls(
             preferred=preferred,
             excluded=[str(t) for t in (settings.get("excluded_terms") or []) if t],
             required=[str(t) for t in (settings.get("required_terms") or []) if t],
+            video_standard=standard if standard in ("ntsc", "pal") else "",
+            video_strict=bool(settings.get("video_standard_strict")),
         )
+
+    def _video(self, lowered: str) -> bool | None:
+        """Whether a release matches the preferred video standard.
+
+        True / False when it names exactly one standard, None when it names
+        both or neither -- a (USA, Europe) dump runs on either console, and a
+        title with no region tells us nothing.
+        """
+        if not self.video_standard:
+            return None
+        ntsc = bool(_NTSC_MARKERS.search(lowered))
+        pal = bool(_PAL_MARKERS.search(lowered))
+        if ntsc == pal:
+            return None
+        return ntsc if self.video_standard == "ntsc" else pal
 
     def refusal(self, lowered: str) -> str:
         """Why this release is refused outright, or "" if it is not."""
+        if self.video_strict and self._video(lowered) is False:
+            other = "PAL" if self.video_standard == "ntsc" else "NTSC"
+            return (f"{other} release refused: you require "
+                    f"{self.video_standard.upper()}")
         for term in self.excluded:
             if _matches(term, lowered):
                 return f"excluded by release profile ({term!r})"
@@ -111,10 +156,16 @@ class ReleaseProfile:
         for term, points in self.preferred:
             if points and _matches(term, lowered):
                 out.append((points, f"release profile prefers {term!r}"))
+        match = self._video(lowered)
+        if match is not None:
+            std = self.video_standard.upper()
+            out.append((VIDEO_STANDARD_POINTS if match else -VIDEO_STANDARD_POINTS,
+                        f"video standard: {'is' if match else 'is not'} {std}"))
         return out
 
     def __bool__(self) -> bool:
-        return bool(self.preferred or self.excluded or self.required)
+        return bool(self.preferred or self.excluded or self.required
+                    or self.video_standard)
 
 
 _INFOHASH = re.compile(r"btih:([0-9a-fA-F]{40}|[0-9a-zA-Z]{32})")

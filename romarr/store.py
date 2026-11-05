@@ -234,6 +234,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # "prefer" keeps a title even when no dump matches the region list (the
     # historical fallback); "strict" treats the list as an allowlist.
     "region_mode": "prefer",
+    # "ntsc" | "pal" | "" -- see profiles.ReleaseProfile.video_standard.
+    "video_standard": "",
+    "video_standard_strict": False,
     "rename_on_import": True,
     "overwrite_existing": False,
     # Profile: for ROMs the meaningful axis is region and revision, not

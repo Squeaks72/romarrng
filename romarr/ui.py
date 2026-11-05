@@ -4289,6 +4289,13 @@ RENDER.profiles=()=>settingsPage('Release Profile',
   `<div class="field"><label>Preferred regions, best first</label>
      <input type="text" data-k="preferred_regions" data-list="1"
        value="${esc((SETTINGS.preferred_regions||[]).join(', '))}"></div>`
+  +`<div class="field"><label>Video standard</label>
+     <select data-k="video_standard">
+       <option value=""${!SETTINGS.video_standard?' selected':''}>No preference</option>
+       <option value="ntsc"${SETTINGS.video_standard==='ntsc'?' selected':''}>NTSC — North America, Japan</option>
+       <option value="pal"${SETTINGS.video_standard==='pal'?' selected':''}>PAL — Europe, Australia</option></select>
+     <div style="color:var(--dim);font-size:11.5px;margin-top:4px">Releases naming your standard rank higher (+30); the other standard ranks lower (−30). A release naming both, such as USA + Europe, is left alone. The Why column on search results shows the adjustment.</div></div>`
+  +chk('video_standard_strict','Refuse the other standard instead of only ranking it lower',SETTINGS.video_standard_strict)
   +chk('allow_beta','Accept betas and prototypes',SETTINGS.allow_beta)
   +chk('allow_rom_hacks','Accept ROM hacks',SETTINGS.allow_rom_hacks)
   +fld('min_seeders','Minimum seeders',SETTINGS.min_seeders,'number')
