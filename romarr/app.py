@@ -3069,9 +3069,39 @@ class ROMarr:
         game, _api = self._soundtrack_target(game_id)
         return self.soundtrack_store().search(game, self.soundtrack_sources())
 
-    def soundtrack_download(self, game_id: str, candidate: dict, fmt: str) -> dict:
+    def soundtrack_download(self, game_id: str, candidate: dict, fmt: str, force: bool = False) -> dict:
         game, api = self._soundtrack_target(game_id)
-        return self.soundtrack_store().start_download(game, api, candidate, fmt)
+        return self.soundtrack_store().start_download(game, api, candidate, fmt, force=force)
+
+    def soundtrack_dups(self) -> dict:
+        return self.soundtrack_store().dups()
+
+    def soundtrack_dups_scan(self) -> dict:
+        romms = [(c, b) for c, b in self.game_libraries if isinstance(b, Romm)]
+        if not romms:
+            raise RuntimeError("soundtracks need a RomM library, and none is configured")
+        cfg, backend = romms[0]
+        return self.soundtrack_store().start_dup_scan(soundtracks_mod.RommApi(cfg.get("url") or "", backend.write_token))
+
+    def soundtrack_dups_merge(self, keep_id: str, drop_ids: list) -> dict:
+        keep, api = self._soundtrack_target(keep_id)
+        drops = [self._soundtrack_target(str(i))[0] for i in drop_ids]
+        keep["name"] = keep["name"] or f"game {keep_id}"
+        return self.soundtrack_store().start_merge(keep, drops, api)
+
+    def soundtrack_dups_unmerge(self, game_id: str) -> dict:
+        game, api = self._soundtrack_target(game_id)
+        return self.soundtrack_store().start_unmerge(game, api)
+
+    def music_library_root(self) -> str:
+        return str(self.store.settings.get("music_library_root") or "").strip()
+
+    def soundtrack_library_search(self, query: str) -> dict:
+        return self.soundtrack_store().library_search(self.music_library_root(), query)
+
+    def soundtrack_library_add(self, game_id: str, album_id: str) -> dict:
+        game, api = self._soundtrack_target(game_id)
+        return self.soundtrack_store().start_album(game, api, self.music_library_root(), album_id)
 
     def soundtrack_undo(self, game_id: str) -> dict:
         game, api = self._soundtrack_target(game_id)
@@ -6160,6 +6190,8 @@ def make_handler(service: ROMarr):
                 return self._json(404, {"error": str(exc)})
             except soundtracks_mod.JobBusy as exc:
                 return self._json(409, {"error": str(exc)})
+            except soundtracks_mod.AlreadyStored as exc:
+                return self._json(409, {"error": str(exc), "held_by": exc.holders})
             except ValueError as exc:
                 return self._json(400, {"error": str(exc)})
             except RuntimeError as exc:
@@ -6657,6 +6689,11 @@ def make_handler(service: ROMarr):
             if route.path == "/api/v1/soundtracks/search":
                 return self._soundtrack_reply(lambda: service.soundtrack_search(
                     (query.get("id") or [""])[0]))
+            if route.path == "/api/v1/soundtracks/dups":
+                return self._soundtrack_reply(service.soundtrack_dups)
+            if route.path == "/api/v1/soundtracks/library/search":
+                return self._soundtrack_reply(lambda: service.soundtrack_library_search(
+                    (query.get("q") or [""])[0]))
             if route.path == "/api/v1/soundtracks/jobs":
                 return self._json(200, {"items": service.soundtrack_store().jobs()})
             if route.path == "/api/v1/game/detail":
@@ -7873,7 +7910,25 @@ def make_handler(service: ROMarr):
                 if not isinstance(body, dict) or not isinstance(body.get("candidate"), dict):
                     return self._json(400, {"error": "id, candidate and format are required"})
                 return self._soundtrack_reply(lambda: service.soundtrack_download(
-                    str(body.get("id") or ""), body["candidate"], str(body.get("format") or "")))
+                    str(body.get("id") or ""), body["candidate"], str(body.get("format") or ""),
+                    force=body.get("force") is True))
+            if route.path == "/api/v1/soundtracks/dups/scan":
+                return self._soundtrack_reply(service.soundtrack_dups_scan)
+            if route.path == "/api/v1/soundtracks/dups/merge":
+                if (not isinstance(body, dict) or not isinstance(body.get("drop"), list)
+                        or not all(isinstance(i, (str, int)) for i in body["drop"])):
+                    return self._json(400, {"error": "keep and drop (a list of game ids) are required"})
+                return self._soundtrack_reply(lambda: service.soundtrack_dups_merge(
+                    str(body.get("keep") or ""), [str(i) for i in body["drop"]]))
+            if route.path == "/api/v1/soundtracks/dups/unmerge":
+                if not isinstance(body, dict):
+                    return self._json(400, {"error": "expected a JSON object"})
+                return self._soundtrack_reply(lambda: service.soundtrack_dups_unmerge(str(body.get("id") or "")))
+            if route.path == "/api/v1/soundtracks/library/add":
+                if not isinstance(body, dict):
+                    return self._json(400, {"error": "expected a JSON object"})
+                return self._soundtrack_reply(lambda: service.soundtrack_library_add(
+                    str(body.get("id") or ""), body.get("album")))
             if route.path == "/api/v1/soundtracks/undo":
                 if not isinstance(body, dict):
                     return self._json(400, {"error": "expected a JSON object"})
