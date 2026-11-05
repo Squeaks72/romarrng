@@ -15,11 +15,11 @@ def test_library_has_no_platform_chip_wall():
     assert "pickerHtml('lib-plat'" in src
 
 
-def test_add_and_search_use_the_picker_and_keep_the_input_ids():
+def test_add_new_uses_the_picker_and_keeps_the_input_id():
     src = open(ui.__file__, encoding="utf-8").read()
-    # The hidden input carries the id, so `$('#g-plat').value` still works.
-    assert "pickerHtml('g-plat'" in src and "pickerHtml('s-plat'" in src
-    assert "$('#g-plat').value" in src and "$('#s-plat').value" in src
+    # The hidden input carries the id, so `$('#a-plat').value` still works.
+    assert "pickerHtml('a-plat'" in src and "$('#a-plat').value" in src
+    assert "pickerHtml('ad-plat'" in src  # the Add dialog
 
 
 def test_picker_is_keyboard_operable():

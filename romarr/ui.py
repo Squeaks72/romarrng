@@ -2082,7 +2082,7 @@ const gameHref=(slug,id,title)=>'#game/'+encodeURIComponent(slug)+'/'
 function addDialog({title,options,platform,afterAdd}){
   const m=document.createElement('div'); m.className='modal';
   const opts=(options&&options.length?options:PLATFORMS.map(p=>({slug:p.slug,name:p.name,state:''})));
-  const start=opts.find(o=>o.slug===platform)||opts[0]||{slug:'',name:'',state:''};
+  const start=opts.find(o=>o.slug===platform)||opts.find(o=>o.state!=='library')||opts[0]||{slug:'',name:'',state:''};
   m.innerHTML=`<div class="box" role="dialog" aria-modal="true" aria-label="Add game">
     <h3 lang="und" dir="auto">${esc(title||'Add a game')}</h3>
     <div class="sub">Add it to Wanted. ROMarr searches your indexers and watches new releases for it.</div>
@@ -4418,6 +4418,11 @@ RENDER.general=()=>settingsPage('General',
      <input type="text" value="${esc(SETTINGS._qbit_url||'')}" disabled></div>
    <div class="field"><label>RomM</label>
      <input type="text" value="${esc(SETTINGS._romm_url||'')}" disabled></div>
+   <div class="field"><label>RomM address for links</label>
+     <input type="text" data-k="romm_public_url"
+       value="${esc(SETTINGS.romm_public_url||'')}"
+       placeholder="http://timnode:8337">
+     <div style="color:var(--dim);font-size:11.5px;margin-top:4px">Where your browser reaches RomM. Used by “Open in RomM” on the game page.</div></div>
    ${regionalFormatField()}
    <div class="field"><label>Your public URL (for Friends)</label>
      <input type="text" data-k="public_url"

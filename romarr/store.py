@@ -177,6 +177,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # an invitation carries it, and without one the friend who redeems the
     # invitation has nowhere to call back to.
     "public_url": "",
+    # Where *your browser* reaches RomM, for "Open in RomM" links. Empty falls
+    # back to the library connection address, which may be an address only the
+    # server can reach.
+    "romm_public_url": "",
     # Read ROM hashes from the library server so netplay can match on bytes.
     # Daily and at startup; off only if you never want the traffic.
     "hash_index": True,
