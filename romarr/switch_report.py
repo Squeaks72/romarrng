@@ -77,7 +77,8 @@ def scan_folder(root: Path) -> list[FolderScan]:
     return out
 
 
-def analyse(scan: FolderScan, index: TitleDBIndex | None) -> list[dict]:
+def analyse(scan: FolderScan, index: TitleDBIndex | None,
+            platform: str = "switch") -> list[dict]:
     """One row per base title found in a folder."""
     groups: dict[str, list[Dump]] = {}
     for d in scan.dumps:
@@ -94,7 +95,11 @@ def analyse(scan: FolderScan, index: TitleDBIndex | None) -> list[dict]:
                "latest_version": None, "update": "unknown",
                "dlc_installed": len(dlcs), "dlc_total": None, "dlc_missing": [],
                "dlc_complete_list": False, "name": ""}
-        if index is not None:
+        # Switch 2 files here are `.nup` upgrade packs. Many carry a Switch 1
+        # title ID, so TitleDB's Switch 1 update history would be compared with
+        # a different product and report a gap that is not real. No Switch 2
+        # version database exists to check against, so say "unknown".
+        if index is not None and platform != "switch-2":
             update_tid = base[:-3] + "800"
             ut = index.lookup_by_id(update_tid)
             bt = index.lookup_by_id(base)
@@ -105,7 +110,7 @@ def analyse(scan: FolderScan, index: TitleDBIndex | None) -> list[dict]:
                 row["latest_version"] = latest
                 row["update"] = "current" if installed >= latest else (
                     "outdated" if updates or installed else "missing")
-            elif bt is not None:
+            elif bt is not None and bt.versions:
                 row["latest_version"] = bt.latest_version or None
                 row["update"] = "current" if bt.latest_version <= installed else "outdated"
             fam = index.family_of(base).get("dlc", [])
@@ -127,7 +132,7 @@ def report(roots: dict[str, Path], index: TitleDBIndex | None) -> dict:
     items = []
     for slug, root in roots.items():
         for scan in scan_folder(root):
-            for row in analyse(scan, index):
+            for row in analyse(scan, index, slug):
                 row["platform"] = slug
                 items.append(row)
     gaps = [i for i in items if i["update"] in ("missing", "outdated") or i["dlc_missing"]]

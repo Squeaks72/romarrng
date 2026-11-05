@@ -64,3 +64,18 @@ def test_dlc_list_is_marked_incomplete_without_names(tmp_path):
 def test_media_folders_and_non_dumps_are_ignored(tmp_path):
     _make(tmp_path, ["covers/a [01007960049A0000][v0][Base].nsz", "Game/readme.txt"])
     assert scan_folder(tmp_path) == []
+
+
+def test_switch_2_is_never_compared_with_switch_1_history(tmp_path):
+    # A Switch 2 Edition pack carries a Switch 1 title ID; comparing it with
+    # that title's Switch 1 updates would invent a gap.
+    _make(tmp_path, ["Bayonetta 2 Switch 2 Edition [01007960049A0000].nup"])
+    row = report({"switch-2": tmp_path}, _index(names=True))["items"][0]
+    assert row["update"] == "unknown" and row["dlc_total"] is None
+
+
+def test_a_title_with_no_version_history_is_unknown_not_current(tmp_path):
+    idx = _index()
+    idx.add(SwitchTitle("0100aaaa00010000"))
+    _make(tmp_path, ["X/X [0100AAAA00010000][v0][Base].nsz"])
+    assert report({"switch": tmp_path}, idx)["items"][0]["update"] == "unknown"
