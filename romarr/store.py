@@ -90,6 +90,9 @@ class WantedItem:
     # `attempts` it drives the re-search backoff, so a title that has failed
     # for months is retried weekly rather than hourly.
     searched_at: str = ""
+    # Like Sonarr/Radarr: an unmonitored entry stays on the list but is skipped
+    # by the missing-search sweep and the RSS watcher until it is monitored.
+    monitored: bool = True
 
 
 @dataclass
@@ -472,7 +475,7 @@ class Store:
 
     # -- wanted ------------------------------------------------------------
 
-    def want(self, game: str, platform: str) -> WantedItem:
+    def want(self, game: str, platform: str, monitored: bool = True) -> WantedItem:
         """Add to Wanted, or return the existing entry.
 
         Requesting the same game twice is a retry, not a second entry.
@@ -481,10 +484,22 @@ class Store:
             for item in self.wanted:
                 if item.game.lower() == game.lower() and item.platform == platform:
                     return item
-            item = WantedItem(game=game, platform=platform)
+            item = WantedItem(game=game, platform=platform, monitored=monitored)
             self.wanted.append(item)
         self.save()
         return item
+
+    def set_monitored(self, game: str, platform: str, monitored: bool) -> bool:
+        """Turn watching on or off for one Wanted entry; False if it is not there."""
+        with self._lock:
+            for item in self.wanted:
+                if item.game.lower() == game.lower() and item.platform == platform:
+                    item.monitored = bool(monitored)
+                    break
+            else:
+                return False
+        self.save()
+        return True
 
     def fulfil(self, game: str, platform: str) -> bool:
         """Drop something from Wanted once it has actually arrived."""

@@ -482,6 +482,8 @@ def igdb_catalog_platforms(cfg: dict) -> list[dict]:
     return out
 
 
+# NB: no `sort` here. IGDB rejects `search` combined with `sort` (HTTP 406), and
+# its own relevance order is the right one for a title search anyway.
 def igdb_catalog_search(cfg: dict, query: str, limit: int, offset: int,
                         platform_ids: list[int] | None = None,
                         genre: str = "", release_year: int | None = None
@@ -497,7 +499,7 @@ def igdb_catalog_search(cfg: dict, query: str, limit: int, offset: int,
     rows = igdb_query(
         cfg, "games",
         f'search "{escaped}"; {IGDB_CATALOG_FIELDS} where '
-        f'{" & ".join(where)}; sort name asc; limit 500; '
+        f'{" & ".join(where)}; limit 500; '
         f'offset {max(0, min(int(offset), 10000))};',
         strict=True,
     )
