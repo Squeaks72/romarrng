@@ -1715,7 +1715,7 @@ function bindPicker(root,id,items,onChange){
   let shown=[], act=0;
   const paint=()=>{
     const f=q.value.trim().toLowerCase();
-    shown=items.filter(x=>!f||x.label.toLowerCase().includes(f));
+    shown=items.filter(x=>!f||x.label.toLowerCase().includes(f)||String(x.value).toLowerCase().includes(f));
     if(act>=shown.length) act=Math.max(0,shown.length-1);
     list.innerHTML=shown.length?shown.map((x,i)=>`<li class="pp-opt${i===act?' act':''}" role="option"
       id="${esc(id)}-o${i}" data-i="${i}" aria-selected="${x.value===hid.value}"><span>${esc(x.label)}</span>${
