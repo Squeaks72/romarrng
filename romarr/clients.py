@@ -218,6 +218,34 @@ class QBittorrent:
                 done.append(row)
         return done
 
+    def progress(self) -> dict[str, dict]:
+        """Live state of every torrent in our category, keyed by info-hash.
+
+        What the Queue page shows so nobody has to open qBittorrent: percent
+        done, seconds left (None when qBittorrent has no estimate, which it
+        reports as 8640000), and current speed.
+        """
+        if not self._authed:
+            self.login()
+        response = self._get("torrents/info",
+                             params={"category": self._config.category},
+                             timeout=self._config.timeout)
+        response.raise_for_status()
+        out: dict[str, dict] = {}
+        for row in response.json():
+            key = str(row.get("hash") or "").lower()
+            if not key:
+                continue
+            eta = row.get("eta")
+            out[key] = {
+                "progress": round(float(row.get("progress") or 0.0) * 100, 1),
+                "eta": int(eta) if isinstance(eta, (int, float)) and 0 <= eta < 8640000 else None,
+                "speed": int(row.get("dlspeed") or 0),
+                "dl_state": str(row.get("state") or ""),
+                "total": int(row.get("total_size") or row.get("size") or 0),
+            }
+        return out
+
     def reselect(self, row: dict) -> bool:
         """Set every file in one torrent back to normal priority.
 

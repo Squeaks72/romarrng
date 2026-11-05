@@ -439,6 +439,9 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent-line);
 .gh-facts dt{color:var(--dim)}
 .gh-facts dd{margin:0}
 .tablewrap{overflow-x:auto}
+.pbar{height:7px;background:var(--surface-3);border-radius:var(--r-pill);overflow:hidden}
+.pbar>div{height:100%;background:var(--accent);border-radius:var(--r-pill);transition:width .6s}
+.pmeta{font-size:11.5px;color:var(--dim);margin-top:3px;white-space:nowrap}
 .swu-dlc{margin:6px 0 0;padding-inline-start:18px;font-size:13px}
 .swu-dlc li{margin:3px 0}
 .swu-dlc code{color:var(--dim);font-size:11.5px;margin:0 6px}
@@ -3697,7 +3700,18 @@ RENDER.stats=async()=>{
   };
 };
 
+const fmtEta=sec=>{ if(sec==null) return '∞'; if(sec<60) return sec+'s';
+  if(sec<3600) return Math.round(sec/60)+'m'; const h=Math.floor(sec/3600), m=Math.round((sec%3600)/60);
+  return h<48?h+'h '+m+'m':Math.round(h/24)+'d'; };
+const fmtSpeed=b=>b>=1048576?(b/1048576).toFixed(1)+' MB/s':b>0?Math.round(b/1024)+' KB/s':'stalled';
+const progressCell=i=>{
+  if(i.progress==null) return '<span style="color:var(--dim)">—</span>';
+  const done=i.progress>=100;
+  return `<div class="pbar" role="progressbar" aria-valuenow="${i.progress}" aria-valuemin="0" aria-valuemax="100"><div style="width:${Math.min(100,i.progress)}%"></div></div>
+    <div class="pmeta">${i.progress}%${done?' · done':` · ETA ${fmtEta(i.eta)} · ${fmtSpeed(i.speed)}`}</div>`;
+};
 RENDER.queue=async()=>{
+  const epoch=routeEpoch;
   const d=await j('/api/v1/queue');
   const failed=(d.items||[]).filter(i=>i.state==='failed').length;
   $('#page').innerHTML=`<div class="row" style="margin-bottom:12px">
@@ -3705,9 +3719,9 @@ RENDER.queue=async()=>{
       ${failed?`<button class="btn ghost" id="q-clearfail">${interfaceTemplateMarkup('ui.clear-count-failed.ae1c7a9e34',{count:fmt(failed)})}</button>`:''}
       <span class="help" style="margin:0">${interfaceTemplateMarkup('ui.in-queue-count.205a6471b6', {count:fmt((d.items||[]).length)})}</span>
     </div>`+(d.items.length?`<table><thead><tr><th>Game</th>
-    <th>Platform</th><th>Release</th><th>Seeders</th><th>State</th><th></th></tr></thead><tbody>
-    ${d.items.map((i,n)=>`<tr><td>${esc(i.game)}</td><td>${esc(i.platform)}</td>
-      <td>${esc(i.release||'—')}</td><td>${num(i.seeders)}</td>
+    <th>Platform</th><th>Release</th><th>Progress</th><th>Seeders</th><th>State</th><th></th></tr></thead><tbody>
+    ${d.items.map((i,n)=>`<tr><td><a href="${esc(gameHref(i.platform,'',i.game))}">${esc(i.game)}</a></td><td>${esc(i.platform)}</td>
+      <td>${esc(i.release||'—')}</td><td data-qprog="${n}" style="min-width:150px">${progressCell(i)}</td><td>${num(i.seeders)}</td>
       <td><span class="pill ${esc(i.state)}">${statusMarkup(i.state)}</span>
       ${i.detail?`<div style="color:var(--dim);font-size:11.5px">${appMessageMarkup(i.detail)}</div>`:''}
       </td><td style="text-align:end"><div class="rowact">
@@ -3740,6 +3754,15 @@ RENDER.queue=async()=>{
   };
   document.querySelectorAll('[data-qretry]').forEach(b=>b.onclick=()=>act(b.dataset.qretry,'retry'));
   document.querySelectorAll('[data-qremove]').forEach(b=>b.onclick=()=>act(b.dataset.qremove,'remove'));
+  // Live progress: refresh only the progress cells, so buttons keep focus.
+  if((d.items||[]).some(i=>i.progress!=null&&i.progress<100)){
+    const timer=setInterval(async()=>{
+      if(epoch!==routeEpoch||location.hash!=='#queue'){clearInterval(timer);return;}
+      const nd=await j('/api/v1/queue').catch(()=>null);
+      if(!nd||epoch!==routeEpoch) return;
+      nd.items.forEach((i,n)=>{ const c=document.querySelector('[data-qprog="'+n+'"]'); if(c) c.innerHTML=progressCell(i); });
+    },4000);
+  }
 };
 
 RENDER.patches=async()=>{

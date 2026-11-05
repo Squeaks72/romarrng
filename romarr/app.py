@@ -90,7 +90,7 @@ from .frontends import FORMATS as FRONTEND_FORMATS
 from .metadata import PROVIDERS as METADATA_PROVIDERS
 from .notify import (FIELD_HELP, FIELD_LABELS, NOTIFIERS, Message, Notifier,
                      failed, grabbed, imported, send_test, update_available)
-from .profiles import Blocklist, ReleaseProfile, release_id
+from .profiles import Blocklist, ReleaseProfile, normalise_infohash, release_id
 from .upgrade import is_upgrade, merge_tags, scan as scan_directory
 from .metadata import (
     Metadata, calendar as metadata_calendar, igdb_catalog_config,
@@ -2978,6 +2978,35 @@ class ROMarr:
         rep["generated"] = now_iso()
         self._switch_cache = (time.time(), rep)
         return rep
+
+    def queue_view(self) -> list[dict]:
+        """The queue, with live progress and ETA from whichever client holds each item."""
+        import time as _time
+        items = [asdict(i) for i in self.queue]
+        cache = getattr(self, "_progress_cache", None)
+        if cache is None or _time.time() - cache[0] > 3:
+            live: dict[str, dict[str, dict]] = {}
+            for client in self.clients:
+                fn = getattr(client, "progress", None)
+                if not callable(fn) or not getattr(client, "configured", True):
+                    continue
+                try:
+                    live[str(getattr(client, "config_id", "") or "")] = fn()
+                except Exception as err:  # noqa: BLE001 - a slow client must not break the page
+                    log.debug("progress unavailable from %s: %s", getattr(client, "name", "?"),
+                              err.__class__.__name__)
+            self._progress_cache = cache = (_time.time(), live)
+        live = cache[1]
+        for item in items:
+            did = normalise_infohash(item.get("download_id") or "")
+            if not did or item.get("state") not in ("grabbed", "downloading", "queued"):
+                continue
+            rows = live.get(str(item.get("download_client_id") or ""))
+            hit = rows.get(did) if rows else next(
+                (r[did] for r in live.values() if did in r), None)
+            if hit:
+                item.update(hit)
+        return items
 
     def drop_request(self, game: str, platform_name: str) -> bool:
         """Take something off Wanted without pretending it arrived.
@@ -6424,7 +6453,7 @@ def make_handler(service: ROMarr):
                     (query.get("id") or [""])[0],
                     (query.get("title") or [""])[0]))
             if route.path == "/api/v1/queue":
-                return self._json(200, {"items": [asdict(i) for i in service.queue]})
+                return self._json(200, {"items": service.queue_view()})
             if route.path == "/api/v1/history":
                 limit = int((query.get("limit") or ["100"])[0])
                 return self._json(200, {"items": service.store.history(limit)})
