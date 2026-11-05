@@ -407,6 +407,38 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent-line);
 .check{display:flex;align-items:center;gap:9px;margin-bottom:11px;
   color:var(--fg);font-size:13px;cursor:pointer}
 .check input{width:16px;height:16px;accent-color:var(--accent);flex:none}
+/* ---- Add New results and the game page ---- */
+.rcgrid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+.rc{display:flex;gap:12px;padding:10px;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-md);cursor:pointer;transition:border-color var(--t)}
+.rc:hover{border-color:var(--accent-line)}
+.rc-art,.gh-art{flex:none;background:var(--art) center/cover no-repeat;border-radius:var(--r-sm)}
+.rc-art{width:72px;height:96px}
+.rc-body{min-width:0;flex:1}
+.rc-t{font-weight:650;font-size:14px}
+.rc-y{font-weight:400;color:var(--dim);font-size:12.5px}
+.rc-g{color:var(--dim);font-size:11.5px;margin:1px 0 4px}
+.rc-s{color:var(--fg-2);font-size:12px;display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden;margin-bottom:6px}
+.rc-p{display:flex;flex-wrap:wrap;gap:5px}
+.rc-opt{font:inherit;font-size:11.5px;padding:3px 8px;border-radius:var(--r-pill);cursor:pointer;
+  background:var(--bg);color:var(--fg);border:1px solid var(--line)}
+.rc-opt:hover{border-color:var(--accent-line)}
+.sb{display:inline-block;font-size:10.5px;font-weight:650;padding:1px 7px;border-radius:var(--r-pill);
+  margin-inline-start:4px;background:var(--surface-3);color:var(--fg-2)}
+.sb-library{background:color-mix(in srgb,var(--ok) 20%,transparent);color:var(--ok)}
+.sb-monitored,.sb-downloading{background:var(--accent-soft);color:var(--accent-text)}
+.sb-none{display:none}
+.gh{display:flex;gap:20px;flex-wrap:wrap}
+.gh-art{width:190px;height:260px;max-width:100%}
+.gh-main{flex:1;min-width:260px}
+.gh-main h2{font-size:22px;font-weight:650;letter-spacing:-.02em;margin:0 0 2px}
+.gh-sub{color:var(--dim);margin-bottom:12px}
+.gh-act{display:flex;flex-wrap:wrap;gap:8px}
+.gh-facts{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:14px 0 0;font-size:13px}
+.gh-facts dt{color:var(--dim)}
+.gh-facts dd{margin:0}
+.tablewrap{overflow-x:auto}
 /* Searchable single-choice picker: stands in for a <select> when the list is
    long (49 platforms). The hidden input keeps the id and .value, so code that
    reads $('#id').value is unchanged. */
@@ -777,8 +809,7 @@ def _theme_control_html() -> str:
 NAV = [
     ("Library",  [("library", "Games", "games"),
                   ("organize", "Identify & Organize", None), ("add", "Add New", None),
-                  ("discover", "Discover", None), ("patches", "Patches", None),
-                  ("search", "Interactive Search", None)]),
+                  ("discover", "Discover", None), ("patches", "Patches", None)]),
     ("Wanted",   [("missing", "Missing", "missing"), ("lists", "Lists", None),
                   ("calendar", "Calendar", None)]),
     ("Activity", [("queue", "Queue", "queued"), ("history", "History", None),
@@ -1402,18 +1433,24 @@ function setMobileNavOpen(open,restoreFocus=true){
     if(restoreFocus)toggle.focus({preventScroll:true});
   }
 }
-function go(page,focusHeading=false){
-  if(!document.querySelector('.nav[data-page="'+CSS.escape(page)+'"]'))page='library';
+let ROUTE_ARGS=[];
+function go(pageSpec,focusHeading=false){
+  const parts=String(pageSpec).split('/');
+  let page=parts[0]; ROUTE_ARGS=parts.slice(1).map(x=>{try{return decodeURIComponent(x);}catch(e){return x;}});
+  // Interactive Search was folded into Add New; old links still land there.
+  if(page==='search'){page='add';pageSpec='add';ROUTE_ARGS=[];}
+  if(page!=='game'&&!document.querySelector('.nav[data-page="'+CSS.escape(page)+'"]')){page='library';pageSpec='library';ROUTE_ARGS=[];}
   const renderEpoch=++routeEpoch;
-  if(location.hash!=='#'+page)location.hash=page;
+  if(location.hash!=='#'+pageSpec)location.hash=pageSpec;
+  const navPage=page==='game'?'library':page;
   document.querySelectorAll('.nav').forEach(n=>{
-    const current=n.dataset.page===page;
+    const current=n.dataset.page===navPage;
     n.classList.toggle('on',current);
     if(current)n.setAttribute('aria-current','page');
     else n.removeAttribute('aria-current');
   });
   setMobileNavOpen(false,false);
-  const titles={library:'Games',add:'Add New Game',search:'Interactive Search',
+  const titles={library:'Games',add:'Add New Game',game:'Game',search:'Add New Game',
     missing:'Wanted — Missing',lists:'Import Lists',stats:'Statistics',
     discover:'Discover',patches:'Patches — translations, hacks and improvements',ecosystem:'The Ecosystem',peers:'Friends',
     queue:'Queue',history:'History',media:'Media Management',profiles:'Profiles',
@@ -1431,7 +1468,7 @@ function go(page,focusHeading=false){
   title.dataset.i18nKey=stableLocalizationKey(titleSource)||titleSource;
   applyTranslatedLabel(title,readInterfaceLanguage());
   document.title=title.textContent.trim()+' · ROMarr';
-  $('#search').classList.toggle('hide', !['library','add'].includes(page));
+  $('#search').classList.toggle('hide', page!=='library');
   const main=$('#main-content'),content=$('#page');
   main.setAttribute('aria-busy','true');
   Promise.resolve().then(()=> (RENDER[page]||RENDER.library)(renderEpoch))
@@ -1446,8 +1483,8 @@ function go(page,focusHeading=false){
   if(focusHeading)requestAnimationFrame(()=>title.focus({preventScroll:true}));
 }
 addEventListener('hashchange',()=>{
-  const page=location.hash.slice(1);
-  if(document.querySelector('.nav[data-page="'+CSS.escape(page)+'"]'))go(page,true);
+  const spec=location.hash.slice(1), page=spec.split('/')[0];
+  if(page==='game'||page==='search'||document.querySelector('.nav[data-page="'+CSS.escape(page)+'"]'))go(spec,true);
 });
 
 /* ---------------- pages ---------------- */
@@ -1898,7 +1935,7 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
     return bits.length?`<div style="margin-top:2px">${bits.join(' ')}</div>`:'';
   };
   const grid=`<div class="grid" id="lib-grid">${items.map((g,i)=>`<div class="tile"
-      data-shelf="${i}" style="cursor:pointer" title="Click to set status, rating, notes">
+      data-shelf="${i}" style="cursor:pointer" title="Open game page">
       <div class="art" style="background-image:url('${esc(g.cover||'')}')"></div>
     <div class="nm" lang="und" dir="auto">${esc(g.name)}</div>
     <div class="pf" lang="und" dir="auto">${esc(g.platform||'')}</div>${mark(g)}</div>`).join('')}</div>`;
@@ -1914,10 +1951,12 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
   bindLibraryChips(p,platItems);
   const moreBtn=p.querySelector('#lib-more');
   if(moreBtn) moreBtn.onclick=()=>{LIB.limit+=240;go('library');};
-  document.querySelectorAll('[data-shelf]').forEach(t=>t.onclick=()=>
-    shelfEditor(items[Number(t.dataset.shelf)],
-      shelf[`${items[Number(t.dataset.shelf)].platform||''}/`
-        +`${(items[Number(t.dataset.shelf)].name||'').toLowerCase()}`]||{}));
+  document.querySelectorAll('[data-shelf]').forEach(t=>{
+    const g=items[Number(t.dataset.shelf)];
+    t.setAttribute('role','link'); t.tabIndex=0;
+    const open=()=>{ location.hash='game/'+encodeURIComponent(g.platform_slug||'')+'/'+encodeURIComponent(g.id); };
+    t.onclick=open; t.onkeydown=e=>{ if(e.key==='Enter') open(); };
+  });
 };
 
 function bindLibraryChips(p,platItems){
@@ -1971,116 +2010,244 @@ function shelfEditor(g, meta){
       body:JSON.stringify({platform:g.platform||'',game:g.name,
         status:f.status,rating:Number(f.rating)||0,notes:f.notes})});
     closeModal();
-    if(r.error)toastAppMessage(r.error);else toastLabel('ui.saved.b5c120b316'); if(!r.error) go('library');
+    if(r.error)toastAppMessage(r.error);else toastLabel('ui.saved.b5c120b316'); if(!r.error) go(location.hash.slice(1)||'library');
   };
 }
 
-RENDER.add=async()=>{
-  $('#page').innerHTML=`<div class="card">
-    <h3 data-i18n="ui.request-a-game.027797e16d">Request a game</h3>
-    <p class="help" data-i18n="ui.romarr-searches-your-indexers-picks.3ee0dbe528">ROMarr searches your indexers, picks the healthiest release for the platform, hands it to the download client and files the ROM into RomM.</p>
-    <div class="row">
-      <div class="field" style="flex:1;margin:0"><label data-i18n="ui.game.5c412a2620">Game</label>
-        <input type="text" id="g-name" placeholder="Super Mario World" lang="und" dir="auto"></div>
-      <div class="field" style="width:230px;margin:0"><label data-i18n="ui.platform.c78ffe1957">Platform</label>
-        ${pickerHtml('g-plat',platPickerItems(false),(PLATFORMS[0]||{}).slug,'Platform')}</div>
-      <button class="btn" id="g-go" data-i18n="ui.search-grab.5b6a3f6d1c" style="margin-top:20px">Search &amp; Grab</button>
-    </div>
-    <div id="g-out" style="margin-top:16px"></div></div>`;
-  bindPicker($('#page'),'g-plat',platPickerItems(false));
-  applyInterfaceLanguage();
-  $('#g-go').onclick=async()=>{
-    const game=$('#g-name').value.trim(), platform=$('#g-plat').value;
-    if(!game){toastLabel('ui.enter-a-game-name.ea7e4635a4');return;}
-    $('#g-out').innerHTML='<div class="empty" data-i18n="ui.searching-indexers.ae3d974c9a">Searching indexers…</div>'; applyInterfaceLanguage();
-    const r=await j('/api/request',{method:'POST',
-      headers:{'content-type':'application/json'},
-      body:JSON.stringify({game,platform})});
-    $('#g-out').innerHTML=r.ok
-      ? `<div class="card" style="margin:0"><h3 data-i18n="ui.grabbed.cdb5425259">Grabbed</h3>
-         <p class="help"><span lang="und" dir="auto">${esc(r.release)}</span> — ${interfaceTemplateMarkup('ui.seeders-count.c31e318db5',{count:num(r.seeders)})}</p></div>`
-       : `<div class="card" style="margin:0"><h3 data-i18n="ui.not-grabbed.c2d3260a1a">Not grabbed</h3>
-         <p class="help">${appMessageMarkup(r.error||'no usable release')}</p></div>`;
-    applyInterfaceLanguage();
-    refreshCounts();
-  };
-};
-
-RENDER.search=async()=>{
-  $('#page').innerHTML=`<div class="card">
-    <h3 data-i18n="ui.interactive-search.d2516fd6f4">Interactive search</h3>
-    <p class="help" data-i18n="ui.every-release-your-indexers-returned.76d5936486">Every release your indexers returned, scored, with the reasoning shown &mdash; and a Grab button, so you can overrule the ranking when you disagree with it. This is the page to reach for when a request took the wrong release: the reason it outranked the one you wanted is written next to it.</p>
-    <div class="row">
-      <div class="field" style="flex:1;margin:0"><label data-i18n="ui.game.5c412a2620">Game</label>
-        <input type="text" id="s-name" placeholder="Phantasy Star IV" lang="und" dir="auto"></div>
-      <div class="field" style="width:230px;margin:0"><label data-i18n="ui.platform.c78ffe1957">Platform</label>
-        ${pickerHtml('s-plat',platPickerItems(true),'','Platform')}</div>
-      <button class="btn" id="s-go" data-i18n="ui.search.49c266baaa" style="margin-top:20px">Search</button>
-    </div>
-    <p class="help" style="margin-top:10px" data-i18n="ui.without-a-platform-there-is-no-platf.987f2bc241">Without a platform there is no platform evidence to score on, so the ranking means less. Pick one when you can.</p>
-    <div id="s-out" style="margin-top:16px"></div></div>`;
-  bindPicker($('#page'),'s-plat',platPickerItems(true));
-  applyInterfaceLanguage();
-
+// ---- Releases: the scored list, with a Grab button on each row -----------
+// One implementation for the Add New flow and the game page, so a release
+// chosen by hand behaves identically wherever it was picked.
+async function renderReleases(out,game,platform){
   const mb=n=>n>=1048576?(n/1048576).toLocaleString(getRegionalLocale(),{maximumFractionDigits:1})+' MB'
     :n>0?(n/1024).toLocaleString(getRegionalLocale(),{maximumFractionDigits:0})+' KB':'—';
-
-  const run=async()=>{
-    const game=$('#s-name').value.trim(), platform=$('#s-plat').value;
-    if(!game){toastLabel('ui.enter-a-game-name.ea7e4635a4');return;}
-    $('#s-out').innerHTML='<div class="empty" data-i18n="ui.searching-indexers.ae3d974c9a">Searching indexers…</div>'; applyInterfaceLanguage();
-    const d=await j(`/api/v1/release?game=${encodeURIComponent(game)}`
-      +`&platform=${encodeURIComponent(platform)}`);
-    if(d.error){
-      $('#s-out').innerHTML=`<p class="help" style="color:var(--warn)">${appMessageMarkup(d.error)}</p>`;
-      return;
-    }
-    if(!d.items.length){
-      $('#s-out').innerHTML='<div class="empty" data-i18n="ui.nothing-found-a-search-where-every-i.cf40aad291">Nothing found. A search where every indexer fails looks exactly like one that found nothing — check Indexers if this is unexpected.</div>';
-      applyInterfaceLanguage();
-      return;
-    }
+  out.innerHTML='<div class="empty" data-i18n="ui.searching-indexers.ae3d974c9a">Searching indexers…</div>'; applyInterfaceLanguage();
+  const d=await j(`/api/v1/release?game=${encodeURIComponent(game)}`
+    +`&platform=${encodeURIComponent(platform)}`).catch(()=>({error:'Search failed'}));
+  if(d.error){
+    out.innerHTML=`<p class="help" style="color:var(--warn)">${appMessageMarkup(d.error)}</p>`;
+    return;
+  }
+  if(!d.items.length){
+    out.innerHTML='<div class="empty" data-i18n="ui.nothing-found-a-search-where-every-i.cf40aad291">Nothing found. A search where every indexer fails looks exactly like one that found nothing — check Indexers if this is unexpected.</div>';
+    applyInterfaceLanguage();
+    return;
+  }
   const indexerTitle=r=>r.indexer
     ? `title="${esc(translateTemplate('Open on {indexer}',{indexer:r.indexer}))}"
        data-i18n-title-template-key="ui.open-on-indexer.202e1ad5f5"
        data-i18n-title-values="${esc(JSON.stringify({indexer:r.indexer}))}"`
     : `title="${esc(translateLabel('ui.open-on-the-indexer.4766c56d0d',readInterfaceLanguage()))}"
        data-i18n-title="ui.open-on-the-indexer.4766c56d0d"`;
-    $('#s-out').innerHTML=`
-      <p class="help">${interfaceTemplateMarkup('ui.found-found-releases-accepted-match.65f542cd3e',{found:fmt(d.found),accepted:fmt(d.accepted)})}</p>
-      <table><thead><tr><th data-i18n="ui.score.38e5a46cbc">Score</th><th data-i18n="ui.release.e020e3c67b">Release</th><th data-i18n="ui.size.1af8519073">Size</th>
-        <th data-i18n="ui.seeders.40abd71e74">Seeders</th><th data-i18n="ui.indexer.4a8a73e215">Indexer</th><th data-i18n="ui.why.d3ae14a50b">Why</th><th></th></tr></thead><tbody>
-      ${d.items.map((r,i)=>`<tr>
-        <td><span class="pill ${r.accepted?'imported':'failed'}">${num(r.score)}</span></td>
-        <td><span lang="und" dir="auto">${esc(r.title)}</span>${r.info_url?` <a href="${esc(r.info_url)}" target="_blank"
-            rel="noopener noreferrer"
-            ${indexerTitle(r)} lang="und" dir="auto"
-            style="text-decoration:none">&#8599;</a>`:''}
-          ${r.private?' <span class="pill">private</span>':''}
-          ${r.protocol==='usenet'?' <span class="pill">usenet</span>':''}</td>
-        <td style="white-space:nowrap">${mb(r.size)}</td>
-        <td>${num(r.seeders)}</td>
-        <td style="color:var(--dim)" lang="und" dir="auto">${esc(r.indexer||'—')}</td>
-        <td style="color:var(--dim);font-size:12px">${r.reasons.map(searchReasonMarkup).join('<br>')}</td>
-        <td><div class="rowact">${r.grabbable
-          ? `<button data-grab="${esc(r.id)}" data-i18n="ui.grab.7d935f2589">Grab</button>`
-          : '<span style="color:var(--dim);font-size:12px">'+interfaceMarkup('ui.no-link.9563affc02')+'</span>'}</div></td>
-        </tr>`).join('')}</tbody></table>`;
+  out.innerHTML=`
+    <p class="help">${interfaceTemplateMarkup('ui.found-found-releases-accepted-match.65f542cd3e',{found:fmt(d.found),accepted:fmt(d.accepted)})}</p>
+    <div class="tablewrap"><table><thead><tr><th data-i18n="ui.score.38e5a46cbc">Score</th><th data-i18n="ui.release.e020e3c67b">Release</th><th data-i18n="ui.size.1af8519073">Size</th>
+      <th data-i18n="ui.seeders.40abd71e74">Seeders</th><th data-i18n="ui.indexer.4a8a73e215">Indexer</th><th data-i18n="ui.why.d3ae14a50b">Why</th><th></th></tr></thead><tbody>
+    ${d.items.map(r=>`<tr>
+      <td><span class="pill ${r.accepted?'imported':'failed'}">${num(r.score)}</span></td>
+      <td><span lang="und" dir="auto">${esc(r.title)}</span>${r.info_url?` <a href="${esc(r.info_url)}" target="_blank"
+          rel="noopener noreferrer"
+          ${indexerTitle(r)} lang="und" dir="auto"
+          style="text-decoration:none">&#8599;</a>`:''}
+        ${r.private?' <span class="pill">private</span>':''}
+        ${r.protocol==='usenet'?' <span class="pill">usenet</span>':''}</td>
+      <td style="white-space:nowrap">${mb(r.size)}</td>
+      <td>${num(r.seeders)}</td>
+      <td style="color:var(--dim)" lang="und" dir="auto">${esc(r.indexer||'—')}</td>
+      <td style="color:var(--dim);font-size:12px">${r.reasons.map(searchReasonMarkup).join('<br>')}</td>
+      <td><div class="rowact">${r.grabbable
+        ? `<button data-grab="${esc(r.id)}" data-i18n="ui.grab.7d935f2589">Grab</button>`
+        : '<span style="color:var(--dim);font-size:12px">'+interfaceMarkup('ui.no-link.9563affc02')+'</span>'}</div></td>
+      </tr>`).join('')}</tbody></table></div>`;
+  applyInterfaceLanguage();
+  out.querySelectorAll('[data-grab]').forEach(b=>b.onclick=async()=>{
+    b.disabled=true; b.dataset.i18n='Grabbing…'; applyTranslatedLabel(b,readInterfaceLanguage());
+    const r=await j('/api/v1/release/grab',{method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({id:b.dataset.grab})});
+    b.dataset.i18n=r.ok?'Grabbed':'Failed'; applyTranslatedLabel(b,readInterfaceLanguage());
+    if(r.ok)toastMessage('ui.grabbed-release.94cc8b2735',{release:r.release});
+    else if(r.error)toastAppMessage(r.error);else toastLabel('ui.could-not-grab-that-release.8861451b16');
+    refreshCounts();
+  });
+}
 
-    applyInterfaceLanguage();
-    document.querySelectorAll('[data-grab]').forEach(b=>b.onclick=async()=>{
-      b.disabled=true; b.dataset.i18n='Grabbing…'; applyTranslatedLabel(b,readInterfaceLanguage());
-      const r=await j('/api/v1/release/grab',{method:'POST',
-        headers:{'content-type':'application/json'},
-        body:JSON.stringify({id:b.dataset.grab})});
-      b.dataset.i18n=r.ok?'Grabbed':'Failed'; applyTranslatedLabel(b,readInterfaceLanguage());
-      if(r.ok)toastMessage('ui.grabbed-release.94cc8b2735',{release:r.release});
-      else if(r.error)toastAppMessage(r.error);else toastLabel('ui.could-not-grab-that-release.8861451b16');
-      refreshCounts();
+// ---- Add New: find a game, then add it the way Radarr's Add dialog does ----
+const STATE_LABEL={library:'In library',downloading:'Downloading',monitored:'Monitored',
+  unmonitored:'Not monitored','':'Not added'};
+const stateBadge=st=>`<span class="sb sb-${esc(st||'none')}">${esc(STATE_LABEL[st||'']||'')}</span>`;
+const gameHref=(slug,id,title)=>'#game/'+encodeURIComponent(slug)+'/'
+  +(id?encodeURIComponent(id):'~'+encodeURIComponent(title));
+
+// The Add dialog: platform, monitor, and what to do right now.
+function addDialog({title,options,platform,afterAdd}){
+  const m=document.createElement('div'); m.className='modal';
+  const opts=(options&&options.length?options:PLATFORMS.map(p=>({slug:p.slug,name:p.name,state:''})));
+  const start=opts.find(o=>o.slug===platform)||opts[0]||{slug:'',name:'',state:''};
+  m.innerHTML=`<div class="box" role="dialog" aria-modal="true" aria-label="Add game">
+    <h3 lang="und" dir="auto">${esc(title||'Add a game')}</h3>
+    <div class="sub">Add it to Wanted. ROMarr searches your indexers and watches new releases for it.</div>
+    ${title?'':`<div class="field"><label>Title</label><input type="text" id="ad-title" lang="und" dir="auto"></div>`}
+    <div class="field"><label>Platform</label>
+      ${options&&options.length===1
+        ? `<div>${esc(start.name)}</div><input type="hidden" id="ad-plat" value="${esc(start.slug)}">`
+        : pickerHtml('ad-plat',opts.map(o=>({value:o.slug,label:o.name,meta:o.state?STATE_LABEL[o.state]:''})),start.slug,'Platform')}</div>
+    <label class="check"><input type="checkbox" id="ad-mon" checked>
+      <span>Monitor — keep searching and watching RSS until it is found</span></label>
+    <div class="field"><label>When added</label>
+      <select id="ad-search">
+        <option value="auto">Search now and grab the best release</option>
+        <option value="manual">Search now and let me choose the release</option>
+        <option value="none">Only add it</option></select></div>
+    <div class="foot"><button class="btn ghost sp" data-close>Cancel</button>
+      <button class="btn" id="ad-go">Add game</button></div></div>`;
+  openModal(m);
+  if(!(options&&options.length===1)) bindPicker(m,'ad-plat',opts.map(o=>({value:o.slug,label:o.name,meta:o.state?STATE_LABEL[o.state]:''})));
+  m.onclick=e=>{ if(e.target===m||e.target.dataset.close!==undefined) closeModal(); };
+  const ti=m.querySelector('#ad-title'); if(ti) ti.focus();
+  m.querySelector('#ad-go').onclick=async()=>{
+    const game=(ti?ti.value:title).trim(), plat=m.querySelector('#ad-plat').value;
+    if(!game){toastLabel('ui.enter-a-game-name.ea7e4635a4');return;}
+    const mode=m.querySelector('#ad-search').value, monitored=m.querySelector('#ad-mon').checked;
+    const btn=m.querySelector('#ad-go'); btn.disabled=true; btn.textContent='Adding…';
+    const r=await j('/api/v1/wanted/add',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({game,platform:plat,monitored,search:mode==='auto'})}).catch(()=>({ok:false,error:'Request failed'}));
+    closeModal();
+    if(!r.ok){toastAppMessage(r.error||'Could not add that game');return;}
+    refreshCounts();
+    if(mode==='manual'){ location.hash='game/'+encodeURIComponent(plat)+'/~'+encodeURIComponent(game)+'/search'; return; }
+    if(mode==='auto'){
+      const s=r.search||{};
+      toastAppMessage(s.ok?('Grabbed '+(s.release||game)):('Added'+(monitored?' and monitored':'')+' — no release yet, ROMarr will keep looking'));
+    }else toastAppMessage('Added '+game+(monitored?' (monitored)':''));
+    if(afterAdd) afterAdd();
+  };
+}
+
+RENDER.add=async()=>{
+  const page=$('#page');
+  page.innerHTML=`<div class="card">
+    <h3>Add New Game</h3>
+    <p class="help">Search for a game, pick it, and ROMarr will find it — now or when a release turns up. Games already on your shelf are marked.</p>
+    <div class="row">
+      <div class="field" style="flex:1;min-width:220px;margin:0"><label>Game</label>
+        <input type="search" id="a-q" placeholder="Search for a game…" lang="und" dir="auto" autocomplete="off"></div>
+      <div class="field" style="width:230px;margin:0"><label>Platform</label>
+        ${pickerHtml('a-plat',platPickerItems(true),'','Platform')}</div>
+      <button class="btn" id="a-go" style="margin-top:20px">Search</button>
+    </div>
+    <div id="a-out" style="margin-top:16px"></div></div>`;
+  bindPicker(page,'a-plat',platPickerItems(true),()=>{ if(($('#a-q').value||'').trim()) run(); });
+  applyInterfaceLanguage();
+  const out=$('#a-out'); let seq=0;
+  const manualLink=()=>`<p class="help" style="margin-top:14px">Can’t find it? <a href="#" id="a-manual">Add it by exact title</a>.</p>`;
+  const bindManual=()=>{ const a=$('#a-manual'); if(a) a.onclick=e=>{e.preventDefault();
+    addDialog({title:'',options:null,platform:$('#a-plat').value||''});}; };
+  const run=async()=>{
+    const q=$('#a-q').value.trim();
+    if(q.length<2){out.innerHTML='';return;}
+    const mine=++seq;
+    out.innerHTML='<div class="empty">Searching…</div>';
+    const d=await j('/api/v1/lookup?q='+encodeURIComponent(q)+'&platform='+encodeURIComponent($('#a-plat').value||''))
+      .catch(()=>({configured:true,items:[],error:'Search failed'}));
+    if(mine!==seq) return;
+    if(d.configured===false){
+      out.innerHTML=`<p class="help" style="color:var(--warn)">Game search needs an IGDB connection (Metadata settings). You can still add a game by its exact title.</p>${manualLink()}`;
+      bindManual(); return;
+    }
+    if(d.error){ out.innerHTML=`<p class="help" style="color:var(--warn)">${esc(d.error)}</p>${manualLink()}`; bindManual(); return; }
+    if(!d.items.length){ out.innerHTML=`<div class="empty">No games found for “${esc(q)}”.</div>${manualLink()}`; bindManual(); return; }
+    out.innerHTML=`<div class="rcgrid">${d.items.map((g,i)=>`<div class="rc" data-i="${i}">
+        <div class="rc-art" style="background-image:url('${esc(g.cover||'')}')"></div>
+        <div class="rc-body">
+          <div class="rc-t" lang="und" dir="auto">${esc(g.title)}${g.year?` <span class="rc-y">${g.year}</span>`:''}</div>
+          <div class="rc-g">${esc((g.genres||[]).slice(0,3).join(' · '))}</div>
+          <div class="rc-s">${esc(g.summary||'')}</div>
+          <div class="rc-p">${g.options.map(o=>`<button type="button" class="rc-opt" data-slug="${esc(o.slug)}"
+            title="${esc(STATE_LABEL[o.state||'']||'')}">${esc(o.name)} ${stateBadge(o.state)}</button>`).join('')}</div>
+        </div></div>`).join('')}</div>${manualLink()}`;
+    bindManual();
+    out.querySelectorAll('.rc-opt').forEach(b=>b.onclick=e=>{
+      e.stopPropagation();
+      const g=d.items[Number(b.closest('.rc').dataset.i)], slug=b.dataset.slug;
+      const opt=g.options.find(o=>o.slug===slug)||{};
+      if(opt.state==='library'){ location.hash='game/'+encodeURIComponent(slug)+'/~'+encodeURIComponent(g.title); return; }
+      addDialog({title:g.title,options:g.options,platform:slug,afterAdd:run});
+    });
+    out.querySelectorAll('.rc').forEach(c=>c.onclick=()=>{
+      const g=d.items[Number(c.dataset.i)];
+      if(g.options.length===1){ c.querySelector('.rc-opt').click(); }
+      else addDialog({title:g.title,options:g.options,platform:'',afterAdd:run});
     });
   };
-  $('#s-go').onclick=run;
-  $('#s-name').onkeydown=e=>{ if(e.key==='Enter') run(); };
+  $('#a-go').onclick=run;
+  let t=null; $('#a-q').oninput=()=>{clearTimeout(t);t=setTimeout(run,450);};
+  $('#a-q').onkeydown=e=>{ if(e.key==='Enter'){clearTimeout(t);run();} };
+  $('#a-q').focus();
+};
+
+// Old links and bookmarks to Interactive Search land on the merged page.
+RENDER.search=async()=>RENDER.add();
+
+// ---- The game page ---------------------------------------------------------
+RENDER.game=async(renderEpoch=routeEpoch)=>{
+  const [slug,idOrTitle,flag]=ROUTE_ARGS;
+  const page=$('#page');
+  const isTitle=(idOrTitle||'').startsWith('~');
+  const d=await j('/api/v1/game/detail?platform='+encodeURIComponent(slug||'')
+    +(isTitle?'&title='+encodeURIComponent(idOrTitle.slice(1)):'&id='+encodeURIComponent(idOrTitle||''))
+    ).catch(()=>null);
+  if(renderEpoch!==routeEpoch) return;
+  if(!d||!d.title){ page.innerHTML='<div class="empty">Game not found.</div>'; return; }
+  const it=d.item||{}, w=d.wanted, q=d.queue||[], h=d.history||[];
+  const state=d.in_library?'library':(q.some(x=>['grabbed','downloading','queued'].includes(x.state))?'downloading'
+    :(w?(w.monitored?'monitored':'unmonitored'):''));
+  const facts=[['Released',it.released],['Rating',it.rating?('★ '+num(it.rating)):''],
+    ['Genres',(it.genres||[]).join(', ')],['Franchise',(it.franchises||[]).join(', ')],
+    ['Developer / publisher',(it.companies||[]).join(', ')],['Modes',(it.modes||[]).join(', ')],
+    ['Players',it.players],['In RomM since',it.added]].filter(x=>x[1]);
+  page.innerHTML=`<div class="card gh">
+      <div class="gh-art" style="background-image:url('${esc(it.cover||'')}')"></div>
+      <div class="gh-main">
+        <h2 lang="und" dir="auto">${esc(d.title)} ${it.year?`<span class="rc-y">${it.year}</span>`:''}</h2>
+        <div class="gh-sub">${esc(d.platform_name)} ${stateBadge(state)}</div>
+        <div class="gh-act">
+          ${d.romm_url?`<a class="btn" href="${esc(d.romm_url)}" target="_blank" rel="noopener noreferrer">Open in RomM ↗</a>`:''}
+          ${!d.in_library?`<button class="btn" id="g-add">${w?'Search now':'Add to Wanted'}</button>`:''}
+          ${w?`<button class="btn ghost" id="g-mon" aria-pressed="${w.monitored}">${w.monitored?'Monitored ✓':'Not monitored'}</button>`:''}
+          <button class="btn ghost" id="g-int">Interactive search</button>
+          <button class="btn ghost" id="g-shelf">Shelf: status, rating, notes</button>
+        </div>
+        ${d.in_library?`<p class="help" style="margin-top:10px">Metadata, covers and files are managed in RomM — use “Open in RomM” to change them.</p>`:''}
+        ${facts.length?`<dl class="gh-facts">${facts.map(([k,v])=>`<dt>${esc(k)}</dt><dd lang="und" dir="auto">${esc(v)}</dd>`).join('')}</dl>`:''}
+        ${(d.meta&&(d.meta.status||d.meta.rating||d.meta.notes))?`<p class="help" style="margin-top:10px">
+          ${d.meta.status?`<span class="pill">${esc(d.meta.status)}</span> `:''}${d.meta.rating?`<span class="pill">★ ${num(d.meta.rating)}/10</span> `:''}
+          ${esc(d.meta.notes||'')}</p>`:''}
+      </div></div>
+    <div class="card" id="g-rel" ${flag==='search'?'':'hidden'}><h3>Interactive search</h3><div id="g-relout"></div></div>
+    ${q.length?`<div class="card"><h3>Downloads</h3><div class="tablewrap"><table><thead><tr><th>Release</th><th>State</th><th>Detail</th></tr></thead><tbody>
+      ${q.map(x=>`<tr><td lang="und" dir="auto">${esc(x.release||'—')}</td><td>${esc(x.state)}</td><td style="color:var(--dim)">${esc(x.detail||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}
+    ${h.length?`<div class="card"><h3>History</h3><div class="tablewrap"><table><thead><tr><th>When</th><th>Event</th><th>Release</th><th>Detail</th></tr></thead><tbody>
+      ${h.map(x=>`<tr><td>${esc(regionalDate(x.at||x.time||''))}</td><td>${esc(x.kind)}</td><td lang="und" dir="auto">${esc(x.release||'')}</td><td style="color:var(--dim)">${esc(x.detail||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}
+    ${(!d.in_library&&w&&w.last_error)?`<p class="help">Last search: ${esc(w.last_error)} (${fmt(w.attempts)} attempt${w.attempts===1?'':'s'})</p>`:''}`;
+  applyInterfaceLanguage();
+  const relBox=$('#g-rel'), relOut=$('#g-relout');
+  const openRel=()=>{ relBox.hidden=false; renderReleases(relOut,d.title,d.platform); relBox.scrollIntoView({behavior:'smooth',block:'start'}); };
+  if(flag==='search') renderReleases(relOut,d.title,d.platform);
+  $('#g-int').onclick=openRel;
+  $('#g-shelf').onclick=()=>shelfEditor({name:d.title,platform:(it.platform||d.platform)},d.meta||{});
+  const mon=$('#g-mon'); if(mon) mon.onclick=async()=>{
+    const r=await j('/api/v1/wanted/monitor',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({game:d.title,platform:d.platform,monitored:!w.monitored})});
+    if(r.ok) go('game/'+ROUTE_ARGS.map(encodeURIComponent).join('/'));
+  };
+  const add=$('#g-add'); if(add) add.onclick=async()=>{
+    add.disabled=true; add.textContent='Searching…';
+    const r=await j('/api/v1/wanted/add',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({game:d.title,platform:d.platform,monitored:true,search:true})}).catch(()=>({ok:false}));
+    const s=r.search||{};
+    toastAppMessage(s.ok?('Grabbed '+(s.release||d.title)):'No release yet — still monitored');
+    refreshCounts(); go('game/'+ROUTE_ARGS.map(encodeURIComponent).join('/'));
+  };
 };
 
 RENDER.missing=async()=>{
@@ -2091,8 +2258,11 @@ RENDER.missing=async()=>{
         ${interfaceTemplateMarkup('ui.requested-not-yet-imported-count.25dbb4afe4',
           {count:fmt(d.items.length)})}</span></div>
     ${d.items.length?`<table><thead><tr><th data-i18n="ui.game.5c412a2620">Game</th><th data-i18n="ui.platform.c78ffe1957">Platform</th>
-      <th data-i18n="ui.added.6b02e0d363">Added</th><th data-i18n="ui.attempts.06e70139fc">Attempts</th><th data-i18n="ui.last-error.5488d837f5">Last error</th><th></th></tr></thead><tbody>
-      ${d.items.map(w=>`<tr><td lang="und" dir="auto">${esc(w.game)}</td><td lang="und" dir="auto">${esc(w.platform)}</td>
+      <th>Monitored</th><th data-i18n="ui.added.6b02e0d363">Added</th><th data-i18n="ui.attempts.06e70139fc">Attempts</th><th data-i18n="ui.last-error.5488d837f5">Last error</th><th></th></tr></thead><tbody>
+      ${d.items.map(w=>`<tr${w.monitored===false?' style="opacity:.62"':''}><td lang="und" dir="auto"><a href="${esc(gameHref(w.platform,'',w.game))}">${esc(w.game)}</a></td><td lang="und" dir="auto">${esc(w.platform)}</td>
+        <td><button class="mini" data-mon-game="${esc(w.game)}" data-mon-platform="${esc(w.platform)}"
+          data-mon="${w.monitored===false?'0':'1'}" aria-pressed="${w.monitored!==false}"
+          title="Monitored games are searched by the sweep and watched in RSS">${w.monitored===false?'Off':'On'}</button></td>
         <td>${esc(regionalDate(w.added))}</td><td>${fmt(w.attempts)}</td>
         <td style="color:var(--dim)" lang="und" dir="auto">${esc(w.last_error||'—')}</td>
         <td><button class="mini" data-drop-game="${esc(w.game)}"
@@ -2111,6 +2281,12 @@ RENDER.missing=async()=>{
       searched:fmt(r.searched??0),grabbed:fmt(r.grabbed??0)});
     go('missing'); refreshCounts();
   };
+  $('#page').querySelectorAll('button[data-mon-game]').forEach(x=>x.onclick=async()=>{
+    x.disabled=true;
+    const r=await j('/api/v1/wanted/monitor',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({game:x.dataset.monGame,platform:x.dataset.monPlatform,monitored:x.dataset.mon!=='1'})});
+    if(r.ok) go('missing'); else {x.disabled=false; toastAppMessage('Could not change monitoring');}
+  });
   // Dropping a request, which Wanted could not do at all: the list was only
   // ever emptied by an import, so a typo went on being searched for forever.
   $('#page').querySelectorAll('button[data-drop-game]').forEach(x=>x.onclick=async()=>{
@@ -5931,8 +6107,8 @@ async function refreshCounts(){
     searchTimer=setTimeout(()=>RENDER.library(),250);};
   [PLATFORMS,SETTINGS]=await Promise.all([
     j('/api/platforms').catch(()=>[]), j('/api/v1/config').catch(()=>({}))]);
-  const requestedPage=location.hash.slice(1);
-  const initialPage=document.querySelector('.nav[data-page="'+CSS.escape(requestedPage)+'"]')
+  const requestedPage=location.hash.slice(1), requestedBase=requestedPage.split('/')[0];
+  const initialPage=(requestedBase==='game'||requestedBase==='search'||document.querySelector('.nav[data-page="'+CSS.escape(requestedBase)+'"]'))
     ?requestedPage:'library';
   if(location.hash!=='#'+initialPage)history.replaceState(null,'','#'+initialPage);
   go(initialPage);

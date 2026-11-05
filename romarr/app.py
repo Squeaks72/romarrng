@@ -2958,7 +2958,8 @@ class ROMarr:
         return {"platform": slug, "platform_name": platform.name if platform else slug,
                 "title": name, "in_library": row is not None, "item": view,
                 "wanted": wanted, "queue": queue, "history": history,
-                "meta": self.store.game_meta(slug, name) if name else {},
+                "meta": (self.store.game_meta(str(getattr(row, "platform", "") or slug), name)
+                         if name else {}),
                 "romm_url": f"{romm}/rom/{rom_id}" if romm and rom_id else ""}
 
     def drop_request(self, game: str, platform_name: str) -> bool:
