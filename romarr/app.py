@@ -216,6 +216,25 @@ VERSION = "0.14.12"
 DEFAULT_CATEGORY = "romarr"
 
 
+SECRET_MASK = "********"
+#: Stored lists whose items carry credentials, and which fields. Metadata
+#: providers and connections are also served by dedicated endpoints that mask
+#: the same names; import lists use LIST_SECRETS below.
+MASKED_ITEM_FIELDS = {
+    "metadata_providers": ("api_key", "token", "client_id", "client_secret"),
+    "connections": ("url", "token", "password", "key"),
+    "import_lists": ("api_key", "openxbl_key", "npsso", "itchio_key", "epic_code",
+                     "ea_token", "battlenet_json"),
+}
+_SECRET_KEY_WORDS = ("secret", "password", "token", "passkey", "api_key", "apikey")
+
+
+def mask_item(item, fields):
+    if not isinstance(item, dict):
+        return item
+    return {k: (SECRET_MASK if k in fields and v else v) for k, v in item.items()}
+
+
 def redact_query_credentials(value: str) -> str:
     """Hide URL credentials while preserving a useful HTTP log line."""
     # Request targets are attacker-controlled. Keep this parser linear in their
@@ -1918,7 +1937,43 @@ class ROMarr:
         for secret in ("_api_key", "_seerrng_api_key", "_password_hash", "_peers",
                        "_organizer_journal_key"):
             out.pop(secret, None)
+        # Everything else that carries a credential, by the same masking the
+        # dedicated endpoints already use. The dedicated endpoints masked these;
+        # this one did not, so GET/PUT /api/v1/config returned the IGDB token,
+        # notification webhook URLs and import-list keys in the clear.
+        for key, fields in MASKED_ITEM_FIELDS.items():
+            if isinstance(out.get(key), list):
+                out[key] = [mask_item(item, fields) for item in out[key]]
+        for key, value in list(out.items()):
+            if (isinstance(value, str) and value
+                    and any(t in key.lower() for t in _SECRET_KEY_WORDS)):
+                out[key] = SECRET_MASK
         return out
+
+    def restore_masked_items(self, patch: dict) -> dict:
+        """Undo masking in a settings patch so a masked echo never overwrites a secret."""
+        for key, fields in MASKED_ITEM_FIELDS.items():
+            items = patch.get(key)
+            if not isinstance(items, list):
+                continue
+            stored = {str(i.get("id")): i for i in self.store.settings.get(key, [])
+                      if isinstance(i, dict) and i.get("id")}
+            fixed = []
+            for item in items:
+                if isinstance(item, dict):
+                    old = stored.get(str(item.get("id")), {})
+                    item = dict(item)
+                    for f in fields:
+                        if item.get(f) in (SECRET_MASK, None) or (f in item and item[f] == ""
+                                                                  and old.get(f)):
+                            item[f] = old.get(f, "")
+                fixed.append(item)
+            patch[key] = fixed
+        for key in list(patch):
+            if (isinstance(patch[key], str) and patch[key] == SECRET_MASK
+                    and any(t in key.lower() for t in _SECRET_KEY_WORDS)):
+                patch[key] = self.store.settings.get(key, "")
+        return patch
 
     # --- inbound webhooks -------------------------------------------------
 
@@ -8040,6 +8095,7 @@ def make_handler(service: ROMarr):
                 return body_error
 
             if route.path == "/api/v1/config":
+                body = service.restore_masked_items(dict(body))
                 updated = service.store.update_settings(body)
                 if "remote_path_mappings" in body:
                     service._apply_remote_path_mappings()
