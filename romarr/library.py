@@ -427,6 +427,45 @@ def platform_dir(library_root: Path, platform: "Platform | str", *,
     return base
 
 
+_SWITCH_TID = re.compile(r"(?<![0-9A-Fa-f])([0-9A-Fa-f]{16})(?![0-9A-Fa-f])")
+_SWITCH_MEDIA_DIRS = {"3dboxes", "backcovers", "covers", "miximages", "miximages_v2",
+                      "physicalmedia", "screenshots", "marquees", "videos", "manuals"}
+
+
+def switch_attach_dir(file_name: str, platform_dir: Path) -> Path | None:
+    """Where an update or DLC for a game already on disk belongs, if it is there.
+
+    RomM files extra content by sub-folder name inside the game's own folder
+    (`update/`, `dlc/`). An update dropped loose in the platform folder shows
+    up as a second game, so when the base game's folder exists the file goes
+    inside it. Returns None when the file is not an update/DLC or no folder
+    holds the base game; the caller then keeps its normal destination.
+    """
+    from .titled import base_tid_of, classify_tid
+    m = _SWITCH_TID.search(file_name)
+    if not m:
+        return None
+    tid = m.group(1)
+    kind = classify_tid(tid)
+    if kind not in ("update", "dlc"):
+        return None
+    base = (base_tid_of(tid) or "").upper()
+    if not base or not platform_dir.is_dir():
+        return None
+    try:
+        for entry in platform_dir.iterdir():
+            if not entry.is_dir() or entry.name.startswith(".") \
+                    or entry.name.lower() in _SWITCH_MEDIA_DIRS:
+                continue
+            for f in entry.rglob("*"):
+                if f.is_file() and base in {t.upper() for t in _SWITCH_TID.findall(f.name)
+                                             if (base_tid_of(t) or "").upper() == base}:
+                    return entry / kind
+    except OSError:
+        return None
+    return None
+
+
 def import_rom(download: Path, platform: Platform, library_root: Path, *,
                overwrite: bool = False, dats=None,
                require_verified: bool = False,
@@ -481,7 +520,11 @@ def import_rom(download: Path, platform: Platform, library_root: Path, *,
                                    layout=layout, translation=translation,
                                    folder_name=folder_name)
 
-        if platform.slug == "switch" and route_switch_catalog:
+        if platform.slug == "switch":
+            attach = switch_attach_dir(Path(chosen.primary).name, target_dir)
+            if attach is not None:
+                target_dir = attach
+        if platform.slug == "switch" and route_switch_catalog and target_dir.name not in ("update", "dlc"):
             # TitleDB classifies an ID read from the filename; it does not
             # verify the package header or contents. This routing stays behind
             # an explicit setting and never changes the reported DAT verdict.
