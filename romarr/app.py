@@ -3172,6 +3172,72 @@ class ROMarr:
                 item["waiting"] = True     # the client does not list it (yet)
         return items
 
+    def switch_view(self, refresh: bool = False) -> dict:
+        """The Switch report with the DLC you chose to ignore taken out."""
+        raw = self.switch_updates(refresh=refresh)
+        ignored = {str(t).upper() for t in (self.store.settings.get("ignored_dlc") or [])}
+        items = []
+        for row in raw["items"]:
+            r = dict(row)
+            missing = row.get("dlc_missing") or []
+            r["dlc_ignored"] = [m for m in missing if m["tid"] in ignored]
+            r["dlc_missing"] = [m for m in missing if m["tid"] not in ignored]
+            if r.get("dlc_total") is not None:
+                r["dlc_total"] = max(0, r["dlc_total"] - len(r["dlc_ignored"]))
+            items.append(r)
+        gaps = [i for i in items if i["update"] in ("missing", "outdated") or i["dlc_missing"]]
+        summary = dict(raw["summary"], games_with_gaps=len(gaps),
+                       update_gaps=sum(1 for i in items if i["update"] in ("missing", "outdated")),
+                       dlc_gaps=sum(len(i["dlc_missing"]) for i in items),
+                       dlc_ignored=sum(len(i["dlc_ignored"]) for i in items))
+        return dict(raw, items=items, summary=summary)
+
+    def switch_gap_map(self) -> dict:
+        """RomM game id -> what is missing, from the cache only (never blocks)."""
+        count = self.switch_gap_count()
+        if count is None:
+            return {"ready": False, "games": {}, "summary": {}}
+        view = self.switch_view()
+        games = {}
+        for i in view["items"]:
+            kinds = [k for k, hit in (("update", i["update"] in ("missing", "outdated")),
+                                      ("dlc", bool(i["dlc_missing"]))) if hit]
+            if kinds and i.get("rom_id"):
+                games[i["rom_id"]] = kinds
+        return {"ready": True, "games": games, "summary": view["summary"]}
+
+    def set_ignored_dlc(self, tids, ignored: bool) -> int:
+        current = {str(t).upper() for t in (self.store.settings.get("ignored_dlc") or [])}
+        wanted = {str(t).upper() for t in tids if re.fullmatch(r"[0-9A-Fa-f]{16}", str(t))}
+        current = (current | wanted) if ignored else (current - wanted)
+        self.store.settings["ignored_dlc"] = sorted(current)
+        self.store.save()
+        return len(current)
+
+    def switch_gap_count(self) -> int | None:
+        """Games with an update or DLC gap, from the cached report only.
+
+        The nav badge polls this every few seconds, so it never builds the
+        report itself: a missing or stale cache starts one build in the
+        background and answers with what it has.
+        """
+        cache = getattr(self, "_switch_cache", None)
+        stale = cache is None or time.time() - cache[0] > 1800
+        if stale and not getattr(self, "_switch_building", False):
+            self._switch_building = True
+
+            def build():
+                try:
+                    self.switch_updates(refresh=True)
+                except Exception as err:  # noqa: BLE001
+                    log.warning("Switch report build failed: %s", err.__class__.__name__)
+                finally:
+                    self._switch_building = False
+            threading.Thread(target=build, name="switch-report", daemon=True).start()
+        if cache is None:
+            return None
+        return self.switch_view()["summary"]["games_with_gaps"]
+
     def drop_request(self, game: str, platform_name: str) -> bool:
         """Take something off Wanted without pretending it arrived.
 
