@@ -60,6 +60,7 @@ from .dat import DatIndex, parse_dat
 from .dat_catalog import catalog_policy, dat_catalog_game, dat_catalog_page, dat_catalog_platforms
 from .decompress import run_batch as run_decompress_batch, scan_compressed
 from .titled import TitleDBIndex, build_index as build_titled_index, validate_switch_rom
+from .switch_report import report as switch_report_build
 from .downloaders import (
     CLIENT_TYPES, NZBGet, NzbgetConfig, SABnzbd, SabConfig, build_client,
     hand_off_with_id, match_queue_item, matching_queue_items, merge_secrets, pick_client, redact,
@@ -116,7 +117,7 @@ LIST_SECRETS = ("api_key", "openxbl_key", "npsso", "itchio_key",
                 "battlenet_cookie", "humble_cookie")
 from .scheduler import Scheduler, next_search_due
 from .selection import best_release, judge, score
-from .store import Event, QueueItem, SeerrRequest, Store
+from .store import Event, QueueItem, SeerrRequest, Store, now_iso
 from .ui import page as ui_page
 from .ui import link_page as ui_link_page
 from .ui import login_page as ui_login_page
@@ -2961,6 +2962,22 @@ class ROMarr:
                 "meta": (self.store.game_meta(str(getattr(row, "platform", "") or slug), name)
                          if name else {}),
                 "romm_url": f"{romm}/rom/{rom_id}" if romm and rom_id else ""}
+
+    def switch_updates(self, refresh: bool = False) -> dict:
+        """Missing updates and DLC for the Switch folders, cached for half an hour."""
+        cache = getattr(self, "_switch_cache", None)
+        if cache and not refresh and time.time() - cache[0] < 1800:
+            return cache[1]
+        index = self.ensure_titled()
+        roots = {slug: Path(self.library) / slug for slug in ("switch", "switch-2")}
+        rep = switch_report_build(roots, index)
+        library, _, _ = self._library_cache
+        ids = {(self._slug_of(g), self._title_key(g.name)): str(g.id) for g in (library or [])}
+        for row in rep["items"]:
+            row["rom_id"] = ids.get((row["platform"], self._title_key(row["game"])), "")
+        rep["generated"] = now_iso()
+        self._switch_cache = (time.time(), rep)
+        return rep
 
     def drop_request(self, game: str, platform_name: str) -> bool:
         """Take something off Wanted without pretending it arrived.
@@ -6393,6 +6410,14 @@ def make_handler(service: ROMarr):
                 if not term or len(term) > 200:
                     return self._json(400, {"error": "q is required"})
                 return self._json(200, service.lookup(term, (query.get("platform") or [""])[0]))
+            if route.path == "/api/v1/switch/updates":
+                rep = service.switch_updates(refresh=(query.get("refresh") or [""])[0] == "1")
+                game = (query.get("game") or [""])[0]
+                if game:
+                    key = service._title_key(game)
+                    rep = dict(rep, items=[i for i in rep["items"]
+                                           if service._title_key(i["game"]) == key])
+                return self._json(200, rep)
             if route.path == "/api/v1/game/detail":
                 return self._json(200, service.game_detail(
                     (query.get("platform") or [""])[0],
