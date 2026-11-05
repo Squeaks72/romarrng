@@ -48,6 +48,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, unquote_plus, urlparse
 
+import requests
+
 import time
 
 from .libraries import (
@@ -55,6 +57,7 @@ from .libraries import (
     load_backend_plugins, merge_library_secrets, redact_library, route_library,
 )
 from .clients import QBittorrent, QbitConfig, Romm, RommConfig
+from . import soundtracks as soundtracks_mod
 from . import hub  # ROM Hub bridge -- the Cartridge plugin layer
 from .dat import DatIndex, parse_dat
 from .dat_catalog import catalog_policy, dat_catalog_game, dat_catalog_page, dat_catalog_platforms
@@ -3013,10 +3016,66 @@ class ROMarr:
         rom_id = str(getattr(row, "id", "") or "") if row is not None else ""
         return {"platform": slug, "platform_name": platform.name if platform else slug,
                 "title": name, "in_library": row is not None, "item": view,
-                "wanted": wanted, "queue": queue, "history": history,
+                "rom_id": rom_id, "wanted": wanted, "queue": queue, "history": history,
                 "meta": (self.store.game_meta(str(getattr(row, "platform", "") or slug), name)
                          if name else {}),
                 "romm_url": f"{romm}/rom/{rom_id}" if romm and rom_id else ""}
+
+    # ------------------------------------------------------------ soundtracks --
+
+    def soundtrack_store(self) -> "soundtracks_mod.Soundtracks":
+        """The soundtrack service, created on first use so an install that never opens a game page pays nothing."""
+        st = getattr(self, "_soundtracks", None)
+        if st is None:
+            st = soundtracks_mod.Soundtracks(soundtracks_mod.db_path_for(
+                self._env.get("ROMARR_DATA", "/opt/romarr/romarr.json")))
+            self._soundtracks = st
+        return st
+
+    def _soundtrack_target(self, game_id: str) -> tuple[dict, "soundtracks_mod.RommApi"]:
+        """The library game with this RomM id, and an API client for the RomM it lives in.
+
+        Soundtracks are a RomM feature (its Jukebox), so a game from any other
+        kind of library has no target. The login is the library entry's own:
+        nothing about RomM is configured here a second time.
+        """
+        game_id = str(game_id or "").strip()
+        if not game_id.isdigit():
+            raise ValueError("id must be a RomM game id")
+        library, _, _ = self._library_cache
+        row = next((g for g in (library or []) if str(getattr(g, "id", "")) == game_id), None)
+        if row is None:
+            raise LookupError("that game is not in the library")
+        romms = [(cfg, backend) for cfg, backend in self.game_libraries if isinstance(backend, Romm)]
+        if row.source:
+            romms = [(c, b) for c, b in romms
+                     if (c.get("name") or getattr(b, "name", "library")) == row.source] or romms
+        if not romms:
+            raise RuntimeError("soundtracks need a RomM library, and none is configured")
+        cfg, backend = romms[0]
+        game = {"id": game_id, "name": row.name, "platform_slug": self._slug_of(row),
+                "platform_name": str(getattr(row, "platform", "") or "")}
+        return game, soundtracks_mod.RommApi(cfg.get("url") or "", backend.write_token)
+
+    def soundtrack_sources(self) -> tuple[str, ...]:
+        raw = str(self.store.settings.get("soundtrack_sources") or "zophar,archive")
+        return tuple(x.strip() for x in raw.split(",") if x.strip())
+
+    def soundtrack_game(self, game_id: str) -> dict:
+        game, api = self._soundtrack_target(game_id)
+        return self.soundtrack_store().status(game, api)
+
+    def soundtrack_search(self, game_id: str) -> dict:
+        game, _api = self._soundtrack_target(game_id)
+        return self.soundtrack_store().search(game, self.soundtrack_sources())
+
+    def soundtrack_download(self, game_id: str, candidate: dict, fmt: str) -> dict:
+        game, api = self._soundtrack_target(game_id)
+        return self.soundtrack_store().start_download(game, api, candidate, fmt)
+
+    def soundtrack_undo(self, game_id: str) -> dict:
+        game, api = self._soundtrack_target(game_id)
+        return self.soundtrack_store().undo(game, api)
 
     def switch_updates(self, refresh: bool = False) -> dict:
         """Missing updates and DLC for the Switch folders, cached for half an hour."""
@@ -6089,6 +6148,27 @@ def make_handler(service: ROMarr):
         def do_DELETE(self):
             return self._gate(self._delete)
 
+        def _soundtrack_reply(self, fn):
+            """Run a soundtrack call and turn its failures into plain JSON replies.
+
+            Nothing here echoes a request header or a login: RomM errors are
+            reduced to a class name or the status RomM gave.
+            """
+            try:
+                return self._json(200, fn())
+            except LookupError as exc:
+                return self._json(404, {"error": str(exc)})
+            except soundtracks_mod.JobBusy as exc:
+                return self._json(409, {"error": str(exc)})
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
+            except RuntimeError as exc:
+                return self._json(409, {"error": str(exc)})
+            except soundtracks_mod.RommError as exc:
+                return self._json(502, {"error": f"RomM answered {exc.status}"})
+            except requests.RequestException as exc:
+                return self._json(502, {"error": f"could not reach the source or RomM ({exc.__class__.__name__})"})
+
         def _get(self):
             route = urlparse(self.path)
             query = parse_qs(route.query)
@@ -6571,6 +6651,14 @@ def make_handler(service: ROMarr):
                     rep = dict(rep, items=[i for i in rep["items"]
                                            if service._title_key(i["game"]) == key])
                 return self._json(200, rep)
+            if route.path == "/api/v1/soundtracks/game":
+                return self._soundtrack_reply(lambda: service.soundtrack_game(
+                    (query.get("id") or [""])[0]))
+            if route.path == "/api/v1/soundtracks/search":
+                return self._soundtrack_reply(lambda: service.soundtrack_search(
+                    (query.get("id") or [""])[0]))
+            if route.path == "/api/v1/soundtracks/jobs":
+                return self._json(200, {"items": service.soundtrack_store().jobs()})
             if route.path == "/api/v1/game/detail":
                 return self._json(200, service.game_detail(
                     (query.get("platform") or [""])[0],
@@ -7781,6 +7869,15 @@ def make_handler(service: ROMarr):
             if route.path == "/api/v1/queue/clear":
                 return self._json(200, service.clear_queue(
                     str(body.get("state") or "")))
+            if route.path == "/api/v1/soundtracks/download":
+                if not isinstance(body, dict) or not isinstance(body.get("candidate"), dict):
+                    return self._json(400, {"error": "id, candidate and format are required"})
+                return self._soundtrack_reply(lambda: service.soundtrack_download(
+                    str(body.get("id") or ""), body["candidate"], str(body.get("format") or "")))
+            if route.path == "/api/v1/soundtracks/undo":
+                if not isinstance(body, dict):
+                    return self._json(400, {"error": "expected a JSON object"})
+                return self._soundtrack_reply(lambda: service.soundtrack_undo(str(body.get("id") or "")))
             if route.path == "/api/v1/game/meta":
                 platform = str(body.get("platform") or "")
                 game = str(body.get("game") or "")

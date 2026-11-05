@@ -181,6 +181,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # back to the library connection address, which may be an address only the
     # server can reach.
     "romm_public_url": "",
+    # Which sources a game page's Soundtrack card searches, comma separated.
+    # Zophar's Domain and the Internet Archive; KHInsider and the rest are
+    # behind bot challenges and are only ever linked, never scraped.
+    "soundtrack_sources": "zophar,archive",
     # Read ROM hashes from the library server so netplay can match on bytes.
     # Daily and at startup; off only if you never want the traffic.
     "hash_index": True,

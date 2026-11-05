@@ -51,6 +51,11 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
                             "origin and source."),
     "/api/v1/integration/ping": ("GET", "Authenticated version handshake for "
                                          "SeerrNG software requests."),
+    "/api/v1/soundtracks/game": ("GET", "What soundtrack RomM holds for a game (`id` = RomM game id) and what ROMarr added."),
+    "/api/v1/soundtracks/search": ("GET", "Ranked soundtrack candidates from the enabled sources, plus manual-search links."),
+    "/api/v1/soundtracks/download": ("POST", "Start a background download-and-upload of a candidate into RomM's Jukebox; one job per game."),
+    "/api/v1/soundtracks/jobs": ("GET", "Soundtrack jobs, newest first, with progress."),
+    "/api/v1/soundtracks/undo": ("POST", "Remove exactly the soundtrack files ROMarr added to a game."),
     "/api/v1/patches/search": ("GET", "Search patch projects for the Patches page."),
     "/api/v1/integration/patches/search": ("GET", "Search translation, hack and improvement projects."),
     "/api/v1/integration/patches/projects/{projectId}": ("GET", "Read one patch project with its versions."),

@@ -424,6 +424,41 @@ class Romm:
         self._token_from_login = bool(self._token)
         return self._token or None
 
+    #: What a soundtrack upload needs on top of reading. Kept apart from SCOPES
+    #: on purpose: the token ROMarr uses all day stays read-only, and this one is
+    #: asked for only when somebody uploads or removes a soundtrack.
+    WRITE_SCOPES = "roms.read roms.write"
+
+    def write_token(self, refresh: bool = False) -> str | None:
+        """A bearer token that may edit ROMs, for soundtrack uploads and undo.
+
+        An operator-configured API token is used as it is (RomM decides what it
+        may do). Otherwise this is a second password grant with the write scope,
+        cached apart from the read-only token and renewed shortly before it
+        expires. Returns None when there is nothing to sign in with, or RomM
+        refuses; the body of a refusal is never logged.
+        """
+        if self._config.api_token:
+            return self._config.api_token
+        cached = getattr(self, "_write_token", "")
+        if cached and not refresh:
+            expiry = self._jwt_expiry(cached)
+            if expiry is None or expiry - time.time() >= self.REFRESH_MARGIN:
+                return cached
+        if not (self._config.username and self._config.password):
+            return None
+        response = self._session.post(
+            f"{self._config.base_url.rstrip('/')}/api/token",
+            data={"grant_type": "password", "username": self._config.username,
+                  "password": self._config.password, "scope": self.WRITE_SCOPES},
+            timeout=self._config.timeout)
+        if not response.ok:
+            log.warning("romm write auth failed with status %s", response.status_code)
+            self._write_token = ""
+            return None
+        self._write_token = response.json().get("access_token", "")
+        return self._write_token or None
+
     def _token_refused_with_500(self) -> bool:
         """Recognize RomM 5.3.1's expired-token 500 without masking outages.
 
