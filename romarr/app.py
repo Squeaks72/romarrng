@@ -6701,6 +6701,8 @@ def make_handler(service: ROMarr):
                 return self._json(200, {"available": hub.available(),
                                         "sandboxed": confined,
                                         "sandbox_detail": why,
+                                        "isolation": ("uid" if hub._uid_mode()
+                                                      else "landlock"),
                                         "searchable_plugins": searchable,
                                         # The Plugins page says out loud what
                                         # enabling a plugin now does: its

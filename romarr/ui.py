@@ -407,6 +407,42 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent-line);
 .check{display:flex;align-items:center;gap:9px;margin-bottom:11px;
   color:var(--fg);font-size:13px;cursor:pointer}
 .check input{width:16px;height:16px;accent-color:var(--accent);flex:none}
+/* Searchable single-choice picker: stands in for a <select> when the list is
+   long (49 platforms). The hidden input keeps the id and .value, so code that
+   reads $('#id').value is unchanged. */
+.pp{position:relative;display:inline-block;min-width:230px;max-width:100%}
+.pp-btn{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  width:100%;padding:8px 12px;background:var(--bg);color:var(--fg);
+  border:1px solid var(--line);border-radius:var(--r-sm);font:inherit;font-size:13px;
+  cursor:pointer;text-align:start;transition:border-color var(--t),box-shadow var(--t)}
+.pp-btn:hover{border-color:var(--accent-line)}
+.pp.open .pp-btn,.pp-btn:focus-visible{border-color:var(--accent-line);box-shadow:var(--ring);outline:none}
+.pp-btn::after{content:"";flex:none;width:7px;height:7px;margin-inline-start:4px;
+  border-inline-end:2px solid var(--dim);border-bottom:2px solid var(--dim);
+  transform:rotate(45deg) translateY(-2px)}
+.pp-cur{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pp-cur i{font-style:normal;color:var(--dim);margin-inline-start:6px;font-size:12px}
+.pp-panel{position:absolute;z-index:40;inset-inline-start:0;top:calc(100% + 6px);
+  width:max(100%,340px);max-width:calc(100vw - 32px);background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-md);box-shadow:var(--shadow-3);
+  padding:8px}
+.pp-panel[hidden]{display:none}
+.pp-q{margin-bottom:6px}
+.pp-list{list-style:none;margin:0;padding:0;max-height:min(320px,50vh);overflow-y:auto}
+.pp-opt{display:flex;justify-content:space-between;gap:12px;align-items:baseline;
+  padding:7px 10px;border-radius:var(--r-sm);cursor:pointer;font-size:13px}
+.pp-opt small{color:var(--dim);font-size:11.5px;white-space:nowrap}
+.pp-opt.act{background:var(--accent-soft)}
+.pp-opt[aria-selected=true]{font-weight:650}
+.pp-none{padding:10px;color:var(--dim);font-size:12.5px}
+.libstats{display:flex;flex-wrap:wrap;gap:4px 18px;align-items:baseline;margin:0 0 10px}
+.libstats b{font-size:18px;font-weight:650;letter-spacing:-.02em;margin-inline-end:5px}
+.libstats span{font-size:12.5px;color:var(--dim)}
+.libstats details{flex-basis:100%;font-size:12.5px;color:var(--dim)}
+.libstats summary{cursor:pointer;width:max-content}
+.lfrow{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center}
+.lfrow select{width:auto;max-width:100%;padding:6px 10px;font-size:12.5px}
+#page-title:focus,#main-content:focus{outline:none}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));
   gap:16px}
 .tile{background:var(--surface);border:1px solid var(--line);
@@ -1427,11 +1463,16 @@ RENDER.hub=async(renderEpoch=routeEpoch)=>{
     (confined
       ? '<div class="panel-note" style="border-inline-start:3px solid var(--ok)">'
         +'<b>Plugins run confined.</b> Each runs as its own subprocess with no '
-        +'library token or sockets of its own. Landlock limits file access to '
-        +'plugin code, verified assets and runtime files; writes stay in bounded '
-        +'tmpfs scratch. It cannot change file permissions or spawn child '
-        +'processes. Network requests go through ROMarr and can reach only '
-        +'declared hosts.</div>'
+        +'library token or sockets of its own. '
+        +(hs.isolation==='uid'
+          ? 'This host has no Landlock, so plugins run as a separate unprivileged '
+            +'user: they cannot read ROMarr’s settings file or any credential, and '
+            +'cannot change user or regain privileges. Writes stay in bounded tmpfs '
+            +'scratch. '
+          : 'Landlock limits file access to plugin code, verified assets and '
+            +'runtime files; writes stay in bounded tmpfs scratch. It cannot change '
+            +'file permissions or spawn child processes. ')
+        +'Network requests go through ROMarr and can reach only declared hosts.</div>'
       : '<div class="panel-note panel-warn"><b>Plugins run with no '
         +'confinement.</b> '+appMessageMarkup(hs.sandbox_detail||'')+' A plugin you install '
         +'may run without one or both boundaries if you explicitly override '
@@ -1645,6 +1686,75 @@ RENDER.hub=async(renderEpoch=routeEpoch)=>{
   render(await load());
 };
 
+// Searchable single-choice picker (see .pp in the stylesheet). `items` is
+// [{value,label,meta}]; the caller puts the "any" row in front itself.
+function pickerHtml(id,items,value,ariaLabel){
+  const cur=items.find(x=>x.value===value)||items[0]||{value:'',label:''};
+  return `<div class="pp" data-pp="${esc(id)}">
+    <input type="hidden" id="${esc(id)}" value="${esc(cur.value)}">
+    <button type="button" class="pp-btn" aria-haspopup="listbox" aria-expanded="false"
+      aria-controls="${esc(id)}-list" aria-label="${esc(ariaLabel||'Choose')}">
+      <span class="pp-cur">${esc(cur.label)}${cur.meta?`<i>${esc(cur.meta)}</i>`:''}</span></button>
+    <div class="pp-panel" hidden>
+      <input type="search" class="pp-q" placeholder="Search…" aria-label="Search the list"
+        autocomplete="off" role="combobox" aria-expanded="true" aria-controls="${esc(id)}-list">
+      <ul class="pp-list" id="${esc(id)}-list" role="listbox"></ul></div></div>`;
+}
+document.addEventListener('mousedown',e=>{
+  document.querySelectorAll('.pp.open').forEach(b=>{
+    if(!b.contains(e.target)) b.querySelector('.pp-btn').dispatchEvent(new CustomEvent('pp-close'));});
+},true);
+const platPickerItems=any=>(any?[{value:'',label:'Any platform'}]:[])
+  .concat(PLATFORMS.map(p=>({value:p.slug,label:p.name})));
+function bindPicker(root,id,items,onChange){
+  const box=root.querySelector('[data-pp="'+CSS.escape(id)+'"]');
+  if(!box) return;
+  const btn=box.querySelector('.pp-btn'), panel=box.querySelector('.pp-panel');
+  const q=box.querySelector('.pp-q'), list=box.querySelector('.pp-list');
+  const hid=box.querySelector('input[type=hidden]'), cur=box.querySelector('.pp-cur');
+  let shown=[], act=0;
+  const paint=()=>{
+    const f=q.value.trim().toLowerCase();
+    shown=items.filter(x=>!f||x.label.toLowerCase().includes(f));
+    if(act>=shown.length) act=Math.max(0,shown.length-1);
+    list.innerHTML=shown.length?shown.map((x,i)=>`<li class="pp-opt${i===act?' act':''}" role="option"
+      id="${esc(id)}-o${i}" data-i="${i}" aria-selected="${x.value===hid.value}"><span>${esc(x.label)}</span>${
+      x.meta?`<small>${esc(x.meta)}</small>`:''}</li>`).join('')
+      :'<li class="pp-none">Nothing matches.</li>';
+    q.setAttribute('aria-activedescendant',shown.length?`${id}-o${act}`:'');
+    const a=list.querySelector('.act'); if(a&&a.scrollIntoView) a.scrollIntoView({block:'nearest'});
+  };
+  const close=(refocus)=>{
+    panel.hidden=true; box.classList.remove('open'); btn.setAttribute('aria-expanded','false');
+    if(refocus) btn.focus();
+  };
+  const open=()=>{
+    panel.hidden=false; box.classList.add('open'); btn.setAttribute('aria-expanded','true');
+    q.value=''; act=Math.max(0,items.findIndex(x=>x.value===hid.value)); paint(); q.focus();
+  };
+  const choose=i=>{
+    const x=shown[i]; if(!x) return;
+    hid.value=x.value; cur.innerHTML=esc(x.label)+(x.meta?`<i>${esc(x.meta)}</i>`:'');
+    close(true);
+    if(onChange) onChange(x.value,hid);
+  };
+  btn.onclick=()=>panel.hidden?open():close(true);
+  btn.addEventListener('pp-close',()=>close(false));
+  q.oninput=()=>{act=0;paint();};
+  q.onkeydown=e=>{
+    if(e.key==='ArrowDown'){e.preventDefault();act=Math.min(act+1,shown.length-1);paint();}
+    else if(e.key==='ArrowUp'){e.preventDefault();act=Math.max(act-1,0);paint();}
+    else if(e.key==='Enter'){e.preventDefault();choose(act);}
+    else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close(true);}
+    else if(e.key==='Tab') close(false);
+  };
+  list.onmousedown=e=>e.preventDefault();
+  list.onclick=e=>{const li=e.target.closest('.pp-opt'); if(li) choose(Number(li.dataset.i));};
+  list.onmousemove=e=>{const li=e.target.closest('.pp-opt');
+    if(li&&Number(li.dataset.i)!==act){act=Number(li.dataset.i);
+      list.querySelectorAll('.pp-opt').forEach((n,i)=>n.classList.toggle('act',i===act));}};
+}
+
 let LIB={platform:'',genre:'',region:'',decade:'',origin:'',source:'',sort:'',
          offset:0,limit:120};
 // What each catalogue is called on screen. Spelled out rather than shown as
@@ -1698,29 +1808,16 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
   // 8,112" looking like the same claim, when not one of those 94,415 is a
   // file on this disk. A chip whose contents are wholly or partly catalogued
   // now shows the split and says which is which on hover.
-  const chips=(d.platforms||[]).map(x=>{
-    const part=x.cached!==undefined&&x.cached<x.count;
-    const cat=x.catalogued||0, disk=x.on_disk||0;
-    const mixed=cat>0;
-    const tip=part&&mixed
-      ? ['Loaded {cached} of {total} so far — on disk: {disk} · catalogued elsewhere: {catalogued}',
-         {cached:fmt(x.cached),total:fmt(x.count),disk:fmt(disk),catalogued:fmt(cat)}]
-      : part
-        ? ['Loaded {cached} of {total} so far',{cached:fmt(x.cached),total:fmt(x.count)}]
-        : mixed
-          ? ['On disk: {disk} · Catalogued elsewhere: {catalogued}',
-             {disk:fmt(disk),catalogued:fmt(cat)}]
-          : null;
-    const tipAttrs=tip
-      ? ` title="${esc(translateTemplate(tip[0],tip[1],readInterfaceLanguage()))}"
-          data-i18n-title-template-key="${esc(stableLocalizationKey(tip[0])||tip[0])}"
-          data-i18n-title-values="${esc(JSON.stringify(tip[1]))}"`
-      : '';
-    return `<button class="btn ${LIB.platform===x.platform?'':'ghost'}" data-plat="${esc(x.platform)}"
-      style="padding:4px 10px;font-size:12px"${tipAttrs}>${esc(x.platform)}
-      <span style="color:var(--dim)">${part?fmt(x.cached)+'/'+fmt(x.count):fmt(x.count)}</span>
-      ${mixed?`<span style="color:var(--dim);font-size:11px">${interfaceTemplateMarkup('ui.count-here.ad5e58f564',{count:fmt(disk)})}</span>`:''}</button>`;
-  }).join('');
+  // 49 platforms do not fit as a wall of buttons, so they live in a searchable
+  // picker. The count is still the platform's whole row count; "N here" is the
+  // part that is a file on this disk, and a partly-read platform says so.
+  const platItems=[{value:'',label:'All platforms',meta:fmt(d.grand_total)}]
+    .concat((d.platforms||[]).map(x=>{
+      const part=x.cached!==undefined&&x.cached<x.count;
+      const cat=x.catalogued||0, disk=x.on_disk||0;
+      return {value:x.platform,label:x.platform,
+        meta:(part?fmt(x.cached)+'/'+fmt(x.count):fmt(x.count))+(cat>0?' · '+fmt(disk)+' here':'')};
+    }));
   const f=d.facets||{};
   const sel=(key,label,list,fmt)=>{
     if(!list||!list.length) return '';
@@ -1739,28 +1836,23 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
   // actually here. The middle number is the interesting one -- it is what
   // would have to be fetched or streamed before anybody could play it.
   const srcRows=(f.sources||[]).filter(x=>x.value!=='local');
-  const banner=`<div class="card" style="margin-bottom:12px">
-    <div class="st">
+  const readNote=T.counted_from==='cached rows'
+    ?`${interfaceTemplateMarkup('ui.read-count-rows-so-far-the-library-s.020b2c0f2b',{count:num(d.cached_total)})}${d.partial?' '+interfaceMarkup('ui.the-read-is-still-in-progress.cd7ca40347'):''}`
+    :((T.total!==null&&T.total!==undefined&&d.cached_total<T.total)
+      ?`${interfaceTemplateMarkup('ui.count-rows-are-loaded-and-browsable.7b49767919',{count:num(d.cached_total)})}${d.partial?' '+interfaceMarkup('ui.the-read-is-still-in-progress.cd7ca40347'):''}`:'');
+  const banner=`<div class="libstats">
       <div><b>${num(T.on_disk)}</b><span data-i18n="ui.on-disk-here.6d4649d06e">On disk here</span></div>
       <div><b>${num(T.catalogued)}</b><span data-i18n="ui.catalogued-streams.31a406530a">Catalogued, streams</span></div>
       <div><b>${num(T.total)}</b><span data-i18n="ui.total-known.d0c9d103f3">Total known</span></div>
-    </div>
-    ${srcRows.length?`<p class="help" style="margin:8px 0 0">
-      Catalogued entries by source:
-      ${srcRows.map(x=>`<b>${num(x.count)}</b> ${esc(SOURCE_LABEL[x.value]||x.value)}`)
-        .join(' · ')}. Source is read from the filename each indexer writes,
-      so anything ROMarr cannot place stays “source unknown” rather than
-      being filed under a guess.</p>`:''}
-    ${T.counted_from==='cached rows'
-      ?`<p class="help" style="margin:6px 0 0">${interfaceTemplateMarkup('ui.read-count-rows-so-far-the-library-s.020b2c0f2b',{count:num(d.cached_total)})}${d.partial?' '+interfaceMarkup('ui.the-read-is-still-in-progress.cd7ca40347'):''}</p>`
-      :((T.total!==null&&T.total!==undefined&&d.cached_total<T.total)
-        ?`<p class="help" style="margin:6px 0 0">${interfaceTemplateMarkup('ui.count-rows-are-loaded-and-browsable.7b49767919',{count:num(d.cached_total)})}${d.partial?' '+interfaceMarkup('ui.the-read-is-still-in-progress.cd7ca40347'):''}</p>`:'')}
-  </div>`;
-  const head=banner+`<div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:10px">
-      <button class="btn ${LIB.platform?'ghost':''}" data-plat=""
-        style="padding:4px 10px;font-size:12px"><span data-i18n="ui.all.a52ace420f">All</span>
-        <span style="color:var(--dim)">${fmt(d.grand_total)}</span></button>${chips}</div>
-    <div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:10px;align-items:center">
+      ${readNote?`<p class="help" style="flex-basis:100%;margin:0">${readNote}</p>`:''}
+      ${srcRows.length?`<details><summary>How these are counted</summary>
+        <p class="help" style="margin:6px 0 0">Catalogued entries by source:
+        ${srcRows.map(x=>`<b style="font-size:inherit">${num(x.count)}</b> ${esc(SOURCE_LABEL[x.value]||x.value)}`).join(' · ')}.
+        Source is read from the filename each indexer writes, so anything ROMarr cannot place
+        stays “source unknown” rather than being filed under a guess.</p></details>`:''}
+    </div>`;
+  const head=banner+`<div class="lfrow">
+      ${pickerHtml('lib-plat',platItems,LIB.platform,'Platform')}
       ${sel('genre','Any genre',f.genres)}
       ${sel('region','Any region',f.regions)}
       ${sel('decade','Any decade',f.decades)}
@@ -1776,7 +1868,7 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
       </select>
       ${(LIB.genre||LIB.region||LIB.decade||LIB.origin||LIB.source||LIB.sort)
         ?'<button class="btn ghost" id="lf-clear" data-i18n="ui.clear-filters.7179ea0035" style="padding:4px 10px;font-size:12px">Clear filters</button>':''}
-      ${(f.genres||[]).length?`<span class="help" style="margin:0;font-size:11.5px" data-i18n-template="genre/year known for {identified} of {total} ({coverage}%) — run a metadata scan in your library server to raise it"
+      ${(f.genres||[]).length?`<span class="help" style="margin:0;font-size:11.5px;flex-basis:100%" data-i18n-template="genre/year known for {identified} of {total} ({coverage}%) — run a metadata scan in your library server to raise it"
         data-i18n-values="${esc(JSON.stringify({identified:fmt(f.identified),total:fmt(d.grand_total),coverage:fmt(coverage)}))}">${esc(translateTemplate('genre/year known for {identified} of {total} ({coverage}%) — run a metadata scan in your library server to raise it',{identified:fmt(f.identified),total:fmt(d.grand_total),coverage:fmt(coverage)}))}</span>`:''}
     </div>
     <p class="help" style="margin-bottom:10px">
@@ -1789,7 +1881,7 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
   if(!items.length){
     p.innerHTML=head+`<div class="empty">
       ${q||LIB.platform?'<span data-i18n="ui.no-game-matches-that.0cda910221">No game matches that.</span>':'<span data-i18n="ui.no-games-returned-by-the-library.342cfd2c29">No games returned by the library.</span>'}</div>`;
-    applyInterfaceLanguage(); bindLibraryChips(p); return;
+    applyInterfaceLanguage(); bindLibraryChips(p,platItems); return;
   }
   // The shelf: status, rating and notes set by the operator, overlaid on the
   // grid. One fetch for the whole page -- the metadata is tiny.
@@ -1819,7 +1911,7 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
     if(live)live.textContent=d.error?'Could not load the game library.':fmt(d.total||0)+' games found.';
   }
   applyInterfaceLanguage();
-  bindLibraryChips(p);
+  bindLibraryChips(p,platItems);
   const moreBtn=p.querySelector('#lib-more');
   if(moreBtn) moreBtn.onclick=()=>{LIB.limit+=240;go('library');};
   document.querySelectorAll('[data-shelf]').forEach(t=>t.onclick=()=>
@@ -1828,9 +1920,9 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
         +`${(items[Number(t.dataset.shelf)].name||'').toLowerCase()}`]||{}));
 };
 
-function bindLibraryChips(p){
-  p.querySelectorAll('[data-plat]').forEach(b=>b.onclick=()=>{
-    LIB.platform=b.dataset.plat; LIB.offset=0; LIB.limit=120;
+function bindLibraryChips(p,platItems){
+  bindPicker(p,'lib-plat',platItems||[],v=>{
+    LIB.platform=v; LIB.offset=0; LIB.limit=120;
     go('library');
   });
   p.querySelectorAll('[data-lf]').forEach(s=>s.onchange=()=>{
@@ -1891,11 +1983,11 @@ RENDER.add=async()=>{
       <div class="field" style="flex:1;margin:0"><label data-i18n="ui.game.5c412a2620">Game</label>
         <input type="text" id="g-name" placeholder="Super Mario World" lang="und" dir="auto"></div>
       <div class="field" style="width:230px;margin:0"><label data-i18n="ui.platform.c78ffe1957">Platform</label>
-        <select id="g-plat">${PLATFORMS.map(p=>
-          `<option value="${esc(p.slug)}">${esc(p.name)}</option>`).join('')}</select></div>
+        ${pickerHtml('g-plat',platPickerItems(false),(PLATFORMS[0]||{}).slug,'Platform')}</div>
       <button class="btn" id="g-go" data-i18n="ui.search-grab.5b6a3f6d1c" style="margin-top:20px">Search &amp; Grab</button>
     </div>
     <div id="g-out" style="margin-top:16px"></div></div>`;
+  bindPicker($('#page'),'g-plat',platPickerItems(false));
   applyInterfaceLanguage();
   $('#g-go').onclick=async()=>{
     const game=$('#g-name').value.trim(), platform=$('#g-plat').value;
@@ -1922,12 +2014,12 @@ RENDER.search=async()=>{
       <div class="field" style="flex:1;margin:0"><label data-i18n="ui.game.5c412a2620">Game</label>
         <input type="text" id="s-name" placeholder="Phantasy Star IV" lang="und" dir="auto"></div>
       <div class="field" style="width:230px;margin:0"><label data-i18n="ui.platform.c78ffe1957">Platform</label>
-        <select id="s-plat"><option value="" data-i18n="ui.any-platform.063cc42e92">Any platform</option>${PLATFORMS.map(p=>
-          `<option value="${esc(p.slug)}">${esc(p.name)}</option>`).join('')}</select></div>
+        ${pickerHtml('s-plat',platPickerItems(true),'','Platform')}</div>
       <button class="btn" id="s-go" data-i18n="ui.search.49c266baaa" style="margin-top:20px">Search</button>
     </div>
     <p class="help" style="margin-top:10px" data-i18n="ui.without-a-platform-there-is-no-platf.987f2bc241">Without a platform there is no platform evidence to score on, so the ranking means less. Pick one when you can.</p>
     <div id="s-out" style="margin-top:16px"></div></div>`;
+  bindPicker($('#page'),'s-plat',platPickerItems(true));
   applyInterfaceLanguage();
 
   const mb=n=>n>=1048576?(n/1048576).toLocaleString(getRegionalLocale(),{maximumFractionDigits:1})+' MB'
