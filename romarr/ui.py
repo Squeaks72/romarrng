@@ -439,6 +439,9 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent-line);
 .gh-facts dt{color:var(--dim)}
 .gh-facts dd{margin:0}
 .tablewrap{overflow-x:auto}
+.alert-bar{margin-bottom:12px;padding:12px 16px;border-radius:var(--r-md);background:color-mix(in srgb,var(--warn) 18%,var(--surface));border:1px solid var(--warn);border-inline-start-width:5px;color:var(--fg);font-size:14px}
+.tile .gap{position:absolute;top:8px;inset-inline-start:8px;background:var(--warn);color:var(--warn-ink);font-size:11px;font-weight:700;padding:2px 8px;border-radius:var(--r-pill);box-shadow:var(--shadow-2)}
+.tile{position:relative}
 .fmtrow{display:grid;grid-template-columns:200px 1fr auto;gap:8px;align-items:center}
 .fmtrow .help{grid-column:1/-1}
 @media(max-width:700px){.fmtrow{grid-template-columns:1fr auto}.fmtrow input{grid-column:1/-1}}
@@ -837,7 +840,7 @@ NAV = [
     ("Library",  [("library", "Games", "games"),
                   ("organize", "Identify & Organize", None), ("add", "Add New", None),
                   ("discover", "Discover", None), ("patches", "Patches", None),
-                  ("switchupdates", "Switch Updates & DLC", None)]),
+                  ("switchupdates", "Switch Updates & DLC", "switchgaps")]),
     ("Wanted",   [("missing", "Missing", "missing"), ("lists", "Lists", None),
                   ("calendar", "Calendar", None)]),
     ("Activity", [("queue", "Queue", "queued"), ("history", "History", None),
@@ -1950,6 +1953,7 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
   }
   // The shelf: status, rating and notes set by the operator, overlaid on the
   // grid. One fetch for the whole page -- the metadata is tiny.
+  const gapMap=await j('/api/v1/switch/gaps').catch(()=>({ready:false,games:{}}));
   const meta=await j('/api/v1/game/meta').catch(()=>({items:[]}));
   const shelf={};
   (meta.items||[]).forEach(x=>{
@@ -1964,13 +1968,18 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
   };
   const grid=`<div class="grid" id="lib-grid">${items.map((g,i)=>`<div class="tile"
       data-shelf="${i}" style="cursor:pointer" title="Open game page">
+      ${(gapMap.games||{})[g.id]?`<span class="gap" title="${esc((gapMap.games[g.id]).map(k=>k==='update'?'Update available':'DLC missing').join(' · '))}">${(gapMap.games[g.id]).includes('update')?'Update':'DLC'}</span>`:''}
       <div class="art" style="background-image:url('${esc(g.cover||'')}')"></div>
     <div class="nm" lang="und" dir="auto">${esc(g.name)}</div>
     <div class="pf" lang="und" dir="auto">${esc(g.platform||'')}</div>${mark(g)}</div>`).join('')}</div>`;
   const more=LIB.offset+items.length<d.total
     ?`<div class="row" style="justify-content:center;margin:16px 0">
        <button class="btn" id="lib-more">${interfaceTemplateMarkup('ui.show-more-count-left.e19d54d077',{count:fmt(d.total-LIB.offset-items.length)})}</button></div>`:'';
-  p.innerHTML=head+grid+more;
+  const gs=gapMap.summary||{};
+  const gapBanner=(gapMap.ready&&gs.games_with_gaps)?`<div class="alert-bar" role="alert"><b>${fmt(gs.games_with_gaps)} Switch game${gs.games_with_gaps===1?'':'s'} need attention:</b>
+    ${gs.update_gaps?`${fmt(gs.update_gaps)} update${gs.update_gaps===1?'':'s'} available`:''}${gs.update_gaps&&gs.dlc_gaps?', ':''}${gs.dlc_gaps?`${fmt(gs.dlc_gaps)} DLC missing`:''}.
+    <a href="#switchupdates">Review</a></div>`:'';
+  p.innerHTML=gapBanner+head+grid+more;
   if(q||d.error){
     const live=$('#app-announcement');
     if(live)live.textContent=d.error?'Could not load the game library.':fmt(d.total||0)+' games found.';
@@ -2194,16 +2203,23 @@ RENDER.add=async()=>{
             title="${esc(STATE_LABEL[o.state||'']||'')}">${esc(o.name)} ${stateBadge(o.state)}</button>`).join('')}</div>
         </div></div>`).join('')}</div>${manualLink()}`;
     bindManual();
+    // A game you already have, or are already tracking, opens its own page;
+    // only a game ROMarr knows nothing about opens the Add dialog.
+    const openStateful=(g,opt)=>{ location.hash=(opt.state==='library'?
+      'game/'+encodeURIComponent(opt.slug)+'/~'+encodeURIComponent(g.title)
+      :gameHref(opt.slug,'',g.title).slice(1)); };
     out.querySelectorAll('.rc-opt').forEach(b=>b.onclick=e=>{
       e.stopPropagation();
       const g=d.items[Number(b.closest('.rc').dataset.i)], slug=b.dataset.slug;
       const opt=g.options.find(o=>o.slug===slug)||{};
-      if(opt.state==='library'){ location.hash='game/'+encodeURIComponent(slug)+'/~'+encodeURIComponent(g.title); return; }
+      if(opt.state){ openStateful(g,Object.assign({slug},opt)); return; }
       addDialog({title:g.title,options:g.options,platform:slug,afterAdd:run});
     });
     out.querySelectorAll('.rc').forEach(c=>c.onclick=()=>{
       const g=d.items[Number(c.dataset.i)];
-      if(g.options.length===1){ c.querySelector('.rc-opt').click(); }
+      const have=g.options.find(o=>o.state);
+      if(have){ openStateful(g,have); }
+      else if(g.options.length===1){ c.querySelector('.rc-opt').click(); }
       else addDialog({title:g.title,options:g.options,platform:'',afterAdd:run});
     });
   };
@@ -2235,7 +2251,7 @@ RENDER.switchupdates=async(renderEpoch=routeEpoch,refresh=false)=>{
   page.innerHTML=`<div class="libstats">
       <div><b>${fmt(S.games)}</b><span>games scanned</span></div>
       <div><b>${fmt(S.update_gaps)}</b><span>need an update</span></div>
-      <div><b>${fmt(S.dlc_gaps)}</b><span>DLC not on disk</span></div>
+      <div><b>${fmt(S.dlc_gaps)}</b><span>DLC not on disk${S.dlc_ignored?` (${fmt(S.dlc_ignored)} ignored)`:''}</span></div>
       <div><b>${fmt(S.unknown_to_titledb)}</b><span>unknown to TitleDB</span></div></div>
     ${S.dlc_lists_complete?'':'<p class="help" style="color:var(--warn)">DLC lists are incomplete: TitleDB’s names file is not loaded, so only DLC that has its own version history is checked. Updates are unaffected.</p>'}
     <div class="row" style="margin-bottom:12px">
@@ -2373,7 +2389,7 @@ RENDER.game=async(renderEpoch=routeEpoch)=>{
     ['Genres',(it.genres||[]).join(', ')],['Franchise',(it.franchises||[]).join(', ')],
     ['Developer / publisher',(it.companies||[]).join(', ')],['Modes',(it.modes||[]).join(', ')],
     ['Players',it.players],['In RomM since',it.added]].filter(x=>x[1]);
-  page.innerHTML=`<div class="card gh">
+  page.innerHTML=`<div id="g-alert"></div><div class="card gh">
       <div class="gh-art" style="background-image:url('${esc(it.cover||'')}')"></div>
       <div class="gh-main">
         <h2 lang="und" dir="auto">${esc(d.title)} ${it.year?`<span class="rc-y">${it.year}</span>`:''}</h2>
@@ -2401,9 +2417,18 @@ RENDER.game=async(renderEpoch=routeEpoch)=>{
   applyInterfaceLanguage();
   const relBox=$('#g-rel'), relOut=$('#g-relout');
   if(d.in_library&&(d.platform==='switch'||d.platform==='switch-2')){
-    j('/api/v1/switch/updates?game='+encodeURIComponent(d.title)).then(r=>{
+    const loadSwu=()=>j('/api/v1/switch/updates?game='+encodeURIComponent(d.title)).then(r=>{
       if(renderEpoch!==routeEpoch||!r.items||!r.items.length) return;
       const box=$('#g-swu'); if(!box) return;
+      // The loud version: a banner above everything else on the page.
+      const alerts=[];
+      r.items.forEach(i=>{
+        if(i.update==='missing'||i.update==='outdated')
+          alerts.push(`Update available: you have ${i.installed_version!=null?'v'+i.installed_version:'no update'}, latest is v${i.latest_version}.`);
+        if((i.dlc_missing||[]).length) alerts.push(`${i.dlc_missing.length} DLC not in your library.`);
+      });
+      const ab=$('#g-alert');
+      if(ab) ab.innerHTML=alerts.length?`<div class="alert-bar" role="alert"><b>Heads up:</b> ${alerts.map(esc).join(' ')}</div>`:'';
       box.innerHTML=`<div class="card"><h3>Updates &amp; DLC</h3>${r.items.map(i=>{const b=SWU_BADGE[i.update]||['',i.update];return `
         <p>Installed <b>${i.installed_version!=null?'v'+i.installed_version:'—'}</b> ·
           latest known <b>${i.latest_version!=null?'v'+i.latest_version:'—'}</b>
@@ -2411,10 +2436,21 @@ RENDER.game=async(renderEpoch=routeEpoch)=>{
           ${(i.update==='missing'||i.update==='outdated')?`<button class="btn ghost swu-find" data-q="${esc(d.title+' update')}" style="margin-inline-start:8px;padding:3px 10px;font-size:12px">Search for the update</button>`:''}</p>
         <p class="help">DLC: ${i.dlc_total==null?'not checked':fmt(i.dlc_installed)+' of '+fmt(i.dlc_total)+' on disk'}${i.dlc_complete_list?'':' (list may be incomplete)'}</p>
         ${(i.dlc_missing||[]).length?`<ul class="swu-dlc">${i.dlc_missing.map(x=>`<li><span lang="und" dir="auto">${esc(x.name||x.tid)}</span>
-          <code>${esc(x.tid)}</code> <button class="btn ghost swu-find" data-q="${esc(d.title+' '+(x.name||'DLC'))}" style="padding:2px 9px;font-size:11.5px">Search</button></li>`).join('')}</ul>`:''}`;}).join('')}</div>`;
+          <code>${esc(x.tid)}</code> <button class="btn ghost swu-find" data-q="${esc(d.title+' '+(x.name||'DLC'))}" style="padding:2px 9px;font-size:11.5px">Search</button>
+          <button class="btn ghost swu-ign" data-tids="${esc(x.tid)}" style="padding:2px 9px;font-size:11.5px" title="Stop counting this DLC as missing">Ignore</button></li>`).join('')}</ul>
+          <button class="btn ghost swu-ign" data-tids="${esc(i.dlc_missing.map(x=>x.tid).join(','))}" style="padding:3px 10px;font-size:12px;margin-top:6px">Ignore all ${i.dlc_missing.length} missing DLC for this game</button>`:''}
+        ${(i.dlc_ignored||[]).length?`<p class="help" style="margin-top:8px">${i.dlc_ignored.length} DLC ignored.
+          <button class="btn ghost swu-ign" data-restore="1" data-tids="${esc(i.dlc_ignored.map(x=>x.tid).join(','))}" style="padding:2px 9px;font-size:11.5px">Restore</button></p>`:''}`;}).join('')}</div>`;
+      box.querySelectorAll('.swu-ign').forEach(b=>b.onclick=async()=>{
+        b.disabled=true;
+        await j('/api/v1/switch/ignore',{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify({tids:b.dataset.tids.split(','),ignored:!b.dataset.restore})});
+        refreshCounts(); loadSwu();
+      });
       box.querySelectorAll('.swu-find').forEach(b=>b.onclick=()=>{
         relBox.hidden=false; renderReleases(relOut,b.dataset.q,d.platform); relBox.scrollIntoView({behavior:'smooth',block:'start'}); });
     }).catch(()=>{});
+    loadSwu();
   }
   const openRel=()=>{ relBox.hidden=false; renderReleases(relOut,d.title,d.platform); relBox.scrollIntoView({behavior:'smooth',block:'start'}); };
   if(flag==='search') renderReleases(relOut,d.title,d.platform);

@@ -82,7 +82,7 @@ def test_a_title_with_no_version_history_is_unknown_not_current(tmp_path):
 
 
 def test_ignored_dlc_is_removed_from_the_view_and_counts():
-    from romarr.app import Service
+    from romarr.app import ROMarr as Service
     svc = Service.__new__(Service)
     svc.store = type("S", (), {"settings": {"ignored_dlc": ["01007960049A1001"]}, "save": lambda self: None})()
     svc.switch_updates = lambda refresh=False: {
@@ -96,3 +96,12 @@ def test_ignored_dlc_is_removed_from_the_view_and_counts():
     assert [d["tid"] for d in row["dlc_missing"]] == ["01007960049A1002"]
     assert [d["tid"] for d in row["dlc_ignored"]] == ["01007960049A1001"]
     assert row["dlc_total"] == 1 and view["summary"]["dlc_gaps"] == 1
+
+
+def test_gap_map_never_builds_the_report_inline():
+    from romarr.app import ROMarr as Service
+    svc = Service.__new__(Service)
+    svc._switch_cache = None
+    svc._switch_building = True            # a build is already running
+    svc.store = type("S", (), {"settings": {}, "save": lambda self: None})()
+    assert svc.switch_gap_map() == {"ready": False, "games": {}, "summary": {}}

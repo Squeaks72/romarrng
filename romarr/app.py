@@ -3083,6 +3083,20 @@ class ROMarr:
                        dlc_ignored=sum(len(i["dlc_ignored"]) for i in items))
         return dict(raw, items=items, summary=summary)
 
+    def switch_gap_map(self) -> dict:
+        """RomM game id -> what is missing, from the cache only (never blocks)."""
+        count = self.switch_gap_count()
+        if count is None:
+            return {"ready": False, "games": {}, "summary": {}}
+        view = self.switch_view()
+        games = {}
+        for i in view["items"]:
+            kinds = [k for k, hit in (("update", i["update"] in ("missing", "outdated")),
+                                      ("dlc", bool(i["dlc_missing"]))) if hit]
+            if kinds and i.get("rom_id"):
+                games[i["rom_id"]] = kinds
+        return {"ready": True, "games": games, "summary": view["summary"]}
+
     def set_ignored_dlc(self, tids, ignored: bool) -> int:
         current = {str(t).upper() for t in (self.store.settings.get("ignored_dlc") or [])}
         wanted = {str(t).upper() for t in tids if re.fullmatch(r"[0-9A-Fa-f]{16}", str(t))}
@@ -6547,6 +6561,8 @@ def make_handler(service: ROMarr):
                 if not term or len(term) > 200:
                     return self._json(400, {"error": "q is required"})
                 return self._json(200, service.lookup(term, (query.get("platform") or [""])[0]))
+            if route.path == "/api/v1/switch/gaps":
+                return self._json(200, service.switch_gap_map())
             if route.path == "/api/v1/switch/updates":
                 rep = service.switch_view(refresh=(query.get("refresh") or [""])[0] == "1")
                 game = (query.get("game") or [""])[0]
