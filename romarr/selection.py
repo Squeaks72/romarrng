@@ -259,11 +259,29 @@ def title_matches(release_title: str, wanted: str) -> bool:
     because "of", "the" and roman numerals produce false negatives more often
     than they prevent false positives.
     """
-    haystack = _normalise(release_title)
-    words = [w for w in _normalise(wanted).split() if len(w) > 2]
+    tokens = _normalise(release_title).split()
+    wanted_words = _normalise(wanted).split()
+    words = [w for w in wanted_words if len(w) > 2]
     if not words:
         return False
-    return all(w in haystack for w in words)
+    # Whole words, not substrings: "ico" is inside "Iconoclasts", and a request
+    # for one game grabbed the other. A trailing "s" is allowed either way
+    # (Luigi's / Luigis).
+    have = set(tokens)
+    if all(w in have or w + "s" in have or (w.endswith("s") and w[:-1] in have)
+           for w in words):
+        return True
+    # Run-together spellings: "Spider-Man" vs "Spiderman", "Pac Man" vs "Pacman".
+    compact = "".join(wanted_words)
+    for start in range(len(tokens)):
+        joined = ""
+        for token in tokens[start:start + 8]:
+            joined += token
+            if joined == compact:
+                return True
+            if len(joined) > len(compact):
+                break
+    return False
 
 
 @dataclass(frozen=True)
