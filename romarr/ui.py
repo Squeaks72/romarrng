@@ -4352,6 +4352,7 @@ RENDER.profiles=()=>settingsPage('Release Profile',
     bindPicker($('#page'),'fmt-add',[{value:'',label:'Add a console…'}].concat(PLATFORMS.map(p=>({value:p.slug,label:p.name}))),v=>{
       if(!v) return; const pl=PLATFORMS.find(p=>p.slug===v);
       prefs[v]=(pl.extensions||[]).map(e=>e.replace(/^\./,'')); paint();
+      $('#fmt-add').value=''; $('[data-pp="fmt-add"] .pp-cur').textContent='Add a console…';
     });
     window._formatPrefs=prefs;
   });
