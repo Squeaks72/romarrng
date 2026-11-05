@@ -38,7 +38,17 @@ log = logging.getLogger(__name__)
 #: overwhelmingly `.7z` -- 2,621 PlayStation entries, 2,409 PS2, 1,470 Wii --
 #: and an importer that cannot open the format the content ships in supports
 #: the platform on paper only.
-ARCHIVE_SUFFIXES = (".zip", ".7z", ".rar")
+ARCHIVE_SUFFIXES = (".zip", ".7z", ".rar", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2",
+                    ".tar.xz", ".txz")
+
+
+def is_archive_name(name: str) -> bool:
+    """Whether a file name is an archive ROMarr unpacks (compound suffixes included)."""
+    lowered = str(name).lower()
+    return any(lowered.endswith(s) for s in ARCHIVE_SUFFIXES)
+
+#: How many archives deep ROMarr will look: a zip holding a 7z holding the disc.
+MAX_ARCHIVE_DEPTH = 2
 
 #: Handled by the standard library, with no tool to install.
 _STDLIB_ARCHIVES = (".zip",)
@@ -342,7 +352,7 @@ def _source_for(download: Path, platform: Platform | None = None) -> _Source:
     suffix = download.suffix.lower()
     if download.is_file() and suffix in _STDLIB_ARCHIVES:
         return _ZipSource(download)
-    if download.is_file() and suffix in ARCHIVE_SUFFIXES:
+    if download.is_file() and is_archive_name(download.name):
         tool = bsdtar_path()
         if tool is None:
             raise MissingArchiveTool(
@@ -466,6 +476,32 @@ def switch_attach_dir(file_name: str, platform_dir: Path) -> Path | None:
     return None
 
 
+def _import_nested(source, inner: list[str], download: Path, platform: Platform,
+                   library_root: Path, depth: int, kwargs: dict) -> list[ImportResult]:
+    """Unpack archives found inside an archive and import what they hold."""
+    base = Path(os.environ.get("ROMARR_DATA", "/config/romarr.json")).parent / "unpack-tmp"
+    results: list[ImportResult] = []
+    work = None
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix="unpack-", dir=str(base)))
+        for index, member in enumerate(inner):
+            target = work / f"{index}-{Path(member).name}"
+            try:
+                source.copy(member, target)
+            except Exception as exc:  # noqa: BLE001 - one bad inner archive must not hide the rest
+                results.append(ImportResult(False, None, f"could not unpack {Path(member).name}: {type(exc).__name__}"))
+                continue
+            results.extend(import_rom(target, platform, library_root, _depth=depth + 1, **kwargs))
+            target.unlink(missing_ok=True)
+    except OSError as exc:
+        results.append(ImportResult(False, None, f"could not prepare an unpack folder: {type(exc).__name__}"))
+    finally:
+        if work is not None:
+            shutil.rmtree(work, ignore_errors=True)
+    return results or [ImportResult(False, None, f"no {platform.name} ROM found inside the nested archives.")]
+
+
 def import_rom(download: Path, platform: Platform, library_root: Path, *,
                overwrite: bool = False, dats=None,
                require_verified: bool = False,
@@ -474,7 +510,8 @@ def import_rom(download: Path, platform: Platform, library_root: Path, *,
                rename: bool = False, switch_index=None,
                route_switch_catalog: bool = False,
                switch_updates_dir: str = "Updates",
-               switch_dlc_dir: str = "DLC") -> list[ImportResult]:
+               switch_dlc_dir: str = "DLC",
+               _depth: int = 0) -> list[ImportResult]:
     """Place every ROM from a finished download into the library.
 
     A cartridge zip may hold several games (a 3-in-1 collection, a bundle)
@@ -501,6 +538,21 @@ def import_rom(download: Path, platform: Platform, library_root: Path, *,
         return [ImportResult(False, None, str(exc))]
 
     chosen_sets = pick_all_rom_sets(candidates, platform, read=source.read)
+    if not chosen_sets and _depth < MAX_ARCHIVE_DEPTH and not platform.archive_is_the_rom:
+        # Nothing playable at this level, but the download holds archives (a
+        # zip around a 7z around the disc). No console reads those, so unpack
+        # them here, into a work folder beside ROMarr's data, and import from
+        # the result.
+        inner = [c for c in candidates if is_archive_name(c)]
+        if inner:
+            return _import_nested(source, inner, download, platform, library_root, _depth,
+                                  dict(overwrite=overwrite, dats=dats,
+                                       require_verified=require_verified, layout=layout,
+                                       translation=translation, folder_name=folder_name,
+                                       rename=rename, switch_index=switch_index,
+                                       route_switch_catalog=route_switch_catalog,
+                                       switch_updates_dir=switch_updates_dir,
+                                       switch_dlc_dir=switch_dlc_dir))
     if not chosen_sets:
         return [ImportResult(
             False, None,
