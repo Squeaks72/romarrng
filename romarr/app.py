@@ -3093,12 +3093,47 @@ class ROMarr:
         self._switch_cache = (time.time(), rep)
         return rep
 
-    def queue_view(self) -> list[dict]:
+    @staticmethod
+    def _name_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+    @classmethod
+    def match_torrent_by_name(cls, release: str, rows: dict, taken: set) -> str | None:
+        """The info-hash of the torrent a release title most likely became.
+
+        Releases added by URL (an indexer's .torrent link) have no hash until
+        the client has fetched them, so the queue row cannot carry one. The
+        client's name for the torrent is the release title, sometimes with a
+        tag in front ("[PS2] ICO ...") or behind, so equal or contained names
+        match outright and the rest must be close.
+        """
+        import difflib
+        want = cls._name_key(release)
+        if not want:
+            return None
+        best, best_score = None, 0.0
+        for h, row in rows.items():
+            if h in taken:
+                continue
+            have = cls._name_key(row.get("name"))
+            if not have:
+                continue
+            if have == want:
+                score = 1.0
+            elif want in have or have in want:
+                score = 0.9
+            else:
+                score = difflib.SequenceMatcher(None, want, have).ratio()
+            if score > best_score:
+                best, best_score = h, score
+        return best if best_score >= 0.75 else None
+
+    def queue_view(self, refresh: bool = False) -> list[dict]:
         """The queue, with live progress and ETA from whichever client holds each item."""
         import time as _time
         items = [asdict(i) for i in self.queue]
         cache = getattr(self, "_progress_cache", None)
-        if cache is None or _time.time() - cache[0] > 3:
+        if refresh or cache is None or _time.time() - cache[0] > 3:
             live: dict[str, dict[str, dict]] = {}
             for client in self.clients:
                 fn = getattr(client, "progress", None)
@@ -3111,82 +3146,31 @@ class ROMarr:
                               err.__class__.__name__)
             self._progress_cache = cache = (_time.time(), live)
         live = cache[1]
+        taken: set[str] = set()
+        active = ("grabbed", "downloading", "queued")
+        # Exact hashes first, so name matching only ever fills the gaps.
         for item in items:
             did = normalise_infohash(item.get("download_id") or "")
-            if not did or item.get("state") not in ("grabbed", "downloading", "queued"):
+            if did and item.get("state") in active:
+                rows = live.get(str(item.get("download_client_id") or ""))
+                hit = rows.get(did) if rows else next(
+                    (r[did] for r in live.values() if did in r), None)
+                if hit:
+                    item.update({k: v for k, v in hit.items() if k != "name"})
+                    taken.add(did)
+        for item in items:
+            if "progress" in item or item.get("state") not in active:
                 continue
             rows = live.get(str(item.get("download_client_id") or ""))
-            hit = rows.get(did) if rows else next(
-                (r[did] for r in live.values() if did in r), None)
-            if hit:
-                item.update(hit)
+            if not rows:
+                continue
+            h = self.match_torrent_by_name(item.get("release") or "", rows, set())
+            if h:
+                item.update({k: v for k, v in rows[h].items() if k != "name"})
+        for item in items:
+            if item.get("state") in active and "progress" not in item and live:
+                item["waiting"] = True     # the client does not list it (yet)
         return items
-
-    def switch_view(self, refresh: bool = False) -> dict:
-        """The Switch report with the DLC you chose to ignore taken out."""
-        raw = self.switch_updates(refresh=refresh)
-        ignored = {str(t).upper() for t in (self.store.settings.get("ignored_dlc") or [])}
-        items = []
-        for row in raw["items"]:
-            r = dict(row)
-            missing = row.get("dlc_missing") or []
-            r["dlc_ignored"] = [m for m in missing if m["tid"] in ignored]
-            r["dlc_missing"] = [m for m in missing if m["tid"] not in ignored]
-            if r.get("dlc_total") is not None:
-                r["dlc_total"] = max(0, r["dlc_total"] - len(r["dlc_ignored"]))
-            items.append(r)
-        gaps = [i for i in items if i["update"] in ("missing", "outdated") or i["dlc_missing"]]
-        summary = dict(raw["summary"], games_with_gaps=len(gaps),
-                       update_gaps=sum(1 for i in items if i["update"] in ("missing", "outdated")),
-                       dlc_gaps=sum(len(i["dlc_missing"]) for i in items),
-                       dlc_ignored=sum(len(i["dlc_ignored"]) for i in items))
-        return dict(raw, items=items, summary=summary)
-
-    def switch_gap_map(self) -> dict:
-        """RomM game id -> what is missing, from the cache only (never blocks)."""
-        count = self.switch_gap_count()
-        if count is None:
-            return {"ready": False, "games": {}, "summary": {}}
-        view = self.switch_view()
-        games = {}
-        for i in view["items"]:
-            kinds = [k for k, hit in (("update", i["update"] in ("missing", "outdated")),
-                                      ("dlc", bool(i["dlc_missing"]))) if hit]
-            if kinds and i.get("rom_id"):
-                games[i["rom_id"]] = kinds
-        return {"ready": True, "games": games, "summary": view["summary"]}
-
-    def set_ignored_dlc(self, tids, ignored: bool) -> int:
-        current = {str(t).upper() for t in (self.store.settings.get("ignored_dlc") or [])}
-        wanted = {str(t).upper() for t in tids if re.fullmatch(r"[0-9A-Fa-f]{16}", str(t))}
-        current = (current | wanted) if ignored else (current - wanted)
-        self.store.settings["ignored_dlc"] = sorted(current)
-        self.store.save()
-        return len(current)
-
-    def switch_gap_count(self) -> int | None:
-        """Games with an update or DLC gap, from the cached report only.
-
-        The nav badge polls this every few seconds, so it never builds the
-        report itself: a missing or stale cache starts one build in the
-        background and answers with what it has.
-        """
-        cache = getattr(self, "_switch_cache", None)
-        stale = cache is None or time.time() - cache[0] > 1800
-        if stale and not getattr(self, "_switch_building", False):
-            self._switch_building = True
-
-            def build():
-                try:
-                    self.switch_updates(refresh=True)
-                except Exception as err:  # noqa: BLE001
-                    log.warning("Switch report build failed: %s", err.__class__.__name__)
-                finally:
-                    self._switch_building = False
-            threading.Thread(target=build, name="switch-report", daemon=True).start()
-        if cache is None:
-            return None
-        return self.switch_view()["summary"]["games_with_gaps"]
 
     def drop_request(self, game: str, platform_name: str) -> bool:
         """Take something off Wanted without pretending it arrived.
@@ -6665,7 +6649,9 @@ def make_handler(service: ROMarr):
                     (query.get("id") or [""])[0],
                     (query.get("title") or [""])[0]))
             if route.path == "/api/v1/queue":
-                return self._json(200, {"items": service.queue_view()})
+                return self._json(200, {"items": service.queue_view(
+                    refresh=(query.get("refresh") or [""])[0] == "1"),
+                    "at": now_iso()})
             if route.path == "/api/v1/history":
                 limit = int((query.get("limit") or ["100"])[0])
                 return self._json(200, {"items": service.store.history(limit)})

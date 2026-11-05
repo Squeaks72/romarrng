@@ -44,3 +44,39 @@ def test_progress_is_percent_eta_and_speed_keyed_by_hash():
 def test_qbittorrent_infinite_eta_becomes_none():
     c = _client([{"hash": "h", "progress": 0.1, "eta": 8640000, "dlspeed": 0}])
     assert c.progress()["h"]["eta"] is None
+
+
+def test_a_release_added_by_url_is_matched_to_the_torrent_by_name():
+    from romarr.app import ROMarr
+    rows = {"aaa": {"name": "[PS2] ICO [ENG|NTSC] [DVD-Convert]"},
+            "bbb": {"name": "ICO PS2 [FULLCD]"},
+            "ccc": {"name": "Something Else Entirely"}}
+    m = ROMarr.match_torrent_by_name
+    assert m("ICO [ENG|NTSC] [DVD-Convert]", rows, set()) == "aaa"     # tag in front
+    assert m("ICO PS2 [FULLCD]", rows, set()) == "bbb"                 # exact
+    assert m("A Totally Unrelated Game", rows, set()) is None          # no false match
+
+
+def test_queue_view_shows_progress_for_a_row_with_no_recorded_hash():
+    from romarr.app import ROMarr
+    from romarr.store import QueueItem
+    svc = ROMarr.__new__(ROMarr)
+    item = QueueItem("Ico", "ps2", "ICO [PS2] [PAL]", 2, "grabbed", "", download_id="",
+                     download_client_id="c1")
+
+    class Client:
+        configured = True
+        config_id = "c1"
+        name = "q"
+
+        def progress(self):
+            return {"d4559742": {"name": "ICO [PS2] [PAL]", "progress": 8.0, "eta": 600,
+                                 "speed": 1000, "dl_state": "downloading", "total": 1}}
+    svc.clients = [Client()]
+    svc.store = type("S", (), {"queue": [item]})()
+    svc.__class__.queue = property(lambda self: self.store.queue)
+    try:
+        view = svc.queue_view(refresh=True)
+    finally:
+        del svc.__class__.queue
+    assert view[0]["progress"] == 8.0 and view[0]["dl_state"] == "downloading"

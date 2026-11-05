@@ -238,6 +238,7 @@ class QBittorrent:
                 continue
             eta = row.get("eta")
             out[key] = {
+                "name": str(row.get("name") or ""),
                 "progress": round(float(row.get("progress") or 0.0) * 100, 1),
                 "eta": int(eta) if isinstance(eta, (int, float)) and 0 <= eta < 8640000 else None,
                 "speed": int(row.get("dlspeed") or 0),

@@ -3940,17 +3940,26 @@ const fmtEta=sec=>{ if(sec==null) return '∞'; if(sec<60) return sec+'s';
   if(sec<3600) return Math.round(sec/60)+'m'; const h=Math.floor(sec/3600), m=Math.round((sec%3600)/60);
   return h<48?h+'h '+m+'m':Math.round(h/24)+'d'; };
 const fmtSpeed=b=>b>=1048576?(b/1048576).toFixed(1)+' MB/s':b>0?Math.round(b/1024)+' KB/s':'stalled';
+const QBIT_STATE={metaDL:'fetching metadata',downloading:'downloading',stalledDL:'stalled — no peers',
+  pausedDL:'paused',stoppedDL:'paused',queuedDL:'queued in qBittorrent',checkingDL:'checking files',
+  forcedDL:'downloading',uploading:'seeding',stalledUP:'seeding',pausedUP:'done',stoppedUP:'done',
+  checkingUP:'checking files',error:'error',missingFiles:'files missing',moving:'moving'};
 const progressCell=i=>{
-  if(i.progress==null) return '<span style="color:var(--dim)">—</span>';
-  const done=i.progress>=100;
+  if(i.progress==null) return i.waiting
+    ?'<span style="color:var(--dim)" title="qBittorrent does not list this torrent. It may have been removed, or is still being added.">not in qBittorrent</span>'
+    :'<span style="color:var(--dim)">—</span>';
+  const done=i.progress>=100, st=QBIT_STATE[i.dl_state]||i.dl_state||'';
+  const active=!done&&['downloading','forcedDL'].includes(i.dl_state);
   return `<div class="pbar" role="progressbar" aria-valuenow="${i.progress}" aria-valuemin="0" aria-valuemax="100"><div style="width:${Math.min(100,i.progress)}%"></div></div>
-    <div class="pmeta">${i.progress}%${done?' · done':` · ETA ${fmtEta(i.eta)} · ${fmtSpeed(i.speed)}`}</div>`;
+    <div class="pmeta">${i.progress}%${done?' · done':(active?` · ETA ${fmtEta(i.eta)} · ${fmtSpeed(i.speed)}`:'')}${st?` · ${esc(st)}`:''}</div>`;
 };
 RENDER.queue=async()=>{
   const epoch=routeEpoch;
   const d=await j('/api/v1/queue');
   const failed=(d.items||[]).filter(i=>i.state==='failed').length;
   $('#page').innerHTML=`<div class="row" style="margin-bottom:12px">
+      <button class="btn" id="q-refresh" title="Ask qBittorrent for the latest progress right now">Refresh</button>
+      <span class="help" style="margin:0" id="q-updated" aria-live="polite">Updated ${esc(new Date().toLocaleTimeString())}</span>
       <button class="btn ghost" id="q-import">Import completed now</button>
       ${failed?`<button class="btn ghost" id="q-clearfail">${interfaceTemplateMarkup('ui.clear-count-failed.ae1c7a9e34',{count:fmt(failed)})}</button>`:''}
       <span class="help" style="margin:0">${interfaceTemplateMarkup('ui.in-queue-count.205a6471b6', {count:fmt((d.items||[]).length)})}</span>
@@ -3990,13 +3999,23 @@ RENDER.queue=async()=>{
   };
   document.querySelectorAll('[data-qretry]').forEach(b=>b.onclick=()=>act(b.dataset.qretry,'retry'));
   document.querySelectorAll('[data-qremove]').forEach(b=>b.onclick=()=>act(b.dataset.qremove,'remove'));
+  const refreshNow=async()=>{
+    const b=$('#q-refresh'); if(b){b.disabled=true;b.textContent='Refreshing…';}
+    const nd=await j('/api/v1/queue?refresh=1').catch(()=>null);
+    if(b){b.disabled=false;b.textContent='Refresh';}
+    if(!nd||epoch!==routeEpoch) return;
+    nd.items.forEach((i,n)=>{ const c=document.querySelector('[data-qprog="'+n+'"]'); if(c) c.innerHTML=progressCell(i); });
+    const u=$('#q-updated'); if(u) u.textContent='Updated '+new Date().toLocaleTimeString();
+  };
+  $('#q-refresh').onclick=refreshNow;
   // Live progress: refresh only the progress cells, so buttons keep focus.
-  if((d.items||[]).some(i=>i.progress!=null&&i.progress<100)){
+  if((d.items||[]).some(i=>i.state==='grabbed'||i.state==='downloading'||i.state==='queued')){
     const timer=setInterval(async()=>{
       if(epoch!==routeEpoch||location.hash!=='#queue'){clearInterval(timer);return;}
       const nd=await j('/api/v1/queue').catch(()=>null);
       if(!nd||epoch!==routeEpoch) return;
       nd.items.forEach((i,n)=>{ const c=document.querySelector('[data-qprog="'+n+'"]'); if(c) c.innerHTML=progressCell(i); });
+      const u=$('#q-updated'); if(u) u.textContent='Updated '+new Date().toLocaleTimeString();
     },4000);
   }
 };
