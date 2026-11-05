@@ -403,7 +403,7 @@ def test_one_job_per_game_at_a_time(tmp_path, api, romm, fake_stream):
             break
         time.sleep(0.05)
     assert {j["game_id"]: j["state"] for j in s.jobs()} == {"42": "done", "43": "done"}
-    s.start_download(GAME, api, {"provider": "fake", "id": "x"}, "files", run_async=False)   # free again
+    s.start_download(GAME, api, {"provider": "fake", "id": "x"}, "files", run_async=False, force=True)   # free again
 
 
 @pytest.mark.parametrize("cand,fmt", [
