@@ -172,9 +172,18 @@ class QBittorrent:
         data = {"urls": magnet_or_url, "category": self._config.category}
         if save_path:
             data["savepath"] = save_path
+        self.last_reject = ""
         response = self._post("torrents/add", data=data, timeout=self._config.timeout)
         if not response.ok:
             log.warning("qbittorrent add failed: %s", response.status_code)
+            return False
+        # qBittorrent answers HTTP 200 either way: "Ok." when it took the
+        # torrent and "Fails." when it did not (a link it could not fetch, or a
+        # torrent it already has). Treating every 200 as success marked grabs
+        # that never happened, which then sat in the queue forever.
+        if (response.text or "").strip().lower().startswith("fails"):
+            log.warning("qbittorrent did not accept the torrent")
+            self.last_reject = "not_accepted"
             return False
         return True
 

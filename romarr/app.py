@@ -2443,15 +2443,32 @@ class ROMarr:
         if external_request_id and not self.store.mark_seerr_dispatching(
                 external_request_id):
             return {"ok": False, "cancelled": True}
+        # The same release already on its way for this game is not grabbed a
+        # second time: it only adds identical rows to the queue (the original
+        # ROMarr fixed this as "duplicate grabs").
+        rid = release_id(pick)
+        for existing in self.store.queue:
+            if (existing.release_id == rid and existing.platform == platform_slug
+                    and self._title_key(existing.game) == self._title_key(game)
+                    and existing.state in ("grabbed", "downloading", "queued")):
+                return {"ok": True, "duplicate": True, "release": pick.title,
+                        "seeders": pick.seeders,
+                        "message": "already in the queue; not grabbed again"}
         ok, download_id = hand_off_with_id(client, pick.download_url,
                                            name=pick.title)
+        # A client that answered but did not take the link is not evidence the
+        # release is bad (it may already be there), so it is not blocklisted.
+        declined = (not ok) and getattr(client, "last_reject", "") == "not_accepted"
         item = QueueItem(game, platform_slug, pick.title, pick.seeders,
                          "grabbed" if ok else "failed",
-                         "" if ok else f"{client.name} rejected the release",
-                         release_id=release_id(pick),
+                         "" if ok else (
+                             f"{client.name} did not accept the link (already added, "
+                             "or the indexer link could not be fetched)" if declined
+                             else f"{client.name} rejected the release"),
+                         release_id=rid,
                          indexer=getattr(pick, "indexer", ""),
                          size=getattr(pick, "size", 0),
-                         release_fault=not ok,
+                         release_fault=(not ok) and not declined,
                          external_request_id=external_request_id,
                          download_id=download_id,
                          download_client_id=str(getattr(client, "config_id", "") or ""))

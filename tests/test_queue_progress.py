@@ -77,3 +77,29 @@ def test_queue_view_shows_progress_for_a_row_with_no_recorded_hash():
     with patch.object(ROMarr, "queue", new_callable=PropertyMock, return_value=[item]):
         view = svc.queue_view(refresh=True)
     assert view[0]["progress"] == 8.0 and view[0]["dl_state"] == "downloading"
+
+
+class _AddResp(_Resp):
+    def __init__(self, text):
+        super().__init__([])
+        self.text = text
+
+
+class _AddSession(_Session):
+    def __init__(self, text):
+        super().__init__([])
+        self._text = text
+
+    def post(self, url, **kw):
+        return _AddResp(self._text)
+
+
+def test_qbittorrent_fails_body_is_not_a_successful_add():
+    c = QBittorrent(QbitConfig(base_url="http://q", category="romarr"), session=_AddSession("Fails."))
+    assert c.add("https://indexer/x.torrent") is False
+    assert c.last_reject == "not_accepted"
+
+
+def test_qbittorrent_ok_body_is_a_successful_add():
+    c = QBittorrent(QbitConfig(base_url="http://q", category="romarr"), session=_AddSession("Ok."))
+    assert c.add("magnet:?xt=urn:btih:" + "a" * 40) is True
