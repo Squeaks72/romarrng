@@ -73,6 +73,10 @@ class FakeRomm:
         self.refuse: set[str] = set()          # upload names answered with 409
         self.fail_delete: set[int] = set()      # file ids whose DELETE answers 500 (echoing the credential)
         self.issued_scopes: list[str] = []
+        #: (rom id, file id) -> stored bytes; a track without an entry has its own name as content.
+        self.blobs: dict[tuple[int, int], bytes] = {}
+        #: rom id -> game name, for the library listing the duplicate scan reads
+        self.names: dict[int, str] = {42: "Chrono Trigger"}
         outer = self
 
         class H(BaseHTTPRequestHandler):
@@ -96,6 +100,19 @@ class FakeRomm:
                     return self._reply(200, json.dumps({"access_token": outer.token}).encode())
                 if self.headers.get("Authorization") != "Bearer " + outer.token:
                     return self._reply(401, b'{"detail":"bad token"}')
+                if self.path.startswith("/api/roms?") and method == "GET":
+                    off = int(re.search(r"offset=(\d+)", self.path).group(1))
+                    items = [{"id": rid, "name": outer.names.get(rid, f"Game {rid}"), "platform_display_name": "SNES",
+                              "files": [{"id": fid, "file_name": n, "category": "soundtrack",
+                                         "file_size_bytes": len(outer.content(rid, fid))} for fid, n in t.items()]}
+                             for rid, t in sorted(outer.tracks.items())]
+                    return self._reply(200, json.dumps({"items": items[off:off + 500]}).encode())
+                m = re.fullmatch(r"/api/roms/(\d+)/files/(\d+)/content/(.+)", self.path)
+                if m and method == "GET":
+                    rid, fid = int(m.group(1)), int(m.group(2))
+                    if fid not in outer.tracks.get(rid, {}):
+                        return self._reply(404, b"{}")
+                    return self._reply(200, outer.content(rid, fid), "application/octet-stream")
                 m = re.fullmatch(r"/api/roms/(\d+)", self.path)
                 if m and method == "GET":
                     return self._reply(200, json.dumps(outer.rom).encode())
@@ -110,6 +127,8 @@ class FakeRomm:
                         return self._reply(409, b'{"detail":"unacceptable"}')
                     outer.next_id += 1
                     outer.tracks.setdefault(int(m.group(1)), {})[outer.next_id] = name
+                    head, _, rest = body.partition(b"\r\n\r\n")
+                    outer.blobs[(int(m.group(1)), outer.next_id)] = rest.rsplit(b"\r\n--", 1)[0]
                     return self._reply(201, b"{}")
                 m = re.fullmatch(r"/api/roms/(\d+)/soundtracks/(\d+)", self.path)
                 if m and method == "DELETE":
@@ -134,6 +153,19 @@ class FakeRomm:
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+
+    def content(self, rom_id: int, file_id: int) -> bytes:
+        return self.blobs.get((rom_id, file_id), self.tracks[rom_id][file_id].encode())
+
+    def seed(self, rom_id: int, files: dict[str, bytes], name: str | None = None) -> None:
+        """Give a ROM stored soundtrack files, as if already in RomM."""
+        self.tracks[rom_id] = {}
+        if name:
+            self.names[rom_id] = name
+        for n, data in files.items():
+            self.next_id += 1
+            self.tracks[rom_id][self.next_id] = n
+            self.blobs[(rom_id, self.next_id)] = data
 
     def close(self):
         self.httpd.shutdown()

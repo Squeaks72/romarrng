@@ -77,7 +77,7 @@ class AccessibilityQATests(unittest.TestCase):
         self.assertIn('href="#main-content"', rendered)
         self.assertIn('id="main-content" tabindex="-1"', rendered)
         self.assertEqual([tag for tag, _ in parsed.landmarks], ["aside", "nav", "main"])
-        self.assertEqual(parsed.nav_links, 31)
+        self.assertEqual(parsed.nav_links, 32)
         self.assertFalse([key for key, count in Counter(parsed.ids).items() if count > 1])
         self.assertFalse([label for label in parsed.labels
                           if not label["for"] and not label["contains_control"]])

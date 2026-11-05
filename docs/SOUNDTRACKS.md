@@ -2,7 +2,7 @@
 
 ROMarr can find a game's soundtrack and put it into RomM's **Jukebox**, from the game page. This
 is a port of the standalone `romm-soundtracks` tool, built into ROMarr so there is one app and no
-second process to run. It is being ported in phases; this page describes phase 1.
+second process to run. It is being ported in phases; this page describes phases 1 to 3.
 
 ## What phase 1 does
 
@@ -37,6 +37,7 @@ used is the library entry's URL.
 
 `soundtrack_sources` (comma separated, default `zophar,archive`) picks which sources the Search
 button queries. It can be edited through the settings API; there is no page for it yet.
+`music_library_root` (default `/music-library`) is the read-only music folder phase 3 searches.
 
 ## HTTP API
 
@@ -55,8 +56,76 @@ runs per game: a second download or an undo while one is running answers 409. Se
 request (a few seconds, bounded by the one-request-per-second rule); downloading and uploading
 never do.
 
+Phase 2 and 3 routes are listed in their own sections below.
+
 Data lives in `romarr-soundtracks.db` beside the ROMarr data file (`ROMARR_DATA`), in tables
-`sound` and `journal` keyed by RomM game id, the same names the standalone tool used.
+`sound` and `journal` keyed by RomM game id, the same names the standalone tool used. Phase 2 adds
+`merges` and `dup_scan`; `sound` gained a `title` column (older databases are upgraded in place).
+
+## Phase 2: duplicate soundtracks
+
+The **Soundtracks** page (Library group in the navigation, tab **Duplicates**) lists games whose
+stored soundtracks are identical.
+
+* **Scan for duplicates** runs in the background. It reads RomM's library, groups games whose
+  soundtrack file names and sizes match, then **streams the real bytes from RomM and compares them
+  by SHA-1** (names included). Only sets that match byte for byte are listed; a set whose bytes
+  differ is never offered. The result is kept until the next scan.
+* Pick the game to **keep** and press **Merge**. The merge re-reads and re-hashes the kept copy and
+  each other copy first and **refuses any copy that differs**, leaving it alone. Only the
+  non-kept games are touched: their soundtrack files are removed through RomM's delete endpoint.
+  The kept game is never written to. Each merge is journaled (who kept what, with the file hashes),
+  and the removed files drop out of that game's phase 1 Undo list because they no longer exist.
+* **Undo** (per merged game) fetches the kept files, **verifies them against the hashes recorded at
+  merge time** (refusing if the kept copy has changed), then re-uploads them to the merged game
+  through RomM. The restored files are journaled, so the game page's Undo can remove them again.
+  A merge that failed part-way is recorded as *incomplete* and can be undone the same way.
+* **Download skips what another game holds.** A download of a source item that another game
+  already holds (downloaded by ROMarr, or merged away) is not fetched again: the request answers
+  `409` with `held_by` (the game titles), and the game page asks whether to download it anyway
+  (`force: true`). This only knows about downloads ROMarr made; use the scan for the rest.
+* One job per game still holds: a merge or undo locks the kept game and every merged game, and is
+  refused with `409` while any of them has a job running. A scan is one job at a time.
+
+| Route | |
+|---|---|
+| `GET /api/v1/soundtracks/dups` | Verified groups, merges that can be undone, the latest scan job, scan time |
+| `POST /api/v1/soundtracks/dups/scan` | Starts the byte-for-byte scan, returns the job |
+| `POST /api/v1/soundtracks/dups/merge` `{keep, drop:[ids]}` | Starts a merge job |
+| `POST /api/v1/soundtracks/dups/unmerge` `{id}` | Starts the restore for one merged game |
+
+Progress of all of these appears under `GET /api/v1/soundtracks/jobs` (`kind` is `dup-scan`,
+`merge`, `unmerge`, `download` or `album`). A scan downloads every candidate soundtrack from RomM
+once, so run it when you want to tidy up, not on a schedule.
+
+## Phase 3: albums from your music library
+
+On the game page, **Use an album from your music library** searches a music folder and uploads an
+album's audio into the game's soundtrack, for fan-made albums no source site has.
+
+* The folder is the `music_library_root` setting (default `/music-library`). Mount your music
+  share there **read-only**. ROMarr only reads it: nothing is written, renamed or linked inside it.
+* A folder that holds audio is an album (up to four levels below the root). `CD1`/`CD2`/`Disc 1`
+  style folders roll up into the album above them, and their names are folded into the file names
+  (`CD2 - 01 Intro.flac`), because a game's soundtrack is a flat list. Search matches every word
+  against the album's path; the album's own folder name ranks first. The list is cached for two
+  minutes.
+* Only the formats RomM's Jukebox plays are taken (MP3, OGG, OPUS, M4A, AAC, WAV, FLAC, SPC, VGM,
+  VGZ, GYM); cover art, rip logs, cue sheets and hidden files stay behind.
+* **Upload only.** Each file is sent through RomM's upload API straight from the library file,
+  opened read-only. Hardlinking (the standalone tool's shortcut) is not implemented: ROMarr's
+  container mounts the music library and the ROM tree as separate mounts, which blocks hardlinks,
+  and ROMarr never writes to the ROM tree anyway.
+* A track RomM already has under that name is skipped, a file RomM refuses is skipped, and every
+  upload is journaled, so **Undo** (the same button as for downloads) removes only what was added.
+* Path safety: the album id must resolve, after following symlinks, to a folder strictly inside
+  the library root, and a symlinked file that leads out of the album is not collected. The search
+  does not follow symlinked folders.
+
+| Route | |
+|---|---|
+| `GET /api/v1/soundtracks/library/search?q=` | Albums `{id, name, tracks, bytes}`; `id` is the path below the library root |
+| `POST /api/v1/soundtracks/library/add` `{id, album}` | Starts an upload job for the game with that RomM id |
 
 ## Safety rules
 
@@ -80,13 +149,10 @@ Data lives in `romarr-soundtracks.db` beside the ROMarr data file (`ROMARR_DATA`
 
 ## Not ported yet
 
-* **Phase 2:** duplicate soundtrack merge (several games sharing one stored soundtrack).
-* **Phase 3:** music-library albums (use an album from a regular music library as a game's
-  soundtrack).
 * **Phase 4:** 3DS encryption status and the decrypt tool, and held originals (the safety copy kept
   before any ROM is replaced).
-* Direct delivery (writing files into the game folder instead of uploading through RomM) is not
-  planned for phase 1 or 2; it was the standalone tool's fallback.
+* Direct delivery (writing files into the game folder instead of uploading through RomM) and
+  hardlinks from the music library are not planned; they were the standalone tool's fallbacks.
 * "Download confident matches" for a whole selection, and a soundtrack column or filter on the
   library page, come with the later phases.
 
@@ -100,3 +166,9 @@ The calls are the ones the standalone tool made against a live RomM: `GET /api/r
 authenticated these with a client token; ROMarr authenticates with the password-grant bearer token
 it already uses elsewhere, with the `roms.write` scope added. That the same grant is accepted for
 the upload endpoints has not been tried against a live RomM.
+
+The phase 2 and 3 calls add: `GET /api/roms?limit=500&offset=&with_files=true` (each item has
+`id`, `name`, `platform_display_name` and `files[]` with `file_name`, `file_size_bytes`, `category`)
+and `GET /api/roms/{id}/files/{file_id}/content/{file_name}` (the stored bytes of one file; the
+`file_id` is the one `soundtracks/metadata` returns, which is assumed to be the ROM file's id).
+None of this has been tried against a live RomM; the tests use a loopback fake.

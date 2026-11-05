@@ -25,13 +25,16 @@ Safety rules, kept from the original because they are the point of it:
 
 Authentication is whatever the RomM library entry already has (see
 `Romm.write_token`); this module never stores, accepts or prints a credential.
-Not here yet: duplicate merge, music-library albums, 3DS decrypt/held
-originals. See docs/SOUNDTRACKS.md.
+Phases 2 and 3 live at the end of `Soundtracks`: duplicate merge (identical
+stored soundtracks compared by SHA-1, merged and undoable) and albums from a
+read-only music library. Not here yet: 3DS decrypt/held originals. See
+docs/SOUNDTRACKS.md.
 """
 
 from __future__ import annotations
 
 import difflib
+import hashlib
 import html
 import json
 import logging
@@ -470,14 +473,14 @@ class RommApi:
         return text.replace(tok, "***") if tok and len(tok) > 6 else text
 
     def _request(self, method: str, path: str, make_body: Callable[[], object] | None = None,
-                 headers: dict | None = None, timeout: int = 60) -> requests.Response:
+                 headers: dict | None = None, timeout: int = 60, stream: bool = False) -> requests.Response:
         for attempt in (0, 1):
             tok = self._token_fn(bool(attempt))
             if not tok:
                 raise RommError(401, "ROMarr could not sign in to RomM with the saved library login")
             body = make_body() if make_body else None
             try:
-                r = self._session.request(method, self.base + path, data=body, timeout=timeout,
+                r = self._session.request(method, self.base + path, data=body, timeout=timeout, stream=stream,
                                           headers={"Authorization": "Bearer " + tok, "User-Agent": UA, **(headers or {})})
             finally:
                 if hasattr(body, "close"):
@@ -510,6 +513,28 @@ class RommApi:
                           timeout=600)
         if r.status_code != 201:
             raise RommError(r.status_code, self._redact(r.text[:300]))
+
+    def roms_with_files(self) -> Iterator[dict]:
+        """Every ROM RomM lists, with its file records, a page at a time (the duplicate scan reads the soundtrack ones)."""
+        offset = 0
+        while True:
+            page = self.json("GET", f"/api/roms?limit=500&offset={offset}&order_by=name&order_dir=asc&with_files=true")
+            items = page.get("items", []) if isinstance(page, dict) else (page or [])
+            yield from items
+            if len(items) < 500:
+                return
+            offset += 500
+
+    def iter_track(self, rom_id: str, file_id: str, name: str) -> Iterator[bytes]:
+        """The bytes of one stored soundtrack file, streamed from RomM's file-content endpoint."""
+        r = self._request("GET", f"/api/roms/{int(rom_id)}/files/{int(file_id)}/content/{quote(name, safe='')}",
+                          timeout=600, stream=True)
+        try:
+            if not r.ok:
+                raise RommError(r.status_code, self._redact(r.text[:300]))
+            yield from r.iter_content(1 << 20)
+        finally:
+            r.close()
 
     def delete_track(self, rom_id: str, file_id: str) -> bool:
         """Remove one registered soundtrack file. A file RomM no longer has counts as already gone."""
@@ -560,6 +585,100 @@ class RommSink:
         return size
 
 
+# ------------------------------------------------------------ music library --
+#
+# An album from the user's own music library, offered as a game's soundtrack.
+# Everything here only READS the library. A folder that holds audio is an
+# album; CD1/CD2 style subfolders roll up into the album above them.
+
+_DISC = re.compile(r"^(cd|disc|disk)\s*\d+\b", re.I)
+#: How deep below the library root an album folder may sit (artist/year/album/CD1).
+ALBUM_DEPTH = 4
+
+
+def _is_audio(name: str) -> bool:
+    return not name.startswith(".") and os.path.splitext(name)[1].lower() in JUKEBOX_EXT
+
+
+def scan_albums(root: str) -> list[dict]:
+    """Every folder under `root` that holds Jukebox audio: [{id, tracks, bytes}], `id` being the path below the root.
+
+    Symlinked folders are not followed, so the scan cannot leave the library.
+    """
+    root = os.path.realpath(root)
+    found: dict[str, dict] = {}
+
+    def walk(d: str, depth: int) -> None:
+        try:
+            entries = list(os.scandir(d))
+        except OSError:
+            return
+        audio = [e for e in entries if e.is_file(follow_symlinks=False) and _is_audio(e.name)]
+        if audio:
+            found[d] = {"tracks": len(audio), "bytes": sum(e.stat().st_size for e in audio)}
+        if depth < ALBUM_DEPTH:
+            for e in entries:
+                if e.is_dir(follow_symlinks=False) and not e.name.startswith("."):
+                    walk(e.path, depth + 1)
+
+    walk(root, 0)
+    for d in [d for d in found if _DISC.match(os.path.basename(d))]:      # CD1/CD2 -> one album
+        agg = found.setdefault(os.path.dirname(d), {"tracks": 0, "bytes": 0})
+        agg["tracks"] += found[d]["tracks"]
+        agg["bytes"] += found[d]["bytes"]
+        del found[d]
+    out = [{"id": Path(os.path.relpath(d, root)).as_posix(), "tracks": v["tracks"], "bytes": v["bytes"]}
+           for d, v in found.items() if d != root]
+    out.sort(key=lambda a: a["id"].lower())
+    return out
+
+
+def search_albums(albums: list[dict], query: str, limit: int = 40) -> list[dict]:
+    """Albums whose path holds every word of the query; a match in the album's own folder name ranks first."""
+    words = fold(query).lower().split()
+    if not words:
+        return []
+    hits = []
+    for a in albums:
+        hay = fold(a["id"]).lower()
+        if all(w in hay for w in words):
+            hits.append((sum(w in fold(os.path.basename(a["id"])).lower() for w in words), a))
+    hits.sort(key=lambda h: (-h[0], h[1]["id"].lower()))
+    return [dict(h[1], name=os.path.basename(h[1]["id"])) for h in hits[:limit]]
+
+
+def resolve_album(root: str, album_id: str) -> str:
+    """The real path of an album folder, refusing anything that is not inside the library root."""
+    if not isinstance(album_id, str) or not album_id or "\x00" in album_id:
+        raise ValueError("choose an album")
+    real_root = os.path.realpath(root)
+    src = os.path.realpath(os.path.join(real_root, album_id))
+    if src == real_root or os.path.commonpath([src, real_root]) != real_root or not os.path.isdir(src):
+        raise ValueError("that folder is not inside the music library")
+    return src
+
+
+def collect_album(src: str) -> list[tuple[str, str, int]]:
+    """[(file name to store, path, size)] for the audio under `src`.
+
+    Only Jukebox audio: cover art, logs and cue sheets stay behind. A subfolder's
+    name is folded into the file name ("CD2" + "01 Intro.flac" -> "CD2 - 01 Intro.flac"),
+    since a game's soundtrack is a flat list. A symlink that leads out of the
+    album is skipped.
+    """
+    out = []
+    for dp, dns, fns in os.walk(src):
+        dns[:] = sorted(d for d in dns if not d.startswith("."))
+        for fn in sorted(fns):
+            path = os.path.join(dp, fn)
+            if not _is_audio(fn) or os.path.commonpath([os.path.realpath(path), src]) != src:
+                continue
+            sub = os.path.relpath(dp, src)
+            name = fn if sub == "." else sub.replace(os.sep, " - ") + " - " + fn
+            out.append((header_safe(safe_name(name)), path, os.path.getsize(path)))
+    return out
+
+
 # ------------------------------------------------------------------ storage --
 
 DDL = """
@@ -567,6 +686,9 @@ PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS sound(key TEXT PRIMARY KEY, status TEXT, cands TEXT, chosen TEXT, files INT DEFAULT 0,
     dest TEXT, provider TEXT, note TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY, key TEXT, path TEXT, size INT, ts REAL, undone INT DEFAULT 0);
+CREATE TABLE IF NOT EXISTS merges(id INTEGER PRIMARY KEY, drop_id TEXT, keep_id TEXT, drop_title TEXT, keep_title TEXT,
+    files TEXT, ts REAL, state TEXT);
+CREATE TABLE IF NOT EXISTS dup_scan(id INTEGER PRIMARY KEY CHECK (id = 1), ts REAL, groups TEXT);
 """
 
 
@@ -604,6 +726,10 @@ class Soundtracks:
         c = self._db()
         try:
             c.executescript(DDL)
+            try:
+                c.execute("ALTER TABLE sound ADD COLUMN title TEXT")      # added with phase 2: who holds a soundtrack
+            except sqlite3.OperationalError:
+                pass                                                      # already there
             c.commit()
         finally:
             c.close()
@@ -614,7 +740,7 @@ class Soundtracks:
             try:
                 c.execute("INSERT OR IGNORE INTO sound(key,status,ts) VALUES(?,?,?)", (key, "unsearched", time.time()))
                 for k, v in kw.items():
-                    if k not in ("status", "cands", "chosen", "files", "dest", "provider", "note"):
+                    if k not in ("status", "cands", "chosen", "files", "dest", "provider", "note", "title"):
                         raise ValueError(k)
                     c.execute(f"UPDATE sound SET {k}=? WHERE key=?", (v, key))
                 c.execute("UPDATE sound SET ts=? WHERE key=?", (time.time(), key))
@@ -681,7 +807,7 @@ class Soundtracks:
     def job_for(self, key: str) -> dict | None:
         """The running job for a game, else its most recent finished one."""
         with self._lock:
-            mine = [j for j in self._jobs.values() if j["game_id"] == key]
+            mine = [j for j in self._jobs.values() if key in j["games"]]
         mine.sort(key=lambda j: j["started"])
         running = [j for j in mine if j["state"] == "running"]
         return dict(running[-1] if running else mine[-1]) if mine else None
@@ -690,8 +816,13 @@ class Soundtracks:
         with self._lock:
             return sorted((dict(j) for j in self._jobs.values()), key=lambda j: j["started"], reverse=True)
 
-    def start_download(self, game: dict, api: RommApi, cand: dict, fmt: str, run_async: bool = True) -> dict:
-        """Begin a download job. One job per game at a time: a second request while one runs is refused."""
+    def start_download(self, game: dict, api: RommApi, cand: dict, fmt: str, run_async: bool = True,
+                       force: bool = False) -> dict:
+        """Begin a download job. One job per game at a time: a second request while one runs is refused.
+
+        A soundtrack another game already holds (same source item) is not fetched
+        a second time unless `force` says so: that is how duplicates start.
+        """
         key = str(game["id"])
         provider, cid = str(cand.get("provider") or ""), str(cand.get("id") or "")
         if provider not in self.providers:
@@ -702,22 +833,32 @@ class Soundtracks:
             raise ValueError("not a Zophar music page")
         if provider == "archive" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._\-]*", cid):
             raise ValueError("not an Internet Archive identifier")
+        holders = [] if force else self.held_elsewhere(key, provider, cid)
+        if holders:
+            raise AlreadyStored(holders)
+        job = self._begin_job([key], game["name"], "download")
+        self._spawn(self._run_download, job, game, api, {"provider": provider, "id": cid}, fmt, run_async=run_async)
+        return dict(job)
+
+    def _begin_job(self, keys: list[str], title: str, kind: str) -> dict:
+        """Register a running job over these games. A game is in at most one running job, so any overlap is refused."""
         with self._lock:
-            if any(j["game_id"] == key and j["state"] == "running" for j in self._jobs.values()):
+            if any(j["state"] == "running" and set(j["games"]) & set(keys) for j in self._jobs.values()):
                 raise JobBusy("a soundtrack job is already running for this game")
-            job = {"id": uuid.uuid4().hex[:12], "game_id": key, "title": game["name"], "state": "running",
-                   "step": "Starting", "pct": None, "made": 0, "skipped": 0, "message": "",
+            job = {"id": uuid.uuid4().hex[:12], "game_id": keys[0] if keys else "", "games": list(keys), "kind": kind, "title": title,
+                   "state": "running", "step": "Starting", "pct": None, "made": 0, "skipped": 0, "message": "",
                    "started": time.time(), "finished": None}
             self._jobs[job["id"]] = job
             for old in sorted(self._jobs.values(), key=lambda j: j["started"])[:-self.MAX_JOBS]:
                 if old["state"] != "running":
                     del self._jobs[old["id"]]
-        args = (job, game, api, {"provider": provider, "id": cid}, fmt)
+        return job
+
+    def _spawn(self, fn: Callable[..., None], job: dict, *args, run_async: bool = True) -> None:
         if run_async:
-            threading.Thread(target=self._run_download, args=args, daemon=True, name=f"soundtrack-{job['id']}").start()
+            threading.Thread(target=fn, args=(job, *args), daemon=True, name=f"soundtrack-{job['id']}").start()
         else:
-            self._run_download(*args)
-        return dict(job)
+            fn(job, *args)
 
     def _progress(self, job: dict) -> Callable[..., None]:
         def progress(step: str, pct: float | None = None) -> None:
@@ -766,7 +907,7 @@ class Soundtracks:
             self._record(key, sink, api)
         total = len(api.tracks(key)) if made else None
         self._set_sound(key, status="downloaded" if (made or total) else "found", files=total or 0,
-                        provider=cand["provider"], chosen=json.dumps(cand),
+                        provider=cand["provider"], chosen=json.dumps(cand), title=game["name"],
                         note=f"{made} new file(s), {skipped} skipped (already there, or not a format RomM Jukebox plays)")
         return made, skipped
 
@@ -776,13 +917,16 @@ class Soundtracks:
         Runs even when the job failed part-way, so a half-finished download can
         still be taken back.
         """
-        if not sink.sent:
+        self._journal_sent(key, sink.sent, api)
+
+    def _journal_sent(self, key: str, names: list[str], api: RommApi) -> None:
+        if not names:
             return
         ids = {t["file_name"]: t["file_id"] for t in api.tracks(key)}
         with self._lock:
             c = self._db()
             try:
-                for n in sink.sent:
+                for n in names:
                     if n in ids:
                         c.execute("INSERT INTO journal(key,path,size,ts) VALUES(?,?,?,?)",
                                   (key, f"romm://{key}/{ids[n]}/{n}", 0, time.time()))
@@ -790,13 +934,34 @@ class Soundtracks:
             finally:
                 c.close()
 
+    def _ensure_idle(self, *keys: str) -> None:
+        with self._lock:
+            if any(j["state"] == "running" and set(j["games"]) & set(keys) for j in self._jobs.values()):
+                raise JobBusy("a soundtrack job is running for this game")
+
+    def held_elsewhere(self, key: str, provider: str, cid: str) -> list[str]:
+        """Titles of the other games that already hold this exact source item (downloaded here, or merged away)."""
+        c = self._db()
+        try:
+            rows = c.execute("SELECT key, title, chosen FROM sound WHERE key!=? AND status IN ('downloaded','merged') "
+                             "AND chosen IS NOT NULL", (key,)).fetchall()
+        finally:
+            c.close()
+        out = []
+        for r in rows:
+            try:
+                ch = json.loads(r["chosen"])
+            except ValueError:
+                continue
+            if isinstance(ch, dict) and ch.get("provider") == provider and str(ch.get("id")) == cid:
+                out.append(r["title"] or f"game {r['key']}")
+        return out
+
     # -- undo --
     def undo(self, game: dict, api: RommApi) -> dict:
         """Remove exactly what this module added to the game, by the file ids it journaled."""
         key = str(game["id"])
-        with self._lock:
-            if any(j["game_id"] == key and j["state"] == "running" for j in self._jobs.values()):
-                raise JobBusy("a soundtrack job is running for this game")
+        self._ensure_idle(key)
         c = self._db()
         try:
             rows = c.execute("SELECT * FROM journal WHERE key=? AND undone=0", (key,)).fetchall()
@@ -825,8 +990,375 @@ class Soundtracks:
         return {"removed": removed, "remaining": self._journal_count(key)}
 
 
+    # -- phase 2: duplicate soundtracks --
+    #
+    # Games whose STORED soundtracks are identical. Candidates come from the file
+    # lists RomM already has (names and sizes), but nothing is offered or done on
+    # that alone: the bytes are streamed from RomM and compared by SHA-1, names
+    # included, and a copy that differs is refused.
+
+    def _hash_track(self, api: RommApi, rom_id: str, track: dict) -> str:
+        h = hashlib.sha1()
+        for chunk in api.iter_track(rom_id, track["file_id"], track["file_name"]):
+            h.update(chunk)
+        return h.hexdigest()
+
+    def _hash_tracks(self, api: RommApi, rom_id: str) -> tuple[dict, list[dict]]:
+        """({file name: sha1}, the track records) for what RomM stores for this ROM."""
+        tracks = api.tracks(rom_id)
+        return {t["file_name"]: self._hash_track(api, rom_id, t) for t in tracks}, tracks
+
+    def dups(self) -> dict:
+        """The verified duplicate groups from the last scan, the merges that can be undone, and the scan job."""
+        c = self._db()
+        try:
+            row = c.execute("SELECT ts, groups FROM dup_scan WHERE id=1").fetchone()
+            merged = [dict(r) for r in c.execute(
+                "SELECT id, drop_id, keep_id, drop_title, keep_title, ts, state FROM merges "
+                "WHERE state IN ('merged','partial') ORDER BY ts DESC")]
+        finally:
+            c.close()
+        groups = json.loads(row["groups"]) if row else []
+        with self._lock:
+            scans = sorted((dict(j) for j in self._jobs.values() if j["kind"] == "dup-scan"), key=lambda j: j["started"])
+        return {"scanned": row["ts"] if row else None,
+                "groups": [{k: v for k, v in g.items() if k != "files"} for g in groups],
+                "merged": merged, "scan": scans[-1] if scans else None}
+
+    def start_dup_scan(self, api: RommApi, run_async: bool = True) -> dict:
+        with self._lock:
+            if any(j["kind"] == "dup-scan" and j["state"] == "running" for j in self._jobs.values()):
+                raise JobBusy("a duplicate scan is already running")
+        job = self._begin_job([], "Duplicate soundtrack scan", "dup-scan")
+        self._spawn(self._run_dup_scan, job, api, run_async=run_async)
+        return dict(job)
+
+    def _run_dup_scan(self, job: dict, api: RommApi) -> None:
+        progress = self._progress(job)
+        try:
+            progress("Reading RomM's library")
+            by_sig: dict[tuple, list[dict]] = {}
+            for r in api.roms_with_files():
+                tr = sorted((f.get("file_name") or "", int(f.get("file_size_bytes") or 0))
+                            for f in r.get("files") or [] if f.get("category") == "soundtrack")
+                if tr:
+                    by_sig.setdefault(tuple(tr), []).append({"id": str(r["id"]), "name": r.get("name") or r.get("fs_name") or str(r["id"]),
+                                                             "platform": r.get("platform_display_name") or r.get("platform_slug") or ""})
+            cands = [(sig, g) for sig, g in by_sig.items() if len(g) > 1]
+            found = []
+            for i, (sig, group) in enumerate(cands):
+                progress(f"Comparing file contents ({i + 1} of {len(cands)} candidate sets)", i / max(len(cands), 1))
+                by_files: dict[str, tuple[dict, list[dict]]] = {}
+                for g in group:
+                    files, _tracks = self._hash_tracks(api, g["id"])
+                    if not files:
+                        continue
+                    key = hashlib.sha1(json.dumps(sorted(files.items())).encode()).hexdigest()
+                    by_files.setdefault(key, (files, []))[1].append(g)
+                for key, (files, games) in by_files.items():
+                    if len(games) > 1:
+                        found.append({"id": key[:16], "tracks": len(files), "bytes": sum(sz for _n, sz in sig),
+                                      "files": files, "games": games})
+            found.sort(key=lambda g: (-g["bytes"] * (len(g["games"]) - 1), g["id"]))
+            with self._lock:
+                c = self._db()
+                try:
+                    c.execute("INSERT OR REPLACE INTO dup_scan(id, ts, groups) VALUES(1,?,?)", (time.time(), json.dumps(found)))
+                    c.commit()
+                finally:
+                    c.close()
+            job.update(state="done", made=len(found), pct=1.0, step="Done",
+                       message=f"Found {len(found)} set{'s' if len(found) != 1 else ''} of identical soundtracks")
+        except Exception as ex:  # noqa: BLE001 - reported on the job
+            msg = api._redact(str(ex)) if isinstance(ex, RommError) else ex.__class__.__name__
+            log.warning("duplicate scan failed: %s", ex.__class__.__name__)
+            job.update(state="error", step="Failed", message=msg)
+        finally:
+            job["finished"] = time.time()
+
+    def start_merge(self, keep: dict, drops: list[dict], api: RommApi, run_async: bool = True) -> dict:
+        """Keep one game's soundtrack and remove the identical copies from the others (through RomM). One job over all of them."""
+        ids = [str(d["id"]) for d in drops if str(d["id"]) != str(keep["id"])]
+        if not ids:
+            raise ValueError("choose at least one other game to merge into the one you keep")
+        job = self._begin_job([str(keep["id"])] + ids, keep["name"], "merge")
+        self._spawn(self._run_merge, job, keep, [d for d in drops if str(d["id"]) in ids], api, run_async=run_async)
+        return dict(job)
+
+    def _run_merge(self, job: dict, keep: dict, drops: list[dict], api: RommApi) -> None:
+        progress = self._progress(job)
+        problems: list[str] = []
+        done = 0
+        try:
+            kid = str(keep["id"])
+            progress(f"Reading {keep['name']}")
+            kfiles, _ = self._hash_tracks(api, kid)
+            if not kfiles:
+                raise ValueError("the game you chose to keep has no soundtrack files in RomM")
+            for i, drop in enumerate(drops):
+                did = str(drop["id"])
+                progress(f"Comparing {drop['name']} ({i + 1} of {len(drops)})", i / len(drops))
+                dfiles, dtracks = self._hash_tracks(api, did)
+                if dfiles != kfiles:                         # byte for byte, names included
+                    problems.append(f"{drop['name']}: soundtrack is not identical to the one being kept; left alone")
+                    continue
+                row = self._add_merge(did, kid, drop["name"], keep["name"], kfiles)
+                deleted: list[str] = []
+                try:
+                    for t in dtracks:
+                        api.delete_track(did, t["file_id"])
+                        deleted.append(str(t["file_id"]))
+                except Exception as ex:  # noqa: BLE001 - the rest of the drops can still go ahead
+                    problems.append(f"{drop['name']}: could not remove every file ({api._redact(str(ex)) if isinstance(ex, RommError) else ex.__class__.__name__}); "
+                                    "undo restores what is missing")
+                    self._finish_merge(row, did, deleted, "partial", None)
+                    continue
+                self._finish_merge(row, did, deleted, "merged", f"soundtrack kept on {keep['name']}")
+                done += 1
+            self._prune_dup_groups(self._merged_ids())
+            job.update(state="done", made=done, skipped=len(problems), pct=1.0, step="Done",
+                       message=f"Merged {done} cop{'ies' if done != 1 else 'y'} into {keep['name']}"
+                               + (": " + "; ".join(problems) if problems else ""))
+        except Exception as ex:  # noqa: BLE001
+            msg = api._redact(str(ex)) if isinstance(ex, RommError) else (str(ex) if isinstance(ex, ValueError) else ex.__class__.__name__)
+            log.warning("soundtrack merge failed: %s", ex.__class__.__name__)
+            job.update(state="error", step="Failed", message=msg)
+        finally:
+            job["finished"] = time.time()
+
+    def _add_merge(self, did: str, kid: str, dtitle: str, ktitle: str, files: dict) -> int:
+        with self._lock:
+            c = self._db()
+            try:
+                cur = c.execute("INSERT INTO merges(drop_id,keep_id,drop_title,keep_title,files,ts,state) VALUES(?,?,?,?,?,?, 'merging')",
+                                (did, kid, dtitle, ktitle, json.dumps(files), time.time()))
+                c.commit()
+                return cur.lastrowid
+            finally:
+                c.close()
+
+    def _finish_merge(self, row: int, did: str, deleted: list[str], state: str, note: str | None) -> None:
+        """Record the outcome. Files that are gone from RomM are no longer something Undo (phase 1) could remove."""
+        with self._lock:
+            c = self._db()
+            try:
+                c.execute("UPDATE merges SET state=? WHERE id=?", (state, row))
+                for r in c.execute("SELECT id, path FROM journal WHERE key=? AND undone=0", (did,)).fetchall():
+                    parts = r["path"][len("romm://"):].split("/", 2) if r["path"].startswith("romm://") else []
+                    if len(parts) == 3 and parts[1] in deleted:
+                        c.execute("UPDATE journal SET undone=1 WHERE id=?", (r["id"],))
+                c.execute("INSERT OR IGNORE INTO sound(key,status,ts) VALUES(?,?,?)", (did, "unsearched", time.time()))
+                if state == "merged":
+                    c.execute("UPDATE sound SET status='merged', files=0, note=?, ts=? WHERE key=?", (note, time.time(), did))
+                else:
+                    c.execute("UPDATE sound SET note=?, ts=? WHERE key=?", ("merge incomplete; Undo restores what is missing", time.time(), did))
+                c.commit()
+            finally:
+                c.close()
+
+    def _merged_ids(self) -> set[str]:
+        c = self._db()
+        try:
+            return {r[0] for r in c.execute("SELECT drop_id FROM merges WHERE state IN ('merged','partial')")}
+        finally:
+            c.close()
+
+    def _prune_dup_groups(self, merged: set[str]) -> None:
+        """A game that lost its copy is no longer a duplicate; a set left with one game is not a set."""
+        with self._lock:
+            c = self._db()
+            try:
+                row = c.execute("SELECT groups FROM dup_scan WHERE id=1").fetchone()
+                if not row:
+                    return
+                groups = []
+                for g in json.loads(row["groups"]):
+                    g["games"] = [x for x in g["games"] if x["id"] not in merged]
+                    if len(g["games"]) > 1:
+                        groups.append(g)
+                c.execute("UPDATE dup_scan SET groups=? WHERE id=1", (json.dumps(groups),))
+                c.commit()
+            finally:
+                c.close()
+
+    def start_unmerge(self, drop: dict, api: RommApi, run_async: bool = True) -> dict:
+        """Give a merged game its own copy back, re-uploaded from the keeper's files after checking them against the merge's hashes."""
+        did = str(drop["id"])
+        c = self._db()
+        try:
+            m = c.execute("SELECT * FROM merges WHERE drop_id=? AND state IN ('merged','partial') ORDER BY ts DESC", (did,)).fetchone()
+        finally:
+            c.close()
+        if not m:
+            raise ValueError("this game is not merged")
+        job = self._begin_job([did, m["keep_id"]], drop["name"], "unmerge")
+        self._spawn(self._run_unmerge, job, drop, dict(m), api, run_async=run_async)
+        return dict(job)
+
+    def _run_unmerge(self, job: dict, drop: dict, m: dict, api: RommApi) -> None:
+        progress = self._progress(job)
+        did, kid, want = str(drop["id"]), m["keep_id"], json.loads(m["files"])
+        work = tempfile.mkdtemp(prefix="unmerge-", dir=self._tmp())
+        sent: list[str] = []
+        try:
+            rom = api.rom(did)
+            if not (rom.get("has_multiple_files") or rom.get("has_nested_single_file")) and not stem_stable(str(rom.get("fs_name") or "")):
+                raise ValueError("moving this ROM into a folder would change the name RomM stores for it (its name ends in a "
+                                 "dotted number), which breaks name-based save matching; not restored")
+            ktracks = {t["file_name"]: t for t in api.tracks(kid)}
+            if set(ktracks) != set(want):
+                raise ValueError("the kept soundtrack has changed since the merge; cannot restore a verified copy")
+            staged: list[tuple[str, str, int]] = []
+            for i, (name, t) in enumerate(sorted(ktracks.items())):          # fetch and verify everything before touching the game
+                progress(f"Fetching {name} from the kept copy", i / max(len(ktracks), 1) / 2)
+                path = os.path.join(work, f"{i}.bin")
+                h, size = hashlib.sha1(), 0
+                with open(path, "wb") as f:
+                    for chunk in api.iter_track(kid, t["file_id"], name):
+                        h.update(chunk)
+                        f.write(chunk)
+                        size += len(chunk)
+                if h.hexdigest() != want[name]:
+                    raise ValueError("the kept soundtrack has changed since the merge; cannot restore a verified copy")
+                staged.append((name, path, size))
+            existing = {t["file_name"] for t in api.tracks(did)}
+            problems = []
+            for i, (name, path, size) in enumerate(staged):
+                progress(f"Restoring {name}", 0.5 + i / max(len(staged), 1) / 2)
+                if name in existing:
+                    continue
+                up = header_safe(name)
+                try:
+                    api.upload(did, up, path, size)
+                except RommError as ex:
+                    if ex.status in (401, 403):
+                        raise ValueError("RomM refused the upload: the library login needs permission to edit ROMs (roms.write)") from ex
+                    if ex.status in (400, 409):
+                        problems.append(name)
+                        continue
+                    raise
+                sent.append(up)
+            if problems:
+                raise ValueError(f"RomM refused {len(problems)} of the files; the merge stays recorded so you can retry")
+            with self._lock:
+                c = self._db()
+                try:
+                    c.execute("UPDATE merges SET state='unmerged' WHERE id=?", (m["id"],))
+                    c.commit()
+                finally:
+                    c.close()
+            self._set_sound(did, status="downloaded", files=len(want), note=f"restored from {m['keep_title']}", title=drop["name"])
+            job.update(state="done", made=len(sent), pct=1.0, step="Done",
+                       message=f"Restored {len(want)} file{'s' if len(want) != 1 else ''} to {drop['name']}")
+        except Exception as ex:  # noqa: BLE001
+            msg = api._redact(str(ex)) if isinstance(ex, RommError) else (str(ex) if isinstance(ex, ValueError) else ex.__class__.__name__)
+            log.warning("soundtrack unmerge failed: %s", ex.__class__.__name__)
+            job.update(state="error", step="Failed", message=msg)
+        finally:
+            try:
+                self._journal_sent(did, sent, api)          # what was re-uploaded can be removed again from the game page
+            except Exception:  # noqa: BLE001
+                log.warning("could not journal the restored soundtrack for %s", did)
+            shutil.rmtree(work, ignore_errors=True)
+            job["finished"] = time.time()
+
+    def _tmp(self) -> str:
+        os.makedirs(self.tmp_dir, exist_ok=True)
+        return self.tmp_dir
+
+    # -- phase 3: albums from the user's music library --
+
+    ALBUM_TTL = 120
+
+    def library_albums(self, root: str) -> list[dict]:
+        """Albums under the music library root, listed once and kept for a couple of minutes (walking a big library is slow)."""
+        if not root or not os.path.isdir(root):
+            raise ValueError("the music library folder is not available; set music_library_root and mount it read-only")
+        real = os.path.realpath(root)
+        with self._lock:
+            cached = getattr(self, "_albums", None)
+            if cached and cached[0] == real and time.time() - cached[1] < self.ALBUM_TTL:
+                return cached[2]
+        albums = scan_albums(real)
+        with self._lock:
+            self._albums = (real, time.time(), albums)
+        return albums
+
+    def library_search(self, root: str, query: str) -> dict:
+        return {"albums": search_albums(self.library_albums(root), query)}
+
+    def start_album(self, game: dict, api: RommApi, root: str, album_id: str, run_async: bool = True) -> dict:
+        """Upload an album's audio from the music library into the game's soundtrack. The library is only ever read."""
+        key = str(game["id"])
+        if not root or not os.path.isdir(root):
+            raise ValueError("the music library folder is not available; set music_library_root and mount it read-only")
+        src = resolve_album(root, album_id)
+        files = collect_album(src)
+        if not files:
+            raise ValueError("no audio RomM can play in that folder")
+        job = self._begin_job([key], game["name"], "album")
+        self._spawn(self._run_album, job, game, api, album_id, files, run_async=run_async)
+        return dict(job)
+
+    def _run_album(self, job: dict, game: dict, api: RommApi, album_id: str, files: list[tuple[str, str, int]]) -> None:
+        key, progress = job["game_id"], self._progress(job)
+        sent: list[str] = []
+        made = skipped = 0
+        try:
+            rom = api.rom(key)
+            if not (rom.get("has_multiple_files") or rom.get("has_nested_single_file")) and not stem_stable(str(rom.get("fs_name") or "")):
+                raise ValueError("moving this ROM into a folder would change the name RomM stores for it (its name ends in a "
+                                 "dotted number), which breaks name-based save matching; nothing was added")
+            existing = {t["file_name"] for t in api.tracks(key)}
+            for i, (name, path, size) in enumerate(files):
+                progress(f"Adding track {i + 1} of {len(files)}", i / len(files))
+                if name in existing:
+                    skipped += 1
+                    continue
+                try:
+                    api.upload(key, name, path, size)           # straight from the library file, which is opened read-only
+                except RommError as ex:
+                    if ex.status in (401, 403):
+                        raise ValueError("RomM refused the upload: the library login needs permission to edit ROMs (roms.write)") from ex
+                    if ex.status in (400, 409):
+                        skipped += 1
+                        continue
+                    raise
+                sent.append(name)
+                existing.add(name)
+                made += 1
+                job["made"], job["skipped"] = made, skipped
+            title = os.path.basename(album_id.rstrip("/"))
+            self._set_sound(key, status="downloaded" if made else "found", files=len(api.tracks(key)) if made else 0,
+                            provider="library", chosen=json.dumps({"provider": "library", "id": album_id, "title": title}),
+                            title=game["name"], note=f"{made} track(s) from the music library, {skipped} skipped (already there or refused)")
+            job.update(state="done", made=made, skipped=skipped, pct=1.0, step="Done",
+                       message=f"Added {made} track{'s' if made != 1 else ''} from {title}"
+                               + (f"; {skipped} skipped (already there)" if skipped else ""))
+        except Exception as ex:  # noqa: BLE001
+            msg = api._redact(str(ex)) if isinstance(ex, RommError) else (str(ex) if isinstance(ex, ValueError) else ex.__class__.__name__)
+            log.warning("album upload for %s failed: %s", key, ex.__class__.__name__)
+            job.update(state="error", step="Failed", message=msg)
+            self._set_sound(key, note=f"album upload failed: {msg}"[:300])
+        finally:
+            try:
+                self._journal_sent(key, sent, api)             # also after a failure, so a partial add can be undone
+            except Exception:  # noqa: BLE001
+                log.warning("could not journal the album upload for %s", key)
+            job["finished"] = time.time()
+
+
 class JobBusy(Exception):
     pass
+
+
+class AlreadyStored(Exception):
+    """Another game already holds this soundtrack; downloading it again would only make a duplicate."""
+
+    def __init__(self, holders: list[str]):
+        super().__init__("already stored on " + ", ".join(holders[:3]) + (f" and {len(holders) - 3} more" if len(holders) > 3 else "")
+                         + "; not downloaded again (send force to download it anyway)")
+        self.holders = holders
 
 
 def pick_downloads(downloads: list[dict], fmt: str) -> list[dict]:

@@ -187,3 +187,110 @@ def test_write_token_uses_the_write_scope_and_prefers_a_configured_api_token():
         assert Romm(RommConfig(base_url=romm.url)).write_token() is None
     finally:
         romm.close()
+
+
+# --- phases 2 and 3 over HTTP -------------------------------------------------
+
+def wait_job(base, kind):
+    for _ in range(200):
+        items = json.loads(call(base, "/api/v1/soundtracks/jobs")[1])["items"]
+        mine = [i for i in items if i["kind"] == kind]
+        if mine and mine[0]["state"] != "running":
+            return mine[0]
+        time.sleep(0.05)
+    raise AssertionError(f"{kind} job never finished")
+
+
+def test_the_new_routes_need_the_api_key(env):
+    base, *_ = env
+    for path in ("/api/v1/soundtracks/dups", "/api/v1/soundtracks/library/search?q=x"):
+        assert call(base, path, key=None)[0] == 401
+    for path in ("dups/scan", "dups/merge", "dups/unmerge", "library/add"):
+        assert call(base, "/api/v1/soundtracks/" + path, {"id": "42"}, key=None)[0] == 401
+
+
+def test_scan_merge_and_unmerge_round_trip(env):
+    base, service, romm, caplog = env
+    service._library_cache = (service._library_cache[0] + [Game(id="43", name="Chrono Trigger Rev A", platform="SNES",
+                                                                 platform_slug="snes")], time.monotonic(), "")
+    romm.rom = {"fs_name": "x", "has_multiple_files": True}
+    romm.tracks[42] = {}
+    romm.seed(42, {"01.mp3": b"a", "02.mp3": b"b"}, "Chrono Trigger")
+    romm.seed(43, {"01.mp3": b"a", "02.mp3": b"b"}, "Chrono Trigger Rev A")
+
+    assert call(base, "/api/v1/soundtracks/dups/scan", {})[0] == 200
+    assert wait_job(base, "dup-scan")["state"] == "done"
+    dups = json.loads(call(base, "/api/v1/soundtracks/dups")[1])
+    assert [sorted(x["id"] for x in g["games"]) for g in dups["groups"]] == [["42", "43"]]
+
+    code, raw = call(base, "/api/v1/soundtracks/dups/merge", {"keep": "42", "drop": ["43"]})
+    assert code == 200 and json.loads(raw)["kind"] == "merge"
+    assert wait_job(base, "merge")["made"] == 1
+    assert romm.tracks[43] == {} and len(romm.tracks[42]) == 2
+
+    code, raw = call(base, "/api/v1/soundtracks/dups/unmerge", {"id": "43"})
+    assert code == 200
+    assert wait_job(base, "unmerge")["state"] == "done"
+    assert sorted(romm.tracks[43].values()) == ["01.mp3", "02.mp3"]
+    for text in (call(base, "/api/v1/soundtracks/dups")[1], call(base, "/api/v1/soundtracks/jobs")[1], caplog.text):
+        assert TOKEN not in text and PASSWORD not in text
+
+
+def test_merge_requests_are_validated(env):
+    base, *_ = env
+    assert call(base, "/api/v1/soundtracks/dups/merge", {"keep": "42"})[0] == 400
+    assert call(base, "/api/v1/soundtracks/dups/merge", {"keep": "42", "drop": [{"x": 1}]})[0] == 400
+    assert call(base, "/api/v1/soundtracks/dups/merge", {"keep": "42", "drop": ["42"]})[0] == 400      # nothing to merge into it
+    assert call(base, "/api/v1/soundtracks/dups/merge", {"keep": "42", "drop": ["999"]})[0] == 404     # not in the library
+    assert call(base, "/api/v1/soundtracks/dups/unmerge", {"id": "42"})[0] == 400                      # not merged
+
+
+def test_download_of_a_soundtrack_held_elsewhere_answers_409_until_forced(env):
+    base, service, romm, _ = env
+    cand = {"provider": "zophar", "id": "/music/snes-spc/chrono-trigger"}
+    assert call(base, "/api/v1/soundtracks/download", {"id": "42", "candidate": cand, "format": "mp3"})[0] == 200
+    wait_done(base)
+    service._library_cache = (service._library_cache[0] + [Game(id="43", name="Rev A", platform="SNES", platform_slug="snes")],
+                              time.monotonic(), "")
+    romm.rom = {"fs_name": "x", "has_multiple_files": True}
+    code, raw = call(base, "/api/v1/soundtracks/download", {"id": "43", "candidate": cand, "format": "mp3"})
+    assert code == 409 and json.loads(raw)["held_by"] == ["Chrono Trigger"]
+    code, _ = call(base, "/api/v1/soundtracks/download", {"id": "43", "candidate": cand, "format": "mp3", "force": True})
+    assert code == 200
+
+
+def test_music_library_search_and_add(env, tmp_path):
+    base, service, romm, caplog = env
+    root = tmp_path / "music"
+    (root / "Fan" / "CT Remix" / "CD1").mkdir(parents=True)
+    (root / "Fan" / "CT Remix" / "CD1" / "01 A.mp3").write_bytes(b"remix")
+    (root / "Fan" / "CT Remix" / "cover.jpg").write_bytes(b"img")
+    service.store.settings["music_library_root"] = str(root)
+    romm.rom = {"fs_name": "x", "has_multiple_files": True}
+
+    code, raw = call(base, "/api/v1/soundtracks/library/search?q=remix")
+    assert code == 200 and [a["id"] for a in json.loads(raw)["albums"]] == ["Fan/CT Remix"]
+    assert call(base, "/api/v1/soundtracks/library/add", {"id": "42", "album": "../x"})[0] == 400
+    assert call(base, "/api/v1/soundtracks/library/add", {"id": "42", "album": "/etc"})[0] == 400
+    assert call(base, "/api/v1/soundtracks/library/add", {"id": "42"})[0] == 400
+
+    code, raw = call(base, "/api/v1/soundtracks/library/add", {"id": "42", "album": "Fan/CT Remix"})
+    assert code == 200 and json.loads(raw)["kind"] == "album"
+    assert wait_job(base, "album")["made"] == 1
+    assert "CD1 - 01 A.mp3" in romm.tracks[42].values()
+    code, raw = call(base, "/api/v1/soundtracks/undo", {"id": "42"})
+    assert json.loads(raw)["removed"] == 1 and list(romm.tracks[42].values()) == ["Mine Already.mp3"]
+    assert TOKEN not in caplog.text
+
+
+def test_music_library_not_configured_or_missing_is_a_400(env, tmp_path):
+    base, service, *_ = env
+    service.store.settings["music_library_root"] = str(tmp_path / "absent")
+    assert call(base, "/api/v1/soundtracks/library/search?q=x")[0] == 400
+    service.store.settings["music_library_root"] = ""
+    assert call(base, "/api/v1/soundtracks/library/add", {"id": "42", "album": "x"})[0] == 400
+
+
+def test_the_music_library_defaults_to_the_documented_mount(env):
+    _, service, *_ = env
+    assert service.music_library_root() == "/music-library"
