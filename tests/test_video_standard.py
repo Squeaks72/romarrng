@@ -84,3 +84,52 @@ def test_extensions_are_normalised_and_junk_dropped():
 def test_format_words_are_word_bounded():
     p = _f(psx=["iso"])
     assert p.adjustments("game isometric", "psx") == []
+
+
+# ---- preferred regions drive scoring -------------------------------------------
+
+def _r(order, mode=""):
+    return ReleaseProfile.from_settings({"preferred_regions": order, "region_mode": mode})
+
+
+def test_default_region_list_is_the_old_ladder():
+    p = _r(["USA", "World", "Europe", "Japan"])
+    assert p.region_points("game (usa)")[0] == 40
+    assert p.region_points("game (europe)")[0] == 20
+    assert p.region_points("game (japan)")[0] == 10
+
+
+def test_a_custom_order_changes_the_ranking():
+    p = _r(["Japan", "USA"])
+    assert p.region_points("game (japan)")[0] == 40
+    assert p.region_points("game (usa)")[0] == 30
+    assert p.region_points("game (europe)")[0] == 0
+
+
+def test_combined_codes_count_for_their_best_listed_region():
+    p = _r(["Europe", "USA"])
+    assert p.region_points("game (ue)")[0] == 40   # Europe is first on this list
+
+
+def test_strict_mode_refuses_regions_outside_the_list_only():
+    p = _r(["USA"], mode="strict")
+    assert "not in your preferred regions" in p.refusal("game (europe)")
+    assert p.refusal("game (usa, europe)") == ""
+    assert p.refusal("game") == ""
+    assert _r(["USA"]).refusal("game (europe)") == ""
+
+
+def test_the_scorer_uses_the_profile_region_order():
+    from romarr.selection import judge
+    from romarr.indexers import Release
+    from romarr.platforms import resolve
+
+    def rel(t):
+        return Release(title=t, download_url="magnet:?xt=urn:btih:" + "a" * 40, seeders=10,
+                       size=600_000_000, protocol="torrent", indexer="x", categories=[1000])
+    plat = resolve("psx")
+    jp = judge(rel("Final Fantasy VII (Japan) PS1 ISO"), "Final Fantasy VII", plat,
+               profile=_r(["Japan", "USA"]))
+    us = judge(rel("Final Fantasy VII (USA) PS1 ISO"), "Final Fantasy VII", plat,
+               profile=_r(["Japan", "USA"]))
+    assert jp.points > us.points

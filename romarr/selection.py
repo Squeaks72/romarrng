@@ -381,13 +381,18 @@ def judge(release: Release, wanted: str,
 
     region = 0
     label = ""
-    for markers, value in _REGION_SCORE:
-        if any(m in lowered for m in markers):
-            region, label = value, markers[0]
-            break
-    for code, value in _REGION_CODES.items():
-        if value > region and _mentions(lowered, code):
-            region, label = value, code
+    mine = profile.region_points(lowered) if profile else None
+    if mine is not None:
+        # Your "Preferred regions" list decides the order.
+        region, label = mine
+    else:
+        for markers, value in _REGION_SCORE:
+            if any(m in lowered for m in markers):
+                region, label = value, markers[0]
+                break
+        for code, value in _REGION_CODES.items():
+            if value > region and _mentions(lowered, code):
+                region, label = value, code
     add(region, f"region {label}" if label else "region")
 
     if _GOOD_DUMP_MARKER in lowered:

@@ -92,6 +92,47 @@ def _clean_formats(raw) -> dict[str, list[str]]:
     return out
 
 
+DEFAULT_REGIONS = ["usa", "world", "europe", "japan"]
+REGION_FIRST_POINTS = 40
+REGION_STEP_POINTS = 10
+
+#: canonical region -> other spellings that name it in a release title.
+_REGION_WORDS = {
+    "usa": ("ntsc-u", "united states", "north america"),
+    "world": ("global",),
+    "europe": ("pal", "eur"),
+    "japan": ("ntsc-j", "jpn"),
+    "australia": (), "germany": (), "france": (), "spain": (), "italy": (),
+    "korea": (), "brazil": (), "canada": (), "asia": (), "china": (),
+    "netherlands": (), "sweden": (), "taiwan": (), "russia": (),
+}
+#: GoodTools / No-Intro compact codes; a combined code names every region in it.
+_REGION_LETTERS = {"u": "usa", "e": "europe", "j": "japan", "w": "world"}
+_CODE_WORDS = {"us": "usa", "eu": "europe", "jp": "japan"}
+_REGION_ALIAS = {
+    "us": "usa", "u": "usa", "ntsc-u": "usa", "north america": "usa", "united states": "usa",
+    "global": "world", "w": "world",
+    "eu": "europe", "eur": "europe", "pal": "europe", "e": "europe",
+    "jp": "japan", "jpn": "japan", "ntsc-j": "japan", "j": "japan",
+}
+
+
+def _clean_regions(raw) -> list[str]:
+    """Canonical region names from "USA, World, Europe", best first."""
+    if raw is None:
+        return list(DEFAULT_REGIONS)
+    items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+    out: list[str] = []
+    for item in items:
+        name = str(item or "").strip().lower()
+        if not name:
+            continue
+        name = _REGION_ALIAS.get(name, name)
+        if name not in out:
+            out.append(name)
+    return out
+
+
 @dataclass
 class ReleaseProfile:
     """Preferred, excluded and required terms.
@@ -118,6 +159,13 @@ class ReleaseProfile:
     #: file-extension words. Ranking only: a release naming none of them is not
     #: penalised, because most release titles do not name a format at all.
     formats: dict[str, list[str]] = field(default_factory=dict)
+    #: "Preferred regions, best first" as canonical region names. The first is
+    #: worth 40 points, then 30, 20, 10 (never below 5). Replaces the built-in
+    #: ladder, which is the same order, so the default changes nothing.
+    regions: list[str] = field(default_factory=lambda: list(DEFAULT_REGIONS))
+    #: With region_mode "strict": refuse a release that names regions, none of
+    #: which you listed. A release naming no region is kept either way.
+    region_strict: bool = False
 
     @classmethod
     def from_settings(cls, settings: dict) -> "ReleaseProfile":
@@ -148,6 +196,8 @@ class ReleaseProfile:
             video_standard=standard if standard in ("ntsc", "pal") else "",
             video_strict=bool(settings.get("video_standard_strict")),
             formats=_clean_formats(settings.get("preferred_formats")),
+            regions=_clean_regions(settings.get("preferred_regions")),
+            region_strict=str(settings.get("region_mode") or "") == "strict",
         )
 
     def _video(self, lowered: str) -> bool | None:
@@ -167,6 +217,11 @@ class ReleaseProfile:
 
     def refusal(self, lowered: str) -> str:
         """Why this release is refused outright, or "" if it is not."""
+        if self.region_strict and self.regions:
+            named = self._named_regions(lowered)
+            if named and not (named & set(self.regions)):
+                return ("region " + "/".join(sorted(named))
+                        + " is not in your preferred regions")
         if self.video_strict and self._video(lowered) is False:
             other = "PAL" if self.video_standard == "ntsc" else "NTSC"
             return (f"{other} release refused: you require "
@@ -178,6 +233,30 @@ class ReleaseProfile:
             if not _matches(term, lowered):
                 return f"missing a required term ({term!r})"
         return ""
+
+    def _named_regions(self, lowered: str) -> set[str]:
+        named: set[str] = set()
+        for region, words in _REGION_WORDS.items():
+            if any(re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", lowered)
+                   for w in (region,) + words):
+                named.add(region)
+        for code in re.findall(r"[(\[]([a-z]{1,3})[)\]]", lowered):
+            if code in _CODE_WORDS:
+                named.add(_CODE_WORDS[code])
+            elif set(code) <= set(_REGION_LETTERS):
+                named.update(_REGION_LETTERS[c] for c in code)
+        return named
+
+    def region_points(self, lowered: str) -> tuple[int, str] | None:
+        """Points for the release's best-ranked region on YOUR list, or None."""
+        if not self.regions:
+            return None
+        named = self._named_regions(lowered)
+        ranks = [self.regions.index(r) for r in named if r in self.regions]
+        if not ranks:
+            return (0, "")
+        rank = min(ranks)
+        return (max(REGION_FIRST_POINTS - rank * REGION_STEP_POINTS, 5), self.regions[rank])
 
     def _format_points(self, lowered: str, platform_slug: str) -> tuple[int, str] | None:
         """Points for the best-ranked preferred format the release names."""
@@ -208,7 +287,8 @@ class ReleaseProfile:
 
     def __bool__(self) -> bool:
         return bool(self.preferred or self.excluded or self.required
-                    or self.video_standard or self.formats)
+                    or self.video_standard or self.formats or self.region_strict
+                    or self.regions != DEFAULT_REGIONS)
 
 
 _INFOHASH = re.compile(r"btih:([0-9a-fA-F]{40}|[0-9a-zA-Z]{32})")
