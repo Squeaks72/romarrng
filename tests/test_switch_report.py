@@ -79,3 +79,20 @@ def test_a_title_with_no_version_history_is_unknown_not_current(tmp_path):
     idx.add(SwitchTitle("0100aaaa00010000"))
     _make(tmp_path, ["X/X [0100AAAA00010000][v0][Base].nsz"])
     assert report({"switch": tmp_path}, idx)["items"][0]["update"] == "unknown"
+
+
+def test_ignored_dlc_is_removed_from_the_view_and_counts():
+    from romarr.app import Service
+    svc = Service.__new__(Service)
+    svc.store = type("S", (), {"settings": {"ignored_dlc": ["01007960049A1001"]}, "save": lambda self: None})()
+    svc.switch_updates = lambda refresh=False: {
+        "items": [{"game": "G", "platform": "switch", "update": "current", "dlc_total": 2,
+                   "dlc_installed": 0, "dlc_complete_list": True,
+                   "dlc_missing": [{"tid": "01007960049A1001", "name": "A"},
+                                   {"tid": "01007960049A1002", "name": "B"}]}],
+        "summary": {"games": 1, "unknown_to_titledb": 0, "dlc_lists_complete": True}}
+    view = svc.switch_view()
+    row = view["items"][0]
+    assert [d["tid"] for d in row["dlc_missing"]] == ["01007960049A1002"]
+    assert [d["tid"] for d in row["dlc_ignored"]] == ["01007960049A1001"]
+    assert row["dlc_total"] == 1 and view["summary"]["dlc_gaps"] == 1
