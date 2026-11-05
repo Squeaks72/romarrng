@@ -64,9 +64,11 @@ def test_no_secret_value_reaches_a_plugin_under_any_name(environment):
         assert value not in present, f"{name}'s value reached the plugin"
 
 
-def test_the_library_credentials_it_needs_do_get_through(environment):
-    """The boundary has to still let the plugin do its job: import and enrich
-    both need somewhere to import into."""
+def test_the_library_credentials_get_through_only_when_opted_in(
+        environment, monkeypatch):
+    """A plugin that imports itself needs somewhere to import into, so the
+    operator can opt in. By default it gets the URL and no password."""
+    monkeypatch.setenv("ROMARR_PLUGIN_BACKEND_CREDENTIALS", "1")
     env = hub._plugin_env()
     assert env.get("ROMM_URL") == "http://romm:8080"
     assert env.get("ROMM_USER") == "romarr"
