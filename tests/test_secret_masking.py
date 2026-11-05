@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from romarr.app import MASKED_ITEM_FIELDS, SECRET_MASK, Service  # noqa: F401
+from romarr.app import MASKED_ITEM_FIELDS, SECRET_MASK
 from romarr.app import mask_item
 
 
