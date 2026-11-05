@@ -236,6 +236,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "region_mode": "prefer",
     # "ntsc" | "pal" | "" -- see profiles.ReleaseProfile.video_standard.
     "video_standard": "",
+    # {platform slug: [extension, ...]} best first; see ReleaseProfile.formats.
+    "preferred_formats": {},
     "video_standard_strict": False,
     "rename_on_import": True,
     "overwrite_existing": False,

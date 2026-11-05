@@ -51,3 +51,36 @@ def test_strict_refuses_only_the_opposite_standard():
 
 def test_garbage_setting_is_ignored():
     assert _p("secam").video_standard == ""
+
+
+# ---- file formats by console -------------------------------------------------
+
+def _f(**formats):
+    return ReleaseProfile.from_settings({"preferred_formats": formats})
+
+
+def test_first_choice_format_beats_second_for_that_console():
+    p = _f(psx=["chd", "iso"])
+    chd = p.adjustments("game ps1 chd", "psx")
+    iso = p.adjustments("game ps1 iso", "psx")
+    assert chd[0][0] == 30 and iso[0][0] == 20
+
+
+def test_format_preference_only_applies_to_its_console():
+    p = _f(psx=["chd"])
+    assert p.adjustments("game chd", "wii") == []
+    assert p.adjustments("game chd", "") == []
+
+
+def test_release_naming_no_format_is_not_penalised():
+    assert _f(psx=["chd"]).adjustments("game ps1 usa", "psx") == []
+
+
+def test_extensions_are_normalised_and_junk_dropped():
+    p = ReleaseProfile.from_settings({"preferred_formats": {"psx": [".CHD", "chd", "bad format!", "ISO"], "x": "nope"}})
+    assert p.formats == {"psx": ["chd", "iso"]}
+
+
+def test_format_words_are_word_bounded():
+    p = _f(psx=["iso"])
+    assert p.adjustments("game isometric", "psx") == []

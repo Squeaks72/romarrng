@@ -529,7 +529,7 @@ def judge(release: Release, wanted: str,
             add(-200, f"too small to be a {platform.name} {medium}")
 
     if profile:
-        for delta, text in profile.adjustments(lowered):
+        for delta, text in profile.adjustments(lowered, platform.slug if platform else ""):
             add(delta, text)
 
     return Judgement(points, tuple(reasons))

@@ -68,6 +68,30 @@ _PAL_MARKERS = re.compile(
     r"|[(\[](?:e|eu|eur)[)\]]")
 
 
+#: Format preference weights: your first choice is worth the most, each step
+#: down is worth less, never below half a step.
+FORMAT_FIRST_POINTS = 30
+FORMAT_STEP_POINTS = 10
+
+
+def _clean_formats(raw) -> dict[str, list[str]]:
+    """{platform: [ext, ...]} from stored settings, tolerating any shape."""
+    out: dict[str, list[str]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for slug, exts in raw.items():
+        if not isinstance(exts, (list, tuple)):
+            continue
+        seen: list[str] = []
+        for e in exts:
+            word = str(e or "").strip().lower().lstrip(".")
+            if re.fullmatch(r"[a-z0-9]{1,8}", word) and word not in seen:
+                seen.append(word)
+        if seen:
+            out[str(slug)] = seen
+    return out
+
+
 @dataclass
 class ReleaseProfile:
     """Preferred, excluded and required terms.
@@ -90,6 +114,10 @@ class ReleaseProfile:
     #: Refuse a release that names only the other standard, instead of just
     #: ranking it lower. A release naming both (USA, Europe) or neither is kept.
     video_strict: bool = False
+    #: Per console, formats in order of preference ("chd" before "iso"), as
+    #: file-extension words. Ranking only: a release naming none of them is not
+    #: penalised, because most release titles do not name a format at all.
+    formats: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def from_settings(cls, settings: dict) -> "ReleaseProfile":
@@ -119,6 +147,7 @@ class ReleaseProfile:
             required=[str(t) for t in (settings.get("required_terms") or []) if t],
             video_standard=standard if standard in ("ntsc", "pal") else "",
             video_strict=bool(settings.get("video_standard_strict")),
+            formats=_clean_formats(settings.get("preferred_formats")),
         )
 
     def _video(self, lowered: str) -> bool | None:
@@ -150,12 +179,26 @@ class ReleaseProfile:
                 return f"missing a required term ({term!r})"
         return ""
 
-    def adjustments(self, lowered: str) -> list[tuple[int, str]]:
+    def _format_points(self, lowered: str, platform_slug: str) -> tuple[int, str] | None:
+        """Points for the best-ranked preferred format the release names."""
+        order = self.formats.get(platform_slug or "")
+        if not order:
+            return None
+        for rank, ext in enumerate(order):
+            if re.search(r"(?<![a-z0-9])" + re.escape(ext) + r"(?![a-z0-9])", lowered):
+                return (max(FORMAT_FIRST_POINTS - rank * FORMAT_STEP_POINTS, FORMAT_STEP_POINTS // 2),
+                        f"format: {ext.upper()} is your #{rank + 1} for this console")
+        return None
+
+    def adjustments(self, lowered: str, platform_slug: str = "") -> list[tuple[int, str]]:
         """Point changes this profile makes, ready for `Judgement.reasons`."""
         out = []
         for term, points in self.preferred:
             if points and _matches(term, lowered):
                 out.append((points, f"release profile prefers {term!r}"))
+        fmt = self._format_points(lowered, platform_slug)
+        if fmt:
+            out.append(fmt)
         match = self._video(lowered)
         if match is not None:
             std = self.video_standard.upper()
@@ -165,7 +208,7 @@ class ReleaseProfile:
 
     def __bool__(self) -> bool:
         return bool(self.preferred or self.excluded or self.required
-                    or self.video_standard)
+                    or self.video_standard or self.formats)
 
 
 _INFOHASH = re.compile(r"btih:([0-9a-fA-F]{40}|[0-9a-zA-Z]{32})")

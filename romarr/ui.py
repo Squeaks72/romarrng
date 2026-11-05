@@ -439,6 +439,9 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent-line);
 .gh-facts dt{color:var(--dim)}
 .gh-facts dd{margin:0}
 .tablewrap{overflow-x:auto}
+.fmtrow{display:grid;grid-template-columns:200px 1fr auto;gap:8px;align-items:center}
+.fmtrow .help{grid-column:1/-1}
+@media(max-width:700px){.fmtrow{grid-template-columns:1fr auto}.fmtrow input{grid-column:1/-1}}
 .pbar{height:7px;background:var(--surface-3);border-radius:var(--r-pill);overflow:hidden}
 .pbar>div{height:100%;background:var(--accent);border-radius:var(--r-pill);transition:width .6s}
 .pmeta{font-size:11.5px;color:var(--dim);margin-top:3px;white-space:nowrap}
@@ -4101,6 +4104,10 @@ function settingsPage(title, help, body, after){
         :el.dataset.list?el.value.split(',').map(s=>s.trim()).filter(Boolean)
         :el.value;
     });
+    if($('#format-prefs')&&window._formatPrefs){
+      const out={}; for(const [k,v] of Object.entries(window._formatPrefs)) if(v&&v.length) out[k]=v;
+      patch.preferred_formats=out;
+    }
     const mappings=$('#remote-path-mappings');
     if(mappings)patch.remote_path_mappings=[...mappings.querySelectorAll('[data-mapping-row]')]
       .map(row=>({
@@ -4319,10 +4326,35 @@ RENDER.profiles=()=>settingsPage('Release Profile',
        <option value="pal"${SETTINGS.video_standard==='pal'?' selected':''}>PAL — Europe, Australia</option></select>
      <div style="color:var(--dim);font-size:11.5px;margin-top:4px">Releases naming your standard rank higher (+30); the other standard ranks lower (−30). A release naming both, such as USA + Europe, is left alone. The Why column on search results shows the adjustment.</div></div>`
   +chk('video_standard_strict','Refuse the other standard instead of only ranking it lower',SETTINGS.video_standard_strict)
+  +`<div class="field" style="max-width:none"><label>File formats by console</label>
+     <div style="color:var(--dim);font-size:11.5px;margin-bottom:6px">Best first, from the formats each console supports. A release naming your first choice gains 30 points, the next 20, then 10. Releases that name no format are not penalised.</div>
+     <div id="format-prefs"></div>
+     <div style="margin-top:8px;max-width:340px">${pickerHtml('fmt-add',[{value:'',label:'Add a console…'}].concat(PLATFORMS.map(p=>({value:p.slug,label:p.name}))),'','Add a console')}</div></div>`
   +chk('allow_beta','Accept betas and prototypes',SETTINGS.allow_beta)
   +chk('allow_rom_hacks','Accept ROM hacks',SETTINGS.allow_rom_hacks)
   +fld('min_seeders','Minimum seeders',SETTINGS.min_seeders,'number')
-  +fld('max_size_mb','Maximum size (MB)',SETTINGS.max_size_mb,'number'));
+  +fld('max_size_mb','Maximum size (MB)',SETTINGS.max_size_mb,'number'),
+  ()=>{
+    const box=$('#format-prefs'); const prefs=Object.assign({},SETTINGS.preferred_formats||{});
+    const paint=()=>{
+      box.innerHTML=Object.keys(prefs).map(slug=>{
+        const pl=PLATFORMS.find(p=>p.slug===slug)||{name:slug,extensions:[]};
+        return `<div class="fmtrow" data-fmt-row="${esc(slug)}"><b>${esc(pl.name)}</b>
+          <input type="text" value="${esc(prefs[slug].join(', '))}" aria-label="Formats for ${esc(pl.name)}">
+          <button type="button" class="mini" data-fmt-del="${esc(slug)}">Remove</button>
+          <div class="help" style="margin:2px 0 8px">Supported: ${esc((pl.extensions||[]).join(' '))}</div></div>`;}).join('')
+        ||'<div class="help">No console has a format preference yet.</div>';
+      box.querySelectorAll('[data-fmt-del]').forEach(b=>b.onclick=()=>{delete prefs[b.dataset.fmtDel];paint();});
+      box.querySelectorAll('[data-fmt-row] input').forEach(i=>i.oninput=()=>{
+        prefs[i.closest('[data-fmt-row]').dataset.fmtRow]=i.value.split(',').map(x=>x.trim().toLowerCase().replace(/^\./,'')).filter(Boolean);});
+    };
+    paint();
+    bindPicker($('#page'),'fmt-add',[{value:'',label:'Add a console…'}].concat(PLATFORMS.map(p=>({value:p.slug,label:p.name}))),v=>{
+      if(!v) return; const pl=PLATFORMS.find(p=>p.slug===v);
+      prefs[v]=(pl.extensions||[]).map(e=>e.replace(/^\./,'')); paint();
+    });
+    window._formatPrefs=prefs;
+  });
 
 RENDER.clients=async()=>{
   const d=await j('/api/v1/downloadclient');
