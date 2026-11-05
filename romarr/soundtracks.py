@@ -253,8 +253,12 @@ def zophar_search(title: str, platform: str) -> list[dict]:
     return out
 
 
+def valid_zophar_id(cand_id: str) -> bool:
+    return bool(re.fullmatch(r"/music/[A-Za-z0-9._~%/\-]+", cand_id)) and ".." not in cand_id.split("/")
+
+
 def zophar_plan(cand_id: str) -> dict:
-    if not re.fullmatch(r"/music/[A-Za-z0-9._~%/\-]+", cand_id):
+    if not valid_zophar_id(cand_id):
         raise ValueError("not a Zophar music page")
     base = "https://www.zophar.net" + cand_id
     page = polite_get(base)
@@ -299,21 +303,40 @@ FORMATS = {"zophar": ["mp3", "original"], "archive": ["files"]}
 
 # ----------------------------------------------------------------- archives --
 
-def iter_zip_audio(path: str, limit: int = MAX_ARCHIVE_BYTES) -> Iterator[tuple[str, Iterator[bytes]]]:
-    """Yield (flat name, chunks) for each audio member of a zip. Nothing touches disk.
+def audio_member_name(filename: str) -> str | None:
+    """The flat name to store a zip member under, or None when it is not audio worth taking.
 
-    The member's own path is discarded (`../../etc/x.mp3` becomes `x.mp3`),
-    non-audio members are never opened, and the archive is refused up front when
-    its declared contents exceed `limit`. A member that decompresses to more
-    than it declared is cut off, so a lying header cannot get past the cap.
+    The member's own path is discarded (`../../etc/x.mp3` becomes `x.mp3`), so
+    nothing can land outside wherever the caller puts it.
     """
+    name = os.path.basename(filename.replace("\\", "/"))
+    if not name or name.startswith(".") or os.path.splitext(name)[1].lower() not in AUDIO_EXT:
+        return None
+    return name
+
+
+def check_zip(path: str, limit: int = MAX_ARCHIVE_BYTES) -> int:
+    """Refuse an archive whose declared contents exceed `limit`; returns how many audio members it holds."""
     with zipfile.ZipFile(path) as z:
         infos = [i for i in z.infolist() if not i.is_dir()]
         if sum(i.file_size for i in infos) > limit:
             raise ValueError("archive too large (>6 GB)")
-        for i in infos:
-            name = os.path.basename(i.filename.replace("\\", "/"))
-            if not name or name.startswith(".") or os.path.splitext(name)[1].lower() not in AUDIO_EXT:
+        return sum(1 for i in infos if audio_member_name(i.filename))
+
+
+def iter_zip_audio(path: str, limit: int = MAX_ARCHIVE_BYTES) -> Iterator[tuple[str, Iterator[bytes]]]:
+    """Yield (flat name, chunks) for each audio member of a zip, lazily and without extracting to disk.
+
+    Each member's chunks must be consumed before asking for the next, while the
+    generator (and so the archive) is still open. Non-audio members are never
+    opened. A member that decompresses to more than its header declared is cut
+    off, so a lying header cannot get past the size cap.
+    """
+    check_zip(path, limit)
+    with zipfile.ZipFile(path) as z:
+        for i in z.infolist():
+            name = None if i.is_dir() else audio_member_name(i.filename)
+            if name is None:
                 continue
 
             def chunks(info=i):
@@ -364,9 +387,9 @@ def do_download(item: dict, sink: Callable[[str, Iterator[bytes]], int | None], 
                 if done > limit:
                     raise ValueError("archive too large (>6 GB)")
                 progress("Downloading the soundtrack", pct=(done / total[0]) if total[0] else None)
-        members = list(iter_zip_audio(tmpzip, limit))
-        for k, (name, chunks) in enumerate(members):
-            progress(f"Adding track {k + 1} of {len(members)}", pct=k / max(len(members), 1))
+        total_members = check_zip(tmpzip, limit)
+        for k, (name, chunks) in enumerate(iter_zip_audio(tmpzip, limit)):
+            progress(f"Adding track {k + 1} of {total_members}", pct=k / max(total_members, 1))
             w = sink(name, chunks)
             made, skipped = (made + 1, skipped) if w is not None else (made, skipped + 1)
     finally:
@@ -675,7 +698,7 @@ class Soundtracks:
             raise ValueError("unknown source")
         if fmt not in ("mp3", "original", "both", "files", "flac"):
             raise ValueError("unknown format")
-        if provider == "zophar" and not re.fullmatch(r"/music/[A-Za-z0-9._~%/\-]+", cid):
+        if provider == "zophar" and not valid_zophar_id(cid):
             raise ValueError("not a Zophar music page")
         if provider == "archive" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._\-]*", cid):
             raise ValueError("not an Internet Archive identifier")
