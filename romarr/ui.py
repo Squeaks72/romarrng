@@ -2092,7 +2092,7 @@ function addDialog({title,options,platform,afterAdd}){
         ? `<div>${esc(start.name)}</div><input type="hidden" id="ad-plat" value="${esc(start.slug)}">`
         : pickerHtml('ad-plat',opts.map(o=>({value:o.slug,label:o.name,meta:o.state?STATE_LABEL[o.state]:''})),start.slug,'Platform')}</div>
     <label class="check"><input type="checkbox" id="ad-mon" checked>
-      <span>Monitor — keep searching and watching RSS until it is found</span></label>
+      <span>Monitor — keep searching and watching RSS until it is found. Uncheck to keep it on your wishlist without searching.</span></label>
     <div class="field"><label>When added</label>
       <select id="ad-search">
         <option value="auto">Search now and grab the best release</option>
@@ -2250,9 +2250,16 @@ RENDER.game=async(renderEpoch=routeEpoch)=>{
   };
 };
 
+let MISSING_VIEW='all';
 RENDER.missing=async()=>{
-  const d=await j('/api/v1/wanted/missing');
-  $('#page').innerHTML=`<div class="row" style="margin-bottom:14px">
+  const all=await j('/api/v1/wanted/missing');
+  const nMon=all.items.filter(w=>w.monitored!==false).length, nWish=all.items.length-nMon;
+  const d={items:all.items.filter(w=>MISSING_VIEW==='all'||(MISSING_VIEW==='wishlist')===(w.monitored===false))};
+  const seg=(k,l,n)=>`<button class="btn ${MISSING_VIEW===k?'':'ghost'}" data-mview="${k}" style="padding:4px 12px;font-size:12.5px">${l} ${n}</button>`;
+  $('#page').innerHTML=`<div class="row" style="margin-bottom:10px">
+      ${seg('all','All',all.items.length)}${seg('monitored','Monitored',nMon)}${seg('wishlist','Wishlist',nWish)}
+      <span class="help" style="margin:0">Wishlist = on your list but not monitored, so ROMarr never searches for it.</span></div>
+    <div class="row" style="margin-bottom:14px">
       <button class="btn" id="w-all" data-i18n="ui.search-all.01b4b1de28">Search All</button>
       <span style="color:var(--dim);font-size:12.5px">
         ${interfaceTemplateMarkup('ui.requested-not-yet-imported-count.25dbb4afe4',
@@ -2272,6 +2279,7 @@ RENDER.missing=async()=>{
           data-i18n="ui.remove.c3812fc4ac">Remove</button></td></tr>`).join('')}
       </tbody></table>`:'<div class="empty" data-i18n="ui.nothing-missing.ec939b22fd">Nothing missing.</div>'}`;
   applyInterfaceLanguage();
+  $('#page').querySelectorAll('[data-mview]').forEach(x=>x.onclick=()=>{MISSING_VIEW=x.dataset.mview; go('missing');});
   const b=$('#w-all'); if(b) b.onclick=async()=>{
     b.disabled=true; b.dataset.i18n='Searching…'; applyTranslatedLabel(b,readInterfaceLanguage());
     const r=await j('/api/v1/command',{method:'POST',
