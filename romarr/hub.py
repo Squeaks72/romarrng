@@ -82,10 +82,14 @@ def _backend_env() -> dict:
     if url:
         env["ROMM_URL"] = url
         env["ROM_HUB_BACKEND"] = kind
-    if user:
-        env["ROMM_USER"] = user
-    if pw:
-        env["ROMM_PASSWORD"] = pw
+    # A plugin is third-party code. It does not get the library password unless
+    # the operator opts in; by default it can search and fetch, and ROMarr does
+    # the filing itself.
+    if os.environ.get("ROMARR_PLUGIN_BACKEND_CREDENTIALS") == "1":
+        if user:
+            env["ROMM_USER"] = user
+        if pw:
+            env["ROMM_PASSWORD"] = pw
     return env
 
 
@@ -188,6 +192,57 @@ _ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR",
 
 
 
+#: Setuid helper that runs a plugin as a separate, unprivileged uid. It is the
+#: confinement used when the kernel has no Landlock (Unraid): the plugin cannot
+#: read ROMarr's 0600 state file, which holds every credential ROMarr has.
+_PLUGIN_LAUNCHER = "/usr/local/libexec/romarr-plugin-launch"
+_PLUGIN_UID = 10001
+_UID_ISOLATION_CACHE: tuple | None = None
+
+
+def uid_isolation_state() -> tuple[bool, str]:
+    """Whether plugins can run as a separate uid, proved by actually doing it."""
+    global _UID_ISOLATION_CACHE
+    if _UID_ISOLATION_CACHE is not None:
+        return _UID_ISOLATION_CACHE
+    result: tuple[bool, str]
+    try:
+        st = os.stat(_PLUGIN_LAUNCHER)
+        if not (st.st_mode & 0o4000) or st.st_uid != 0:
+            result = (False, "plugin launcher is not installed setuid root")
+        elif st.st_mode & 0o001:
+            result = (False, "plugin launcher is executable by everyone")
+        elif not os.access(_PLUGIN_LAUNCHER, os.X_OK):
+            result = (False, "plugin launcher is not executable by ROMarr's user")
+        elif os.getuid() == _PLUGIN_UID:
+            result = (False, "ROMarr itself runs as the plugin uid")
+        else:
+            p = subprocess.run([_PLUGIN_LAUNCHER, sys.executable, "-c",
+                                "import os;print(os.getuid(),os.getgid(),"
+                                "len(os.getgroups()))"],
+                               capture_output=True, text=True, timeout=15)
+            if p.stdout.split() != [str(_PLUGIN_UID), str(_PLUGIN_UID), "0"]:
+                result = (False, "plugin launcher did not drop privileges: "
+                          + (p.stderr.strip() or p.stdout.strip())[:120])
+            else:
+                result = (True, f"plugins run as uid {_PLUGIN_UID}, "
+                          "separate from ROMarr")
+    except Exception as err:  # noqa: BLE001
+        result = (False, f"plugin launcher unavailable ({err.__class__.__name__})")
+    _UID_ISOLATION_CACHE = result
+    return result
+
+
+def _uid_mode() -> bool:
+    """True when this host has no Landlock and plugins go through the launcher."""
+    try:
+        from .plugin_runtime.landlock import probe as probe_landlock
+        if probe_landlock()[0]:
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    return uid_isolation_state()[0]
+
 
 def sandbox_state() -> tuple[bool, str]:
     """Whether ROM Hub can confine a plugin here, and why not if it cannot.
@@ -200,11 +255,15 @@ def sandbox_state() -> tuple[bool, str]:
     Reported rather than assumed, so the Plugins page can say which of the two
     states an install is actually in.
     """
+    uid_ok = False
     try:
         from .plugin_runtime.landlock import probe as probe_landlock
         files_ok, files_why = probe_landlock()
         if not files_ok:
-            return False, f"filesystem confinement unavailable: {files_why}"
+            uid_ok, uid_why = uid_isolation_state()
+            if not uid_ok:
+                return False, (f"filesystem confinement unavailable: {files_why}; "
+                               f"uid isolation unavailable: {uid_why}")
     except Exception as err:  # noqa: BLE001
         return False, f"filesystem confinement probe failed: {err.__class__.__name__}"
     try:
@@ -287,6 +346,15 @@ def _plugin_runtime_context(process) -> dict:
         "ROMARR_HUB_DATA_ASSETS": json.dumps(assets),
         "ROMARR_HUB_SCRATCH": str(scratch),
     }
+    if _uid_mode():
+        # The plugin runs as another uid, so it must be able to use its own
+        # scratch directory. The name is random and the parent is a private
+        # tmpfs; the plugin uid is the only other user that exists to see it.
+        os.chmod(scratch, 0o777)
+        child_env["ROMARR_HUB_ISOLATION"] = "uid"
+        child_env["ROMARR_HUB_PROTECT"] = os.environ.get(
+            "ROMARR_DATA", "/config/romarr.json")
+        child_env.pop("ROMARR_HUB_LANDLOCK", None)
     return {"plugin_dir": plugin_dir, "scratch": scratch,
             "child_env": child_env}
 
@@ -341,10 +409,10 @@ def _install_plugin_runtime_hardening(plugin_process, broker_host) -> None:
                 resolved_cwd = None
             if list(args) != expected or resolved_cwd != runtime["plugin_dir"]:
                 raise RuntimeError("unsupported ROM Hub plugin runner command")
-            return original_popen(
-                [sys.executable, "-S", "-c", _PLUGIN_BOOTSTRAP],
-                *args_tail, **kwargs,
-            )
+            command = [sys.executable, "-S", "-c", _PLUGIN_BOOTSTRAP]
+            if runtime["child_env"].get("ROMARR_HUB_ISOLATION") == "uid":
+                command = [_PLUGIN_LAUNCHER] + command
+            return original_popen(command, *args_tail, **kwargs)
 
         def start_confined(process):
             runtime = _plugin_runtime_context(process)

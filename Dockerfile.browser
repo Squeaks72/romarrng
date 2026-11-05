@@ -13,6 +13,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential libseccomp-dev libffi-dev \
  && rm -rf /var/lib/apt/lists/*
 
+COPY docker/plugin-launch.c /tmp/plugin-launch.c
+RUN gcc -O2 -Wall -o /tmp/romarr-plugin-launch /tmp/plugin-launch.c
+
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --prefix=/install -r /tmp/requirements.txt \
  && pip install --no-cache-dir --prefix=/install \
@@ -33,6 +36,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install /usr/local
+# Setuid helper that runs Hub plugins as a separate uid (no Landlock needed).
+# The entrypoint restricts it to ROMarr's group at start.
+RUN mkdir -p /usr/local/libexec
+COPY --from=builder /tmp/romarr-plugin-launch /usr/local/libexec/romarr-plugin-launch
+RUN chmod 4750 /usr/local/libexec/romarr-plugin-launch
 
 WORKDIR /app
 COPY romarr/ /app/romarr/

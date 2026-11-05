@@ -8,7 +8,9 @@ import os
 
 def _install_filesystem_boundary() -> None:
     marker = os.environ.pop("ROMARR_HUB_LANDLOCK", "")
-    if marker != "1":
+    isolation = os.environ.pop("ROMARR_HUB_ISOLATION", "")
+    protect = os.environ.pop("ROMARR_HUB_PROTECT", "")
+    if marker != "1" and isolation != "uid":
         raise RuntimeError("ROMarr Hub plugin bootstrap marker is missing")
 
     # The trusted bootstrap consumes this after the boundary is active, then
@@ -38,10 +40,19 @@ def _install_filesystem_boundary() -> None:
             import pyseccomp  # noqa: F401
         except Exception as exc:  # noqa: BLE001 - keep Landlock independent
             seccomp_error = exc
-        from landlock import install
         from syscall_guard import install as install_syscall_guard
 
-        install(plugin_dir, assets, scratch_dir)
+        if isolation == "uid":
+            # No Landlock on this kernel: the boundary is a separate uid. Fail
+            # closed unless that boundary demonstrably holds -- not root, and
+            # unable to read the file that holds ROMarr's credentials.
+            if os.getuid() == 0 or os.geteuid() == 0:
+                raise RuntimeError("uid isolation is running as root")
+            if protect and os.access(protect, os.R_OK):
+                raise RuntimeError("uid isolation can read ROMarr's state file")
+        else:
+            from landlock import install
+            install(plugin_dir, assets, scratch_dir)
         # Landlock cannot restrict chmod/chown/time/xattr changes, and ROM
         # Hub's network filter permits fork/clone. Stack those denials before
         # the upstream runner imports its plugin.
