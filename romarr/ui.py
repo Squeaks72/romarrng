@@ -2373,6 +2373,81 @@ document.addEventListener('keydown',e=>{
 document.addEventListener('click',e=>{ if(e.target.closest&&e.target.closest('#palette-btn')) openPalette(); });
 
 // ---- The game page ---------------------------------------------------------
+// The Soundtrack card on a library game's page. Everything slow (searching the
+// sources, downloading, uploading to RomM) happens on the server; this only
+// asks, shows progress while a job runs, and offers Undo for what ROMarr added.
+const SND_SOURCE={zophar:"Zophar's Domain",archive:'Internet Archive'};
+const SND_FORMAT={mp3:['Download MP3','MP3 files (plays everywhere)'],
+  original:['Download original rips','Native rips such as SPC or VGM. RomM only plays SPC, VGM, VGZ and GYM; other formats are skipped.'],
+  files:['Download audio files','The audio files from this item'],flac:['Download FLAC','Lossless files']};
+function soundtrackCard(d,epoch){
+  const box=$('#g-snd'); if(!box) return;
+  const post=(u,b)=>j(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});
+  const id=encodeURIComponent(d.rom_id);
+  box.innerHTML=`<div class="card"><h3>Soundtrack</h3>
+    <div id="snd-status" role="status" aria-live="polite" class="help">Asking RomM what it has…</div>
+    <div id="snd-prog"></div>
+    <div class="gh-act" id="snd-act" style="margin-top:10px"></div>
+    <div id="snd-res" style="margin-top:12px"></div></div>`;
+  const stat=$('#snd-status'), prog=$('#snd-prog'), act=$('#snd-act'), res=$('#snd-res');
+  let timer=null;
+  const load=async()=>{
+    if(timer){clearTimeout(timer);timer=null;}
+    const s=await j('/api/v1/soundtracks/game?id='+id).catch(()=>({error:'Could not reach ROMarr'}));
+    if(epoch!==routeEpoch||!stat.isConnected) return;
+    if(!s.id){ stat.textContent=s.error||'Soundtracks are not available for this game.'; act.innerHTML=''; return; }
+    const job=s.job, running=job&&job.state==='running';
+    stat.textContent=(s.track_count==null?(s.error||'RomM did not answer.'):
+      (s.track_count?`RomM has ${fmt(s.track_count)} soundtrack file${s.track_count===1?'':'s'} for this game.`:'No soundtrack stored for this game yet.'))
+      +(s.undoable?` ROMarr added ${fmt(s.undoable)} of them.`:'')
+      +((job&&job.state==='error')?` Last attempt failed: ${job.message}`:'')
+      +((job&&job.state==='done'&&job.message)?` ${job.message}.`:'');
+    prog.innerHTML=running?`<label class="help" for="snd-bar">${esc(job.step)}${job.made?` (${fmt(job.made)} added)`:''}</label>
+      <progress id="snd-bar" style="width:100%" max="100" ${job.pct==null?'':`value="${Math.round(job.pct*100)}"`}></progress>`:'';
+    act.innerHTML=`<button class="btn" id="snd-find" ${running?'disabled':''}>Search for a soundtrack</button>
+      ${s.undoable?`<button class="btn danger" id="snd-undo" ${running?'disabled':''}>Undo (remove ${fmt(s.undoable)} added)</button>`:''}`;
+    $('#snd-find').onclick=find;
+    const u=$('#snd-undo'); if(u) u.onclick=undo;
+    if(running) timer=setTimeout(load,1500);
+  };
+  const undo=async()=>{
+    if(!window.confirm('Remove the soundtrack files ROMarr added to this game from RomM? Files you added yourself are not touched.')) return;
+    $('#snd-undo').disabled=true;
+    const r=await post('/api/v1/soundtracks/undo',{id:d.rom_id}).catch(()=>({error:'Could not reach ROMarr'}));
+    toastAppMessage(r.error||`Removed ${fmt(r.removed)} file${r.removed===1?'':'s'}`);
+    load();
+  };
+  const find=async()=>{
+    const b=$('#snd-find'); b.disabled=true; b.textContent='Searching…';
+    res.innerHTML='';
+    const r=await j('/api/v1/soundtracks/search?id='+id).catch(()=>({error:'Could not reach ROMarr'}));
+    if(epoch!==routeEpoch||!res.isConnected) return;
+    b.disabled=false; b.textContent='Search again';
+    if(r.error){ res.innerHTML=`<p class="help" role="alert">${esc(r.error)}</p>`; return; }
+    const c=r.candidates||[];
+    res.innerHTML=(c.length?`<div class="tablewrap"><table><caption class="sr-only">Soundtrack candidates for ${esc(d.title)}</caption>
+      <thead><tr><th scope="col">Title</th><th scope="col">Source</th><th scope="col">Platform</th><th scope="col">Match</th><th scope="col">Download</th></tr></thead><tbody>
+      ${c.map((x,i)=>`<tr><td lang="und" dir="auto">${esc(x.title)} ${x.year?`<span class="rc-y">${esc(x.year)}</span>`:''}
+          <a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">Open ↗</a></td>
+        <td>${esc(SND_SOURCE[x.provider]||x.provider)}</td>
+        <td>${x.platform_match?'<span class="pill">Same platform</span>':esc(x.console||'—')}</td>
+        <td>${Math.round((x.score||0)*100)}%</td>
+        <td>${(x.formats||[]).map(f=>`<button class="btn ghost snd-dl" data-i="${i}" data-f="${esc(f)}" title="${esc((SND_FORMAT[f]||[f,''])[1])}" style="padding:3px 10px;font-size:12px">${esc((SND_FORMAT[f]||[f])[0])}</button>`).join(' ')}</td></tr>`).join('')}
+      </tbody></table></div>`:`<p class="help">Nothing found on the enabled sources.${(r.errors||[]).length?' Some sources did not answer.':''} Try the sites below.</p>`)
+      +`<p class="help" style="margin-top:10px">Search by hand:
+        ${(r.links||[]).map(l=>`<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.name)}</a>`).join(' · ')}</p>`;
+    res.querySelectorAll('.snd-dl').forEach(btn=>btn.onclick=async()=>{
+      const x=c[+btn.dataset.i];
+      res.querySelectorAll('.snd-dl').forEach(o=>o.disabled=true);
+      const g=await post('/api/v1/soundtracks/download',{id:d.rom_id,candidate:{provider:x.provider,id:x.id},format:btn.dataset.f})
+        .catch(()=>({error:'Could not reach ROMarr'}));
+      if(g.error){ toastAppMessage(g.error); res.querySelectorAll('.snd-dl').forEach(o=>o.disabled=false); return; }
+      toastAppMessage('Download started');
+      load();
+    });
+  };
+  load();
+}
 RENDER.game=async(renderEpoch=routeEpoch)=>{
   const [slug,idOrTitle,flag]=ROUTE_ARGS;
   const page=$('#page');
@@ -2408,12 +2483,14 @@ RENDER.game=async(renderEpoch=routeEpoch)=>{
           ${esc(d.meta.notes||'')}</p>`:''}
       </div></div>
     <div id="g-swu"></div>
+    ${(d.in_library&&d.rom_id)?'<div id="g-snd"></div>':''}
     <div class="card" id="g-rel" ${flag==='search'?'':'hidden'}><h3>Interactive search</h3><div id="g-relout"></div></div>
     ${q.length?`<div class="card"><h3>Downloads</h3><div class="tablewrap"><table><thead><tr><th>Release</th><th>State</th><th>Detail</th></tr></thead><tbody>
       ${q.map(x=>`<tr><td lang="und" dir="auto">${esc(x.release||'—')}</td><td>${esc(x.state)}</td><td style="color:var(--dim)">${esc(x.detail||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}
     ${h.length?`<div class="card"><h3>History</h3><div class="tablewrap"><table><thead><tr><th>When</th><th>Event</th><th>Release</th><th>Detail</th></tr></thead><tbody>
       ${h.map(x=>`<tr><td>${esc(regionalDate(x.at||x.time||''))}</td><td>${esc(x.kind)}</td><td lang="und" dir="auto">${esc(x.release||'')}</td><td style="color:var(--dim)">${esc(x.detail||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}
     ${(!d.in_library&&w&&w.last_error)?`<p class="help">Last search: ${esc(w.last_error)} (${fmt(w.attempts)} attempt${w.attempts===1?'':'s'})</p>`:''}`;
+  if(d.in_library&&d.rom_id) soundtrackCard(d,renderEpoch);
   applyInterfaceLanguage();
   const relBox=$('#g-rel'), relOut=$('#g-relout');
   if(d.in_library&&(d.platform==='switch'||d.platform==='switch-2')){
