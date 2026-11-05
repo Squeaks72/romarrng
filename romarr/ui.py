@@ -2212,7 +2212,7 @@ RENDER.switchupdates=async(renderEpoch=routeEpoch,refresh=false)=>{
   const S=d.summary;
   const rows=d.items.filter(i=>!SWU_GAPS||i.update==='missing'||i.update==='outdated'||(i.dlc_missing||[]).length)
     .sort((a,b)=>a.game.localeCompare(b.game));
-  const v=n=>n==null?'—':('v'+fmt(n));
+  const v=n=>n==null?'—':('v'+n);
   page.innerHTML=`<div class="libstats">
       <div><b>${fmt(S.games)}</b><span>games scanned</span></div>
       <div><b>${fmt(S.update_gaps)}</b><span>need an update</span></div>
@@ -2285,8 +2285,8 @@ RENDER.game=async(renderEpoch=routeEpoch)=>{
       if(renderEpoch!==routeEpoch||!r.items||!r.items.length) return;
       const box=$('#g-swu'); if(!box) return;
       box.innerHTML=`<div class="card"><h3>Updates &amp; DLC</h3>${r.items.map(i=>{const b=SWU_BADGE[i.update]||['',i.update];return `
-        <p>Installed <b>${i.installed_version!=null?'v'+fmt(i.installed_version):'—'}</b> ·
-          latest known <b>${i.latest_version!=null?'v'+fmt(i.latest_version):'—'}</b>
+        <p>Installed <b>${i.installed_version!=null?'v'+i.installed_version:'—'}</b> ·
+          latest known <b>${i.latest_version!=null?'v'+i.latest_version:'—'}</b>
           <span class="sb ${b[0]}">${esc(b[1])}</span>
           ${(i.update==='missing'||i.update==='outdated')?`<button class="btn ghost swu-find" data-q="${esc(d.title+' update')}" style="margin-inline-start:8px;padding:3px 10px;font-size:12px">Search for the update</button>`:''}</p>
         <p class="help">DLC: ${i.dlc_total==null?'not checked':fmt(i.dlc_installed)+' of '+fmt(i.dlc_total)+' on disk'}${i.dlc_complete_list?'':' (list may be incomplete)'}</p>
