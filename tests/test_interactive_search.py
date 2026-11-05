@@ -198,6 +198,8 @@ def test_only_a_bounded_number_of_searches_stays_grabbable(tmp_path):
 def test_the_search_page_is_reachable_in_the_ui():
     from romarr.ui import page
     html = page()
-    assert 'data-page="search"' in html
-    assert "RENDER.search" in html
+    # Interactive Search was merged into Add New: no separate nav entry, the
+    # old address still resolves, and the scored release list is still served.
+    assert 'data-page="search"' not in html
+    assert "RENDER.search" in html and "renderReleases" in html
     assert "/api/v1/release" in html
