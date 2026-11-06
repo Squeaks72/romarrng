@@ -12,7 +12,7 @@ environment-dependent: no DNS for romm.internal, sandbox is a docker env).
 | 5 | Secret masking | done |
 | 6 | Switch report + attach | done (API, store setting ignored_dlc, counts().switchgaps; UI is stage 3; TITLED_NAMES=1 + memory 1536m belong to the ops stage) |
 | 7 | Unpacking (tar family, nested) | done |
-| 8 | Soundtracks | not yet (stage 2) |
+| 8 | Soundtracks | done (backend, docs and tests; UI card/page is stage 3) |
 | 9 | UI | not yet (stage 3) |
 | 10 | Ops | not yet (end stage) |
 
@@ -37,3 +37,16 @@ Tests: baseline 4 failed / 2735 passed / 2 skipped; now 4 failed (the same four)
   (plugin scratch needs a finite tmpfs); docs for `ROMARR_ALLOW_UNSANDBOXED_PLUGINS`,
   `ROMARR_PLUGIN_BACKEND_CREDENTIALS`; verify `docker/plugin-launch.c` compiles in the image build
   (could not be compiled in stage 1).
+
+## Stage 2 result (soundtracks, item 8)
+
+* `romarr/soundtracks.py`, `docs/SOUNDTRACKS.md` and the five test files are Tim's, unchanged apart from the
+  test waits below. `Romm.write_token` / `WRITE_SCOPES` (clients.py) are identical: upstream's `Romm` signs in the
+  same way (password grant, `api_token` honoured), so the write token is a second grant with `roms.read roms.write`,
+  cached apart from the read-only token and never logged.
+* app.py: soundtrack service methods, `_soundtrack_reply`, all 11 routes; `game_detail` already exposes `rom_id`.
+  New module-level `import requests` (used by `_soundtrack_reply`). openapi entries and the settings defaults
+  `soundtrack_sources` / `music_library_root` added.
+* Test fix: the job-wait helpers now also wait for `finished` (stamped after the undo journal is written);
+  `test_music_library_search_and_add` was flaky under CPU load (undo ran before the journal, `removed` was 0).
+  The same race exists in Tim's main; production code is unchanged.
