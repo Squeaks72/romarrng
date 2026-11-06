@@ -23,7 +23,7 @@ def _work(monkeypatch, tmp_path):
 def _iso(tmp_path: Path) -> Path:
     src = tmp_path / "src"
     src.mkdir()
-    (src / "Game (USA).iso").write_bytes(b"x" * (9 * 1024 * 1024)))   # upstream refuses a PS2 image under 8 MB
+    (src / "Game (USA).iso").write_bytes(b"x" * (9 * 1024 * 1024))   # upstream refuses a PS2 image under 8 MB
     return src
 
 
