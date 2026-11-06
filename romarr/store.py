@@ -233,6 +233,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Confidential-client secret, if the IdP issued one. Underscore prefix
     # marks it a credential so it is masked out of any settings response.
     "_oidc_client_secret": "",
+    # Which sources a game page's Soundtrack card searches, comma separated.
+    # Zophar's Domain and the Internet Archive; KHInsider and the rest are
+    # behind bot challenges and are only ever linked, never scraped.
+    "soundtrack_sources": "zophar,archive",
+    # Where a regular music library is mounted (read-only) for "Use an album
+    # from your music library" on a game's Soundtrack card. ROMarr only reads it.
+    "music_library_root": "/music-library",
     # Read ROM hashes from the library server so netplay can match on bytes.
     # Daily and at startup; off only if you never want the traffic.
     "hash_index": True,
