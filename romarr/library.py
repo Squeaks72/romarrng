@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import zipfile
@@ -38,7 +39,17 @@ log = logging.getLogger(__name__)
 #: overwhelmingly `.7z` -- 2,621 PlayStation entries, 2,409 PS2, 1,470 Wii --
 #: and an importer that cannot open the format the content ships in supports
 #: the platform on paper only.
-ARCHIVE_SUFFIXES = (".zip", ".7z", ".rar")
+ARCHIVE_SUFFIXES = (".zip", ".7z", ".rar", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2",
+                    ".tar.xz", ".txz")
+
+
+def is_archive_name(name: str) -> bool:
+    """Whether a file name is an archive ROMarr unpacks (compound suffixes included)."""
+    lowered = str(name).lower()
+    return any(lowered.endswith(s) for s in ARCHIVE_SUFFIXES)
+
+#: How many archives deep ROMarr will look: a zip holding a 7z holding the disc.
+MAX_ARCHIVE_DEPTH = 2
 
 #: Handled by the standard library, with no tool to install.
 _STDLIB_ARCHIVES = (".zip",)
@@ -342,7 +353,7 @@ def _source_for(download: Path, platform: Platform | None = None) -> _Source:
         if len(non_hidden) == 1 and non_hidden[0].is_file():
             single_file = non_hidden[0]
             single_suffix = single_file.suffix.lower()
-            if single_suffix in _STDLIB_ARCHIVES or single_suffix in ARCHIVE_SUFFIXES:
+            if single_suffix in _STDLIB_ARCHIVES or is_archive_name(single_file.name):
                 return _source_for(single_file, platform)
 
     # For MAME, FBNeo and DOSBox the archive IS the ROM: the core opens it and
@@ -356,7 +367,7 @@ def _source_for(download: Path, platform: Platform | None = None) -> _Source:
     suffix = download.suffix.lower()
     if download.is_file() and suffix in _STDLIB_ARCHIVES:
         return _ZipSource(download)
-    if download.is_file() and suffix in ARCHIVE_SUFFIXES:
+    if download.is_file() and is_archive_name(download.name):
         tool = bsdtar_path()
         if tool is None:
             raise MissingArchiveTool(
@@ -468,8 +479,11 @@ def _digital_set_name(download: Path) -> str:
     was truncated to `Call.of.Duty.Modern.Warfare.4.[DODI`. Only strip the
     suffix when `download` is an archive file.
     """
-    if download.is_file() and download.suffix.lower() in ARCHIVE_SUFFIXES:
-        return download.stem
+    if download.is_file() and is_archive_name(download.name):
+        lowered = download.name.lower()
+        for ending in sorted(ARCHIVE_SUFFIXES, key=len, reverse=True):
+            if lowered.endswith(ending):
+                return download.name[:-len(ending)]
     return download.name
 
 
@@ -487,12 +501,78 @@ def platform_dir(library_root: Path, platform: "Platform | str", *,
     return base
 
 
+_SWITCH_TID = re.compile(r"(?<![0-9A-Fa-f])([0-9A-Fa-f]{16})(?![0-9A-Fa-f])")
+_SWITCH_MEDIA_DIRS = {"3dboxes", "backcovers", "covers", "miximages", "miximages_v2",
+                      "physicalmedia", "screenshots", "marquees", "videos", "manuals"}
+
+
+def switch_attach_dir(file_name: str, platform_dir: Path) -> Path | None:
+    """Where an update or DLC for a game already on disk belongs, if it is there.
+
+    RomM files extra content by sub-folder name inside the game's own folder
+    (`update/`, `dlc/`). An update dropped loose in the platform folder shows
+    up as a second game, so when the base game's folder exists the file goes
+    inside it. Returns None when the file is not an update/DLC or no folder
+    holds the base game; the caller then keeps its normal destination.
+    """
+    from .titled import base_tid_of, classify_tid
+    m = _SWITCH_TID.search(file_name)
+    if not m:
+        return None
+    tid = m.group(1)
+    kind = classify_tid(tid)
+    if kind not in ("update", "dlc"):
+        return None
+    base = (base_tid_of(tid) or "").upper()
+    if not base or not platform_dir.is_dir():
+        return None
+    try:
+        for entry in platform_dir.iterdir():
+            if not entry.is_dir() or entry.name.startswith(".") \
+                    or entry.name.lower() in _SWITCH_MEDIA_DIRS:
+                continue
+            for f in entry.rglob("*"):
+                if f.is_file() and base in {t.upper() for t in _SWITCH_TID.findall(f.name)
+                                             if (base_tid_of(t) or "").upper() == base}:
+                    return entry / kind
+    except OSError:
+        return None
+    return None
+
+
+def _import_nested(source, inner: list[str], download: Path, platform: Platform,
+                   library_root: Path, depth: int, kwargs: dict) -> list[ImportResult]:
+    """Unpack archives found inside an archive and import what they hold."""
+    base = Path(os.environ.get("ROMARR_DATA", "/config/romarr.json")).parent / "unpack-tmp"
+    results: list[ImportResult] = []
+    work = None
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix="unpack-", dir=str(base)))
+        for index, member in enumerate(inner):
+            target = work / f"{index}-{Path(member).name}"
+            try:
+                source.copy(member, target)
+            except Exception as exc:  # noqa: BLE001 - one bad inner archive must not hide the rest
+                results.append(ImportResult(False, None, f"could not unpack {Path(member).name}: {type(exc).__name__}"))
+                continue
+            results.extend(import_rom(target, platform, library_root, _depth=depth + 1, **kwargs))
+            target.unlink(missing_ok=True)
+    except OSError as exc:
+        results.append(ImportResult(False, None, f"could not prepare an unpack folder: {type(exc).__name__}"))
+    finally:
+        if work is not None:
+            shutil.rmtree(work, ignore_errors=True)
+    return results or [ImportResult(False, None, f"no {platform.name} ROM found inside the nested archives.")]
+
+
 def import_rom(download: Path, platform: Platform, library_root: Path, *,
                overwrite: bool = False, dats=None,
                require_verified: bool = False,
                layout: str = "flat", translation: bool = False,
                rename: bool = False,
-               platform_folders=None) -> list[ImportResult]:
+               platform_folders=None,
+               _depth: int = 0) -> list[ImportResult]:
     """Place every ROM from a finished download into the library.
 
     A cartridge zip may hold several games (a 3-in-1 collection, a bundle)
@@ -521,6 +601,18 @@ def import_rom(download: Path, platform: Platform, library_root: Path, *,
         return [ImportResult(False, None, str(exc))]
 
     chosen_sets = pick_all_rom_sets(candidates, platform, read=source.read)
+    if not chosen_sets and _depth < MAX_ARCHIVE_DEPTH and not platform.archive_is_the_rom:
+        # Nothing playable at this level, but the download holds archives (a
+        # zip around a 7z around the disc). No console reads those, so unpack
+        # them here, into a work folder beside ROMarr's data, and import from
+        # the result.
+        inner = [c for c in candidates if is_archive_name(c)]
+        if inner:
+            return _import_nested(source, inner, download, platform, library_root, _depth,
+                                  dict(overwrite=overwrite, dats=dats,
+                                       require_verified=require_verified, layout=layout,
+                                       translation=translation, rename=rename,
+                                       platform_folders=platform_folders))
     if not chosen_sets:
         return [ImportResult(
             False, None,
@@ -539,6 +631,13 @@ def import_rom(download: Path, platform: Platform, library_root: Path, *,
         target_dir = platform_dir(library_root, platform,
                                   layout=layout, translation=translation,
                                   platform_folders=platform_folders)
+
+        if platform.slug == "switch":
+            # An update or DLC for a game already on disk goes inside that
+            # game's folder (update/, dlc/), where RomM looks for it.
+            attach = switch_attach_dir(Path(chosen.primary).name, target_dir)
+            if attach is not None:
+                target_dir = attach
 
         if not chosen.is_multi_file:
             target_dir.mkdir(parents=True, exist_ok=True)

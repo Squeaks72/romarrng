@@ -11,7 +11,7 @@ environment-dependent: no DNS for romm.internal, sandbox is a docker env).
 | 4 | Monitoring / wishlist / lookup / game detail | done (API + store + IGDB search; UI is stage 3) |
 | 5 | Secret masking | done |
 | 6 | Switch report + attach | not yet |
-| 7 | Unpacking (tar family, nested) | not yet |
+| 7 | Unpacking (tar family, nested) | done |
 | 8 | Soundtracks | not yet (stage 2) |
 | 9 | UI | not yet (stage 3) |
 | 10 | Ops | not yet (end stage) |

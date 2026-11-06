@@ -40,3 +40,18 @@
   (URL/magnet); `add_torrent_file` already confirms by tag.
 * `normalise_infohash` was added to `profiles.py` (base32 -> hex); `release_id` is unchanged so existing
   blocklist ids stay valid.
+
+## Unpacking (item 7)
+
+* `is_archive_name` / `MAX_ARCHIVE_DEPTH` / `_import_nested` ported onto upstream's `import_rom`
+  (which has `platform_folders`; ROMarrNG's `folder_name`/`switch_index`/`route_switch_catalog` do not
+  exist upstream and were not added). Single-archive directory unwrapping and digital set names also
+  use `is_archive_name` so `.tar.gz` is handled everywhere `.zip` is.
+* Upstream refuses a PS2/GameCube/Xbox disc image under 8 MB; the ported test uses a 9 MB image.
+
+## Switch groundwork (item 6, part 1)
+
+* `titled.py` is taken from ROMarrNG minus its SeerrNG `collection_plan`: upstream still classifies
+  DLC as "low 12 bits <= 0xFF", which is wrong (DLC lives at base + 0x1001..0x1FFF, and `base_tid_of`
+  must mask 13 bits). The Switch report and the attach-into-game-folder logic depend on the fix.
+  `requests` replaces urllib there, and TitleDB product-key records are read by their `id`.
