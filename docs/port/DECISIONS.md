@@ -55,3 +55,14 @@
   DLC as "low 12 bits <= 0xFF", which is wrong (DLC lives at base + 0x1001..0x1FFF, and `base_tid_of`
   must mask 13 bits). The Switch report and the attach-into-game-folder logic depend on the fix.
   `requests` replaces urllib there, and TitleDB product-key records are read by their `id`.
+
+## Switch report (item 6)
+
+* `switch_report.py` is copied unchanged. The service uses upstream's `self.titled` (built at startup by
+  `reload_titled`) instead of ROMarrNG's lazy `ensure_titled`, which does not exist upstream. Switch
+  folders are resolved through `platform_dir` with the configured `platform_folders` and library layout,
+  rather than a hard-coded `<library>/switch`.
+* Upstream's `import_rom` has no Switch catalog routing (`route_switch_catalog`, `switch_updates_dir`);
+  only the attach-into-game-folder rule (`switch_attach_dir`, update/ and dlc/) was ported.
+* TitleDB names (needed for the full DLC list) stay opt-in via `TITLED_NAMES=1`; Tim's Unraid template
+  sets it with a 1536m memory limit. That is a deployment setting for the ops stage, not code.

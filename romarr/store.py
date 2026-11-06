@@ -207,6 +207,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # back to the library connection address, which may be an address only the
     # server can reach.
     "romm_public_url": "",
+    # Switch DLC title ids (16 hex digits) the Updates & DLC report should stop
+    # asking about, e.g. an expansion you do not want.
+    "ignored_dlc": [],
     # --- OpenID Connect sign-in (Authentik or any OIDC IdP) ---
     # Off until an issuer + client id exist. Distinct from forward-auth SSO
     # (sso.py), which believes a reverse proxy's headers; this makes ROMarr

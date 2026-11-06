@@ -105,6 +105,7 @@ LIST_SECRETS = ("api_key", "openxbl_key", "npsso", "itchio_key",
 from .scheduler import Scheduler, next_search_due
 from .selection import Release, best_release, infer_platform, judge, score
 from .store import Event, QueueItem, SeerrRequest, Store, now_iso
+from .switch_report import report as switch_report_build
 from .ui import favicon_svg as ui_favicon_svg
 from .ui import page as ui_page
 from .ui import link_page as ui_link_page
@@ -2768,6 +2769,91 @@ class ROMarr:
                 item["waiting"] = True     # the client does not list it (yet)
         return items
 
+    def switch_updates(self, refresh: bool = False) -> dict:
+        """Missing updates and DLC for the Switch folders, cached for half an hour."""
+        cache = getattr(self, "_switch_cache", None)
+        if cache and not refresh and time.time() - cache[0] < 1800:
+            return cache[1]
+        folders = self.platform_folders()
+        layout = self.library_layout({})
+        roots = {slug: platform_dir(Path(self.library), slug, layout=layout,
+                                    platform_folders=folders)
+                 for slug in ("switch", "switch-2")}
+        rep = switch_report_build(roots, self.titled)
+        library, _, _ = self._library_cache
+        ids = {(self._slug_of(g), self._title_key(g.name)): str(g.id) for g in (library or [])}
+        for row in rep["items"]:
+            row["rom_id"] = ids.get((row["platform"], self._title_key(row["game"])), "")
+        rep["generated"] = now_iso()
+        self._switch_cache = (time.time(), rep)
+        return rep
+
+    def switch_view(self, refresh: bool = False) -> dict:
+        """The Switch report with the DLC you chose to ignore taken out."""
+        raw = self.switch_updates(refresh=refresh)
+        ignored = {str(t).upper() for t in (self.store.settings.get("ignored_dlc") or [])}
+        items = []
+        for row in raw["items"]:
+            r = dict(row)
+            missing = row.get("dlc_missing") or []
+            r["dlc_ignored"] = [m for m in missing if m["tid"] in ignored]
+            r["dlc_missing"] = [m for m in missing if m["tid"] not in ignored]
+            if r.get("dlc_total") is not None:
+                r["dlc_total"] = max(0, r["dlc_total"] - len(r["dlc_ignored"]))
+            items.append(r)
+        gaps = [i for i in items if i["update"] in ("missing", "outdated") or i["dlc_missing"]]
+        summary = dict(raw["summary"], games_with_gaps=len(gaps),
+                       update_gaps=sum(1 for i in items if i["update"] in ("missing", "outdated")),
+                       dlc_gaps=sum(len(i["dlc_missing"]) for i in items),
+                       dlc_ignored=sum(len(i["dlc_ignored"]) for i in items))
+        return dict(raw, items=items, summary=summary)
+
+    def switch_gap_map(self) -> dict:
+        """RomM game id -> what is missing, from the cache only (never blocks)."""
+        count = self.switch_gap_count()
+        if count is None:
+            return {"ready": False, "games": {}, "summary": {}}
+        view = self.switch_view()
+        games = {}
+        for i in view["items"]:
+            kinds = [k for k, hit in (("update", i["update"] in ("missing", "outdated")),
+                                      ("dlc", bool(i["dlc_missing"]))) if hit]
+            if kinds and i.get("rom_id"):
+                games[i["rom_id"]] = kinds
+        return {"ready": True, "games": games, "summary": view["summary"]}
+
+    def set_ignored_dlc(self, tids, ignored: bool) -> int:
+        current = {str(t).upper() for t in (self.store.settings.get("ignored_dlc") or [])}
+        wanted = {str(t).upper() for t in tids if re.fullmatch(r"[0-9A-Fa-f]{16}", str(t))}
+        current = (current | wanted) if ignored else (current - wanted)
+        self.store.settings["ignored_dlc"] = sorted(current)
+        self.store.save()
+        return len(current)
+
+    def switch_gap_count(self) -> int | None:
+        """Games with an update or DLC gap, from the cached report only.
+
+        The nav badge polls this every few seconds, so it never builds the
+        report itself: a missing or stale cache starts one build in the
+        background and answers with what it has.
+        """
+        cache = getattr(self, "_switch_cache", None)
+        stale = cache is None or time.time() - cache[0] > 1800
+        if stale and not getattr(self, "_switch_building", False):
+            self._switch_building = True
+
+            def build():
+                try:
+                    self.switch_updates(refresh=True)
+                except Exception as err:  # noqa: BLE001
+                    log.warning("Switch report build failed: %s", err.__class__.__name__)
+                finally:
+                    self._switch_building = False
+            threading.Thread(target=build, name="switch-report", daemon=True).start()
+        if cache is None:
+            return None
+        return self.switch_view()["summary"]["games_with_gaps"]
+
     def drop_request(self, game: str, platform_name: str) -> bool:
         """Take something off Wanted without pretending it arrived.
 
@@ -4319,7 +4405,8 @@ class ROMarr:
         return {"games": games,
                 "games_on_disk": split["on_disk"],
                 "games_catalogued": split["catalogued"],
-                "missing": len(self.store.wanted), "queued": queued}
+                "missing": len(self.store.wanted), "queued": queued,
+                "switchgaps": self.switch_gap_count()}
 
     def library_split(self) -> dict:
         """On disk here, catalogued elsewhere, and the total of both.
@@ -7131,6 +7218,16 @@ def make_handler(service: ROMarr):
                 if not term or len(term) > 200:
                     return self._json(400, {"error": "q is required"})
                 return self._json(200, service.lookup(term, (query.get("platform") or [""])[0]))
+            if route.path == "/api/v1/switch/gaps":
+                return self._json(200, service.switch_gap_map())
+            if route.path == "/api/v1/switch/updates":
+                rep = service.switch_view(refresh=(query.get("refresh") or [""])[0] == "1")
+                game = (query.get("game") or [""])[0]
+                if game:
+                    key = service._title_key(game)
+                    rep = dict(rep, items=[i for i in rep["items"]
+                                           if service._title_key(i["game"]) == key])
+                return self._json(200, rep)
             if route.path == "/api/v1/game/detail":
                 return self._json(200, service.game_detail(
                     (query.get("platform") or [""])[0],
@@ -8398,6 +8495,10 @@ def make_handler(service: ROMarr):
                 return self._json(200, service.add_wanted(
                     game, platform, monitored=bool(body.get("monitored", True)),
                     search=bool(body.get("search"))))
+            if route.path == "/api/v1/switch/ignore":
+                tids = body.get("tids") if isinstance(body.get("tids"), list) else []
+                n = service.set_ignored_dlc(tids, bool(body.get("ignored", True)))
+                return self._json(200, {"ok": True, "ignored_total": n})
             if route.path == "/api/v1/wanted/monitor":
                 game = str(body.get("game") or "").strip()
                 platform = resolve(str(body.get("platform") or ""))

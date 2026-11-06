@@ -68,6 +68,9 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "/api/v1/game/detail": ("GET", "Everything the game page shows: library row, wanted entry, queue, history and RomM link."),
     "/api/v1/wanted/add": ("POST", "Add a game to Wanted, monitored or not, optionally searching straight away."),
     "/api/v1/wanted/monitor": ("POST", "Turn monitoring on or off for one Wanted entry."),
+    "/api/v1/switch/updates": ("GET", "Missing updates and DLC for Switch games on disk, compared with TitleDB (`game` filters, `refresh=1` rebuilds)."),
+    "/api/v1/switch/gaps": ("GET", "RomM game id -> what is missing, from the cached report only; never blocks."),
+    "/api/v1/switch/ignore": ("POST", "Stop (or resume) reporting specific Switch DLC title ids as missing."),
     "/api/v1/wanted/missing": ("GET", "Games wanted but not yet found. DELETE "
                                       "the same path with game and platform "
                                       "-- as query parameters or a JSON body "
