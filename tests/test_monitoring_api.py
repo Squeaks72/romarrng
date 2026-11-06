@@ -141,3 +141,9 @@ def test_igdb_search_is_never_sent_with_sort():
         metadata.igdb_query = orig
     assert 'search "ze\\"lda"' in seen["body"] and "sort " not in seen["body"]
     assert "platforms = (8)" in seen["body"]
+
+
+def test_queue_endpoint_carries_a_timestamp_and_accepts_refresh(server):
+    base, _ = server
+    code, out = call(base, "/api/v1/queue?refresh=1")
+    assert code == 200 and out["items"] == [] and out["at"]

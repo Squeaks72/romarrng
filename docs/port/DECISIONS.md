@@ -28,3 +28,15 @@
 
 * `import_lists` masking reuses upstream's `LIST_SECRETS`; metadata providers / connections use the
   same field sets as their dedicated endpoints. `PUT /api/v1/config` runs `restore_masked_items` first.
+
+## Queue (item 3)
+
+* Upstream tags every qBittorrent add with `romarr-<hex>` and stores `download_id = qbit-tag:<tag>`.
+  `QBittorrent.progress()` therefore also returns each torrent's tags, and `queue_view` matches a row in
+  this order: tag, info-hash (`download_id` or `release_id` `btih:`), then release name
+  (`match_torrent_by_name`). Clients are keyed by upstream's `romarr_id` / `QueueItem.download_client`
+  (ROMarrNG used `config_id` / `download_client_id`).
+* `last_reject` on `QBittorrent` is thread-local like `last_job_id`. A "Fails." body is only set on `add()`
+  (URL/magnet); `add_torrent_file` already confirms by tag.
+* `normalise_infohash` was added to `profiles.py` (base32 -> hex); `release_id` is unchanged so existing
+  blocklist ids stay valid.

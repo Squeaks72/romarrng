@@ -2001,6 +2001,17 @@ class ROMarr:
         if (external_request_id
                 and not self.store.mark_seerr_dispatching(external_request_id)):
             return {"ok": False, "error": "the request was cancelled"}
+        # The same release already on its way for this game is not grabbed a
+        # second time: it only adds identical rows to the queue (the original
+        # ROMarr fixed this as "duplicate grabs").
+        rid = release_id(pick)
+        for existing in list(self.store.queue):
+            if (existing.release_id == rid and existing.platform == platform_slug
+                    and self._title_key(existing.game) == self._title_key(game)
+                    and existing.state in ("grabbed", "downloading", "queued")):
+                return {"ok": True, "duplicate": True, "release": pick.title,
+                        "seeders": pick.seeders,
+                        "message": "already in the queue; not grabbed again"}
         failure_detail = f"{client.name} rejected the release"
         release_fault = True
         required_file = bool(getattr(pick, "file_selection_required", False))
@@ -2050,10 +2061,17 @@ class ROMarr:
         else:
             ok, download_id = hand_off_with_id(client, pick.download_url,
                                                name=pick.title)
+            # A client that answered but did not take the link is not evidence
+            # the release is bad (it may already be there), so it is not
+            # blocklisted.
+            if not ok and getattr(client, "last_reject", "") == "not_accepted":
+                release_fault = False
+                failure_detail = (f"{client.name} did not accept the link (already "
+                                  "added, or the indexer link could not be fetched)")
         item = QueueItem(game, platform_slug, pick.title, pick.seeders,
                          "grabbed" if ok else "failed",
                          "" if ok else failure_detail,
-                         release_id=release_id(pick),
+                         release_id=rid,
                          indexer=getattr(pick, "indexer", ""),
                          size=getattr(pick, "size", 0),
                          release_fault=release_fault if not ok else False,
@@ -2642,6 +2660,113 @@ class ROMarr:
                 "meta": (self.store.game_meta(str(getattr(row, "platform", "") or slug), name)
                          if name else {}),
                 "romm_url": f"{romm}/rom/{rom_id}" if romm and rom_id else ""}
+
+    @staticmethod
+    def _name_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+    @classmethod
+    def match_torrent_by_name(cls, release: str, rows: dict, taken: set) -> str | None:
+        """The info-hash of the torrent a release title most likely became.
+
+        Releases added by URL (an indexer's .torrent link) have no hash until
+        the client has fetched them, so the queue row cannot carry one. The
+        client's name for the torrent is the release title, sometimes with a
+        tag in front ("[PS2] ICO ...") or behind, so equal or contained names
+        match outright and the rest must be close.
+        """
+        import difflib
+        want = cls._name_key(release)
+        if not want:
+            return None
+        best, best_score = None, 0.0
+        for h, row in rows.items():
+            if h in taken:
+                continue
+            have = cls._name_key(row.get("name"))
+            if not have:
+                continue
+            if have == want:
+                score = 1.0
+            elif want in have or have in want:
+                score = 0.9
+            else:
+                score = difflib.SequenceMatcher(None, want, have).ratio()
+            if score > best_score:
+                best, best_score = h, score
+        return best if best_score >= 0.75 else None
+
+    def queue_view(self, refresh: bool = False) -> list[dict]:
+        """The queue, with live progress and ETA from whichever client holds each item.
+
+        A row finds its torrent by, in order: the qBittorrent tag ROMarr put on
+        it (`download_id` = `qbit-tag:<tag>`), an info-hash (in `download_id` or
+        in `release_id`), and last the release name, because a release added by
+        URL has no hash until the client has fetched it.
+        """
+        items = [asdict(i) for i in self.queue]
+        cache = getattr(self, "_progress_cache", None)
+        if refresh or cache is None or time.time() - cache[0] > 3:
+            live: dict[str, dict[str, dict]] = {}
+            for client in self.clients:
+                fn = getattr(client, "progress", None)
+                if not callable(fn) or not getattr(client, "configured", True):
+                    continue
+                try:
+                    live[str(getattr(client, "romarr_id", "") or "")] = fn()
+                except Exception as err:  # noqa: BLE001 - a slow client must not break the page
+                    log.debug("progress unavailable from %s: %s", getattr(client, "name", "?"),
+                              err.__class__.__name__)
+            self._progress_cache = cache = (time.time(), live)
+        live = cache[1]
+        active = ("grabbed", "downloading", "queued")
+        taken: set[str] = set()
+
+        def rows_for(item):
+            return live.get(str(item.get("download_client") or ""))
+
+        def exact(item):
+            """(hash, row) for the torrent this row names by tag or hash, else None."""
+            did = str(item.get("download_id") or "")
+            pools = [rows_for(item)] if rows_for(item) else list(live.values())
+            if did.startswith("qbit-tag:"):
+                tag = did[len("qbit-tag:"):]
+                for rows in pools:
+                    for h, row in rows.items():
+                        if tag in (row.get("tags") or []):
+                            return h, row
+                return None
+            rid = str(item.get("release_id") or "")
+            for cand in (did, rid[5:] if rid.startswith("btih:") else ""):
+                key = normalise_infohash(cand)
+                if key:
+                    for rows in pools:
+                        if key in rows:
+                            return key, rows[key]
+            return None
+
+        # Exact identities first, so name matching only ever fills the gaps.
+        for item in items:
+            if item.get("state") not in active:
+                continue
+            hit = exact(item)
+            if hit:
+                taken.add(hit[0])
+                item.update({k: v for k, v in hit[1].items() if k not in ("name", "tags")})
+        for item in items:
+            if "progress" in item or item.get("state") not in active:
+                continue
+            rows = rows_for(item)
+            if not rows:
+                continue
+            h = self.match_torrent_by_name(item.get("release") or "", rows, taken)
+            if h:
+                taken.add(h)
+                item.update({k: v for k, v in rows[h].items() if k not in ("name", "tags")})
+        for item in items:
+            if item.get("state") in active and "progress" not in item and live:
+                item["waiting"] = True     # the client does not list it (yet)
+        return items
 
     def drop_request(self, game: str, platform_name: str) -> bool:
         """Take something off Wanted without pretending it arrived.
@@ -7012,7 +7137,9 @@ def make_handler(service: ROMarr):
                     (query.get("id") or [""])[0],
                     (query.get("title") or [""])[0]))
             if route.path == "/api/v1/queue":
-                return self._json(200, {"items": [asdict(i) for i in service.queue]})
+                return self._json(200, {"items": service.queue_view(
+                    refresh=(query.get("refresh") or [""])[0] == "1"),
+                    "at": now_iso()})
             if route.path == "/api/v1/history":
                 limit = int((query.get("limit") or ["100"])[0])
                 return self._json(200, {"items": service.store.history(limit)})
