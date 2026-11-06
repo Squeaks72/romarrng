@@ -71,6 +71,17 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "/api/v1/switch/updates": ("GET", "Missing updates and DLC for Switch games on disk, compared with TitleDB (`game` filters, `refresh=1` rebuilds)."),
     "/api/v1/switch/gaps": ("GET", "RomM game id -> what is missing, from the cached report only; never blocks."),
     "/api/v1/switch/ignore": ("POST", "Stop (or resume) reporting specific Switch DLC title ids as missing."),
+    "/api/v1/soundtracks/game": ("GET", "What soundtrack RomM holds for a game (`id` = RomM game id) and what ROMarr added."),
+    "/api/v1/soundtracks/search": ("GET", "Ranked soundtrack candidates from the enabled sources, plus manual-search links."),
+    "/api/v1/soundtracks/download": ("POST", "Start a background download-and-upload of a candidate into RomM's Jukebox; one job per game."),
+    "/api/v1/soundtracks/jobs": ("GET", "Soundtrack jobs, newest first, with progress."),
+    "/api/v1/soundtracks/undo": ("POST", "Remove exactly the soundtrack files ROMarr added to a game."),
+    "/api/v1/soundtracks/dups": ("GET", "Verified groups of games with identical stored soundtracks, merges that can be undone, and the scan job."),
+    "/api/v1/soundtracks/dups/scan": ("POST", "Start a background scan that compares stored soundtracks byte for byte (SHA-1)."),
+    "/api/v1/soundtracks/dups/merge": ("POST", "Keep one game's soundtrack and remove the identical copies from the others; refuses a copy that differs."),
+    "/api/v1/soundtracks/dups/unmerge": ("POST", "Re-upload the kept files to a merged game after verifying them."),
+    "/api/v1/soundtracks/library/search": ("GET", "Search the read-only music library (`q`) for albums to use as a soundtrack."),
+    "/api/v1/soundtracks/library/add": ("POST", "Upload an album from the music library into a game's soundtrack through RomM."),
     "/api/v1/wanted/missing": ("GET", "Games wanted but not yet found. DELETE "
                                       "the same path with game and platform "
                                       "-- as query parameters or a JSON body "
