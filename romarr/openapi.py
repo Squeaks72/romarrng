@@ -64,6 +64,10 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
                             "many rows are cached and browsable right now. "
                             "Filterable by platform, genre, region, decade, "
                             "origin and source."),
+    "/api/v1/lookup": ("GET", "Search IGDB for games to add (`q`, optional `platform`), with where each platform stands here."),
+    "/api/v1/game/detail": ("GET", "Everything the game page shows: library row, wanted entry, queue, history and RomM link."),
+    "/api/v1/wanted/add": ("POST", "Add a game to Wanted, monitored or not, optionally searching straight away."),
+    "/api/v1/wanted/monitor": ("POST", "Turn monitoring on or off for one Wanted entry."),
     "/api/v1/wanted/missing": ("GET", "Games wanted but not yet found. DELETE "
                                       "the same path with game and platform "
                                       "-- as query parameters or a JSON body "
