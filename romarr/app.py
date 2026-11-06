@@ -2501,6 +2501,17 @@ class ROMarr:
             self.titled = TitleDBIndex()
             return {"loaded": 0, "status": "error", "error": str(exc)}
 
+    def ensure_titled(self) -> TitleDBIndex:
+        """TitleDB, loaded on first use.
+
+        Upstream only builds it as a side effect of loading DATs, so an install
+        with no DAT_PATH has no `titled` at all; the Switch report must not
+        depend on that.
+        """
+        if getattr(self, "titled", None) is None:
+            self.reload_titled()
+        return self.titled
+
     # -- the queue ----------------------------------------------------------
 
     @property
@@ -2782,7 +2793,7 @@ class ROMarr:
         roots = {slug: platform_dir(Path(self.library), slug, layout=layout,
                                     platform_folders=folders)
                  for slug in ("switch", "switch-2")}
-        rep = switch_report_build(roots, self.titled)
+        rep = switch_report_build(roots, self.ensure_titled())
         library, _, _ = self._library_cache
         ids = {(self._slug_of(g), self._title_key(g.name)): str(g.id) for g in (library or [])}
         for row in rep["items"]:

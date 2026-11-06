@@ -105,3 +105,18 @@ def test_gap_map_never_builds_the_report_inline():
     svc._switch_building = True            # a build is already running
     svc.store = type("S", (), {"settings": {}, "save": lambda self: None})()
     assert svc.switch_gap_map() == {"ready": False, "games": {}, "summary": {}}
+
+
+def test_the_report_builds_on_an_install_with_no_dats():
+    """Upstream creates `titled` only while loading DATs; the report must not need that."""
+    from romarr import app as app_mod
+    from romarr.app import ROMarr
+    svc = ROMarr.__new__(ROMarr)
+    assert not hasattr(svc, "titled")
+    original = app_mod.build_titled_index
+    app_mod.build_titled_index = lambda: TitleDBIndex()
+    try:
+        assert isinstance(svc.ensure_titled(), TitleDBIndex)
+        assert svc.titled is svc.ensure_titled()          # loaded once, then reused
+    finally:
+        app_mod.build_titled_index = original
