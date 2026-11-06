@@ -502,6 +502,94 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{transition:none !important;animation:none !important}
 }
+/* ---- Add New results and the game page ---- */
+.rcgrid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+.rc{display:flex;gap:12px;padding:10px;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-md);cursor:pointer;transition:border-color var(--t)}
+.rc:hover{border-color:var(--accent-line)}
+.rc-art,.gh-art{flex:none;background:var(--art) center/cover no-repeat;border-radius:var(--r-sm)}
+.rc-art{width:72px;height:96px}
+.rc-body{min-width:0;flex:1}
+.rc-t{font-weight:650;font-size:14px}
+.rc-y{font-weight:400;color:var(--dim);font-size:12.5px}
+.rc-g{color:var(--dim);font-size:11.5px;margin:1px 0 4px}
+.rc-s{color:var(--fg-2);font-size:12px;display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden;margin-bottom:6px}
+.rc-p{display:flex;flex-wrap:wrap;gap:5px}
+.rc-opt{font:inherit;font-size:11.5px;padding:3px 8px;border-radius:var(--r-pill);cursor:pointer;
+  background:var(--bg);color:var(--fg);border:1px solid var(--line)}
+.rc-opt:hover{border-color:var(--accent-line)}
+.sb{display:inline-block;font-size:10.5px;font-weight:650;padding:1px 7px;border-radius:var(--r-pill);
+  margin-inline-start:4px;background:var(--surface-3);color:var(--fg-2)}
+.sb-library{background:color-mix(in srgb,var(--ok) 20%,transparent);color:var(--ok)}
+.sb-monitored,.sb-downloading{background:var(--accent-soft);color:var(--accent-text)}
+.sb-none{display:none}
+.gh{display:flex;gap:20px;flex-wrap:wrap}
+.gh-art{width:190px;height:260px;max-width:100%}
+.gh-main{flex:1;min-width:260px}
+.gh-main h2{font-size:22px;font-weight:650;letter-spacing:-.02em;margin:0 0 2px}
+.gh-sub{color:var(--dim);margin-bottom:12px}
+.gh-act{display:flex;flex-wrap:wrap;gap:8px}
+.gh-facts{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:14px 0 0;font-size:13px}
+.gh-facts dt{color:var(--dim)}
+.gh-facts dd{margin:0}
+.tablewrap{overflow-x:auto}
+.alert-bar{margin-bottom:12px;padding:12px 16px;border-radius:var(--r-md);background:color-mix(in srgb,var(--warn) 18%,var(--surface));border:1px solid var(--warn);border-inline-start-width:5px;color:var(--fg);font-size:14px}
+.tile .gap{position:absolute;top:8px;inset-inline-start:8px;background:var(--warn);color:var(--warn-ink,#1a1300);font-size:11px;font-weight:700;padding:2px 8px;border-radius:var(--r-pill);box-shadow:var(--shadow-2)}
+.tile{position:relative}
+/* ---- Global search palette ---- */
+#palette-btn kbd{font:inherit;font-size:11px;color:var(--dim);border:1px solid var(--line);
+  border-radius:5px;padding:0 5px;margin-inline-start:6px}
+.cp{position:fixed;inset:0;z-index:90;background:color-mix(in srgb,#000 50%,transparent);
+  display:flex;justify-content:center;align-items:flex-start;padding:12vh 16px 16px}
+.cp-box{width:min(660px,100%);background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-lg);box-shadow:var(--shadow-3);overflow:hidden;display:flex;flex-direction:column;max-height:70vh}
+.cp-in{border:0;border-bottom:1px solid var(--line);border-radius:0;padding:15px 18px;font-size:15px;background:var(--surface)}
+.cp-list{overflow-y:auto;padding:6px}
+.cp-h{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);padding:10px 12px 4px}
+.cp-i{display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:var(--r-sm);cursor:pointer}
+.cp-i.act{background:var(--accent-soft)}
+.cp-art{flex:none;width:30px;height:40px;border-radius:4px;background:var(--art) center/cover no-repeat}
+.cp-t{min-width:0;flex:1}
+.cp-t b{font-weight:600;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cp-t small{color:var(--dim);font-size:12px}
+.cp-k{color:var(--dim);font-size:11.5px;white-space:nowrap}
+.cp-foot{border-top:1px solid var(--line);padding:7px 14px;color:var(--dim);font-size:11.5px}
+/* Searchable single-choice picker: stands in for a <select> when the list is
+   long (49 platforms). The hidden input keeps the id and .value, so code that
+   reads $('#id').value is unchanged. */
+.pp{position:relative;display:inline-block;min-width:230px;max-width:100%}
+.pp-btn{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  width:100%;padding:8px 12px;background:var(--bg);color:var(--fg);
+  border:1px solid var(--line);border-radius:var(--r-sm);font:inherit;font-size:13px;
+  cursor:pointer;text-align:start;transition:border-color var(--t),box-shadow var(--t)}
+.pp-btn:hover{border-color:var(--accent-line)}
+.pp.open .pp-btn,.pp-btn:focus-visible{border-color:var(--accent-line);box-shadow:var(--ring);outline:none}
+.pp-btn::after{content:"";flex:none;width:7px;height:7px;margin-inline-start:4px;
+  border-inline-end:2px solid var(--dim);border-bottom:2px solid var(--dim);
+  transform:rotate(45deg) translateY(-2px)}
+.pp-cur{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pp-cur i{font-style:normal;color:var(--dim);margin-inline-start:6px;font-size:12px}
+.pp-panel{position:absolute;z-index:40;inset-inline-start:0;top:calc(100% + 6px);
+  width:max(100%,340px);max-width:calc(100vw - 32px);background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-md);box-shadow:var(--shadow-3);
+  padding:8px}
+.pp-panel[hidden]{display:none}
+.pp-q{margin-bottom:6px}
+.pp-list{list-style:none;margin:0;padding:0;max-height:min(320px,50vh);overflow-y:auto}
+.pp-opt{display:flex;justify-content:space-between;gap:12px;align-items:baseline;
+  padding:7px 10px;border-radius:var(--r-sm);cursor:pointer;font-size:13px}
+.pp-opt small{color:var(--dim);font-size:11.5px;white-space:nowrap}
+.pp-opt.act{background:var(--accent-soft)}
+.pp-opt[aria-selected=true]{font-weight:650}
+.pp-none{padding:10px;color:var(--dim);font-size:12.5px}
+.libstats{display:flex;flex-wrap:wrap;gap:4px 18px;align-items:baseline;margin:0 0 10px}
+.libstats b{font-size:18px;font-weight:650;letter-spacing:-.02em;margin-inline-end:5px}
+.libstats span{font-size:12.5px;color:var(--dim)}
+.libstats details{flex-basis:100%;font-size:12.5px;color:var(--dim)}
+.libstats summary{cursor:pointer;width:max-content}
+.lfrow{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center}
+.lfrow select{width:auto;max-width:100%;padding:6px 10px;font-size:12.5px}
 """
 
 
@@ -664,8 +752,7 @@ def _theme_control_html() -> str:
 # The nav, in *arr order. `count` names a stat the badge reads.
 NAV = [
     ("Library",  [("library", "Games", "games"), ("add", "Add New", None),
-                  ("discover", "Discover", None),
-                  ("search", "Interactive Search", None)]),
+                  ("discover", "Discover", None)]),
     ("Wanted",   [("missing", "Missing", "missing"), ("lists", "Lists", None),
                   ("calendar", "Calendar", None)]),
     ("Activity", [("queue", "Queue", "queued"), ("history", "History", None),
@@ -886,11 +973,23 @@ function toast(msg){
 }
 
 /* ---------------- routing ---------------- */
-function go(page){
-  location.hash=page;
+// A route is `page` or `page/arg/arg`: the game page is #game/<platform>/<id or ~title>[/search].
+// The arguments are decoded into ROUTE_ARGS for the renderer.
+let ROUTE_ARGS=[], ROUTE_SPEC='', routeEpoch=0;
+function go(pageSpec){
+  const parts=String(pageSpec).split('/');
+  let page=parts[0];
+  ROUTE_ARGS=parts.slice(1).map(x=>{try{return decodeURIComponent(x);}catch(e){return x;}});
+  // Interactive Search was folded into Add New; old links still land there.
+  if(page==='search'){ page='add'; pageSpec='add'; ROUTE_ARGS=[]; }
+  ROUTE_SPEC=pageSpec;
+  const renderEpoch=++routeEpoch;
+  if(location.hash!=='#'+pageSpec) location.hash=pageSpec;
+  // The game page is part of the library, so the library stays lit in the nav.
+  const navPage=page==='game'?'library':page;
   document.querySelectorAll('.nav').forEach(n=>
-    n.classList.toggle('on', n.dataset.page===page));
-  const titles={library:'Games',add:'Add New Game',search:'Interactive Search',
+    n.classList.toggle('on', n.dataset.page===navPage));
+  const titles={library:'Games',add:'Add New Game',game:'Game',
     missing:'Wanted — Missing',lists:'Import Lists',stats:'Statistics',
     discover:'Discover',ecosystem:'The Ecosystem',peers:'Friends',
     queue:'Queue',history:'History',media:'Media Management',profiles:'Profiles',
@@ -900,14 +999,20 @@ function go(page){
     update:'Update',
     blocklist:'Blocklist',connections:'Connections',metadata:'Metadata',
     calendar:'Release Calendar',manualimport:'Manual Import',
-    collections:'Collections \u2014 full sets and 1G1R',
+    collections:'Collections — full sets and 1G1R',
     getstarted:'Get Started',setup:'Setup Guide',
     hub:'ROM Hub — Plugins',portal:'Library Shell & Device Fleet'};
   $('#top h1').textContent=titles[page]||'ROMarr';
-  $('#search').classList.toggle('hide', !['library','add'].includes(page));
-  (RENDER[page]||RENDER.library)();
+  // The Filter box filters the games grid and nothing else.
+  $('#search').classList.toggle('hide', page!=='library');
+  (RENDER[page]||RENDER.library)(renderEpoch);
 }
-addEventListener('hashchange',()=>go(location.hash.slice(1)||'library'));
+addEventListener('hashchange',()=>{
+  // go() sets the hash itself; only a change made from outside (a link, the
+  // back button, a typed address) needs to render.
+  const spec=location.hash.slice(1)||'library';
+  if(spec!==ROUTE_SPEC) go(spec);
+});
 
 /* ---------------- pages ---------------- */
 const RENDER={};
@@ -988,7 +1093,7 @@ RENDER.hub=async()=>{
       +'<p class="help">To use a source in Interactive Search, add a ROM Hub download client and choose a writable download folder. You can keep Prowlarr alongside it, or use plugins on their own.</p>'
       +'<div class="row"><button class="btn" id="hub-connect">Set up ROM Hub downloads</button>'
       +'<a class="btn ghost" href="https://github.com/BlizzHacker/rom-hub" target="_blank" rel="noopener">Plugin catalogue and help</a>'
-      +'<button class="btn ghost" id="hub-search">Open Interactive Search</button></div></div>'
+      +'<button class="btn ghost" id="hub-search">Search for a Game</button></div></div>'
       +acqNote+sandboxNote+'<div class="card"><h3>Plugins'
       +'<span class="help" style="margin-left:10px">'+items.length+' of '+(d.total||0)+'</span></h3>'
       +'<div class="cat-bar">'
@@ -1151,6 +1256,76 @@ RENDER.hub=async()=>{
   render(await load());
 };
 
+// Searchable single-choice picker (see .pp in the stylesheet). `items` is
+// [{value,label,meta}]; the caller puts the "any" row in front itself. The
+// hidden input carries the id, so `$('#id').value` reads the choice.
+function pickerHtml(id,items,value,ariaLabel){
+  const cur=items.find(x=>x.value===value)||items[0]||{value:'',label:''};
+  return `<div class="pp" data-pp="${esc(id)}">
+    <input type="hidden" id="${esc(id)}" value="${esc(cur.value)}">
+    <button type="button" class="pp-btn" aria-haspopup="listbox" aria-expanded="false"
+      aria-controls="${esc(id)}-list" aria-label="${esc(ariaLabel||'Choose')}">
+      <span class="pp-cur">${esc(cur.label)}${cur.meta?`<i>${esc(cur.meta)}</i>`:''}</span></button>
+    <div class="pp-panel" hidden>
+      <input type="search" class="pp-q" placeholder="Search…" aria-label="Search the list"
+        autocomplete="off" role="combobox" aria-expanded="true" aria-controls="${esc(id)}-list">
+      <ul class="pp-list" id="${esc(id)}-list" role="listbox"></ul></div></div>`;
+}
+document.addEventListener('mousedown',e=>{
+  document.querySelectorAll('.pp.open').forEach(b=>{
+    if(!b.contains(e.target)) b.querySelector('.pp-btn').dispatchEvent(new CustomEvent('pp-close'));});
+},true);
+const platPickerItems=any=>(any?[{value:'',label:'Any platform'}]:[])
+  .concat(PLATFORMS.map(p=>({value:p.slug,label:p.name})));
+function bindPicker(root,id,items,onChange){
+  const box=root.querySelector('[data-pp="'+CSS.escape(id)+'"]');
+  if(!box) return;
+  const btn=box.querySelector('.pp-btn'), panel=box.querySelector('.pp-panel');
+  const q=box.querySelector('.pp-q'), list=box.querySelector('.pp-list');
+  const hid=box.querySelector('input[type=hidden]'), cur=box.querySelector('.pp-cur');
+  let shown=[], act=0;
+  const paint=()=>{
+    const f=q.value.trim().toLowerCase();
+    shown=items.filter(x=>!f||x.label.toLowerCase().includes(f)||String(x.value).toLowerCase().includes(f));
+    if(act>=shown.length) act=Math.max(0,shown.length-1);
+    list.innerHTML=shown.length?shown.map((x,i)=>`<li class="pp-opt${i===act?' act':''}" role="option"
+      id="${esc(id)}-o${i}" data-i="${i}" aria-selected="${x.value===hid.value}"><span>${esc(x.label)}</span>${
+      x.meta?`<small>${esc(x.meta)}</small>`:''}</li>`).join('')
+      :'<li class="pp-none">Nothing matches.</li>';
+    q.setAttribute('aria-activedescendant',shown.length?`${id}-o${act}`:'');
+    const a=list.querySelector('.act'); if(a&&a.scrollIntoView) a.scrollIntoView({block:'nearest'});
+  };
+  const close=(refocus)=>{
+    panel.hidden=true; box.classList.remove('open'); btn.setAttribute('aria-expanded','false');
+    if(refocus) btn.focus();
+  };
+  const open=()=>{
+    panel.hidden=false; box.classList.add('open'); btn.setAttribute('aria-expanded','true');
+    q.value=''; act=Math.max(0,items.findIndex(x=>x.value===hid.value)); paint(); q.focus();
+  };
+  const choose=i=>{
+    const x=shown[i]; if(!x) return;
+    hid.value=x.value; cur.innerHTML=esc(x.label)+(x.meta?`<i>${esc(x.meta)}</i>`:'');
+    close(true);
+    if(onChange) onChange(x.value,hid);
+  };
+  btn.onclick=()=>panel.hidden?open():close(true);
+  btn.addEventListener('pp-close',()=>close(false));
+  q.oninput=()=>{act=0;paint();};
+  q.onkeydown=e=>{
+    if(e.key==='ArrowDown'){e.preventDefault();act=Math.min(act+1,shown.length-1);paint();}
+    else if(e.key==='ArrowUp'){e.preventDefault();act=Math.max(act-1,0);paint();}
+    else if(e.key==='Enter'){e.preventDefault();choose(act);}
+    else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close(true);}
+    else if(e.key==='Tab') close(false);
+  };
+  list.onmousedown=e=>e.preventDefault();
+  list.onclick=e=>{const li=e.target.closest('.pp-opt'); if(li) choose(Number(li.dataset.i));};
+  list.onmousemove=e=>{const li=e.target.closest('.pp-opt');
+    if(li&&Number(li.dataset.i)!==act){act=Number(li.dataset.i);
+      list.querySelectorAll('.pp-opt').forEach((n,i)=>n.classList.toggle('act',i===act));}};
+}
+
 let LIB={platform:'',genre:'',region:'',decade:'',origin:'',source:'',sort:'',
          offset:0,limit:120};
 // What each catalogue is called on screen. Spelled out rather than shown as
@@ -1163,7 +1338,9 @@ const SOURCE_LABEL={
   flashpoint:'Flashpoint (streams)',
   cloud:'Catalogued, source unknown'};
 const num=n=>(n===null||n===undefined)?'—':Number(n).toLocaleString();
-RENDER.library=async()=>{
+let libraryRequest=0;
+RENDER.library=async(renderEpoch=routeEpoch)=>{
+  const request=++libraryRequest;
   const p=$('#page');
   if(!p.querySelector('#lib-grid')) p.innerHTML='<div class="empty">Loading library…</div>';
   const q=($('#search').value||'').trim();
@@ -1176,6 +1353,8 @@ RENDER.library=async()=>{
     +`&source=${encodeURIComponent(LIB.source)}`
     +`&sort=${encodeURIComponent(LIB.sort)}`)
     .catch(()=>({items:[],error:'unreachable'}));
+  // A newer render (another filter, another page) has taken over.
+  if(renderEpoch!==routeEpoch||request!==libraryRequest) return;
 
   if(d.loading){
     // The first fetch has not landed yet. Say so, rather than showing an
@@ -1189,31 +1368,23 @@ RENDER.library=async()=>{
   const items=d.items||[];
   const T=d.totals||{};
   // Every platform the library server holds, from the first second --
-  // even ones the background walk has not reached. When a platform is only
-  // partly cached the chip says so rather than under-reporting silently.
-  //
-  // The number on a chip is the platform's whole row count, and on its own
-  // that was actively misleading: "Browser 94,415" sat beside "Nintendo DS
-  // 8,112" looking like the same claim, when not one of those 94,415 is a
-  // file on this disk. A chip whose contents are wholly or partly catalogued
-  // now shows the split and says which is which on hover.
-  const chips=(d.platforms||[]).map(x=>{
-    const part=x.cached!==undefined&&x.cached<x.count;
-    const cat=x.catalogued||0, disk=x.on_disk||0;
-    const mixed=cat>0;
-    const tip=[part?`${x.cached} of ${x.count} loaded so far`:'',
-               mixed?`${disk} on disk · ${cat} catalogued elsewhere`:'']
-              .filter(Boolean).join(' — ');
-    return `<button class="btn ${LIB.platform===x.platform?'':'ghost'}" data-plat="${esc(x.platform)}"
-      style="padding:4px 10px;font-size:12px"
-      title="${esc(tip)}">${esc(x.platform)}
-      <span style="opacity:.7">${part?x.cached+'/'+x.count:x.count}</span>
-      ${mixed?`<span style="opacity:.55;font-size:11px">(${disk}&nbsp;here)</span>`:''}</button>`;
-  }).join('');
+  // even ones the background walk has not reached. 49 platforms do not fit
+  // as a wall of buttons, so they live in a searchable picker. The number is
+  // the platform's whole row count; "N here" is the part that is a file on
+  // this disk, and a partly-read platform says how much has loaded so far.
+  // That split matters: "Browser 94,415" beside "Nintendo DS 8,112" looked
+  // like the same claim, when not one of those 94,415 is a file on this disk.
+  const platItems=[{value:'',label:'All platforms',meta:fmt(d.grand_total)}]
+    .concat((d.platforms||[]).map(x=>{
+      const part=x.cached!==undefined&&x.cached<x.count;
+      const cat=x.catalogued||0, disk=x.on_disk||0;
+      return {value:x.platform,label:x.platform,
+        meta:(part?fmt(x.cached)+'/'+fmt(x.count):fmt(x.count))+(cat>0?' · '+fmt(disk)+' here':'')};
+    }));
   const f=d.facets||{};
   const sel=(key,label,list,fmt)=>{
     if(!list||!list.length) return '';
-    return `<select data-lf="${key}" style="padding:4px 8px;font-size:12px">
+    return `<select data-lf="${key}" aria-label="${esc(label)}">
       <option value="">${label}</option>
       ${list.map(x=>`<option value="${esc(x.value)}"${LIB[key]===x.value?' selected':''}
         >${esc(fmt?fmt(x.value):x.value)} (${x.count})</option>`).join('')}
@@ -1227,31 +1398,23 @@ RENDER.library=async()=>{
   // actually here. The middle number is the interesting one -- it is what
   // would have to be fetched or streamed before anybody could play it.
   const srcRows=(f.sources||[]).filter(x=>x.value!=='local');
-  const banner=`<div class="card" style="margin-bottom:12px">
-    <div class="st">
+  const readNote=T.counted_from==='cached rows'
+    ?`Counted from the ${num(d.cached_total)} rows read so far — this library server does not report the split itself${d.partial?', and the read is still running':''}.`
+    :((T.total!==null&&T.total!==undefined&&d.cached_total<T.total)
+      ?`${num(d.cached_total)} of those are loaded and browsable here${d.partial?' — still reading':''}.`:'');
+  const banner=`<div class="libstats">
       <div><b>${num(T.on_disk)}</b><span>On disk here</span></div>
       <div><b>${num(T.catalogued)}</b><span>Catalogued, streams</span></div>
       <div><b>${num(T.total)}</b><span>Total known</span></div>
-    </div>
-    ${srcRows.length?`<p class="help" style="margin:8px 0 0">
-      Catalogued entries by source:
-      ${srcRows.map(x=>`<b>${num(x.count)}</b> ${esc(SOURCE_LABEL[x.value]||x.value)}`)
-        .join(' · ')}. Source is read from the filename each indexer writes,
-      so anything ROMarr cannot place stays “source unknown” rather than
-      being filed under a guess.</p>`:''}
-    ${T.counted_from==='cached rows'
-      ?`<p class="help" style="margin:6px 0 0">Counted from the ${num(d.cached_total)}
-        rows read so far — this library server does not report the split
-        itself${d.partial?', and the read is still running':''}.</p>`
-      :((T.total!==null&&T.total!==undefined&&d.cached_total<T.total)
-        ?`<p class="help" style="margin:6px 0 0">${num(d.cached_total)} of those
-          are loaded and browsable here${d.partial?' — still reading':''}.</p>`:'')}
-  </div>`;
-  const head=banner+`<div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:10px">
-      <button class="btn ${LIB.platform?'ghost':''}" data-plat=""
-        style="padding:4px 10px;font-size:12px">All
-        <span style="opacity:.7">${d.grand_total}</span></button>${chips}</div>
-    <div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:10px;align-items:center">
+      ${readNote?`<p class="help" style="flex-basis:100%;margin:0">${esc(readNote)}</p>`:''}
+      ${srcRows.length?`<details><summary>How these are counted</summary>
+        <p class="help" style="margin:6px 0 0">Catalogued entries by source:
+        ${srcRows.map(x=>`<b style="font-size:inherit">${num(x.count)}</b> ${esc(SOURCE_LABEL[x.value]||x.value)}`).join(' · ')}.
+        Source is read from the filename each indexer writes, so anything ROMarr cannot place
+        stays “source unknown” rather than being filed under a guess.</p></details>`:''}
+    </div>`;
+  const head=banner+`<div class="lfrow">
+      ${pickerHtml('lib-plat',platItems,LIB.platform,'Platform')}
       ${sel('genre','Any genre',f.genres)}
       ${sel('region','Any region',f.regions)}
       ${sel('decade','Any decade',f.decades)}
@@ -1259,7 +1422,7 @@ RENDER.library=async()=>{
         v=>v==='local'?'On disk (plays now)':'Catalogued (needs fetching)'):''}
       ${(f.sources||[]).length>1?sel('source','Any source',f.sources,
         v=>SOURCE_LABEL[v]||v):''}
-      <select data-lf="sort" style="padding:4px 8px;font-size:12px">
+      <select data-lf="sort" aria-label="Sort by">
         <option value=""${LIB.sort?'':' selected'}>Platform, then name</option>
         <option value="name"${LIB.sort==='name'?' selected':''}>Name A–Z</option>
         <option value="rating"${LIB.sort==='rating'?' selected':''}>Top rated</option>
@@ -1267,8 +1430,8 @@ RENDER.library=async()=>{
       </select>
       ${(LIB.genre||LIB.region||LIB.decade||LIB.origin||LIB.source||LIB.sort)
         ?'<button class="btn ghost" id="lf-clear" style="padding:4px 10px;font-size:12px">Clear filters</button>':''}
-      ${(f.genres||[]).length?`<span class="help" style="margin:0;font-size:11.5px">
-        genre/year known for ${f.identified} of ${d.grand_total} (${coverage}%) —
+      ${(f.genres||[]).length?`<span class="help" style="margin:0;font-size:11.5px;flex-basis:100%">
+        genre/year known for ${fmt(f.identified)} of ${fmt(d.grand_total)} (${coverage}%) —
         run a metadata scan in your library server to raise it</span>`:''}
     </div>
     <p class="help" style="margin-bottom:10px">
@@ -1281,11 +1444,12 @@ RENDER.library=async()=>{
   if(!items.length){
     p.innerHTML=head+`<div class="empty">
       ${q||LIB.platform?'No game matches that.':'No games returned by the library.'}</div>`;
-    bindLibraryChips(p); return;
+    bindLibraryChips(p,platItems); return;
   }
   // The shelf: status, rating and notes set by the operator, overlaid on the
   // grid. One fetch for the whole page -- the metadata is tiny.
   const meta=await j('/api/v1/game/meta').catch(()=>({items:[]}));
+  if(renderEpoch!==routeEpoch||request!==libraryRequest) return;
   const shelf={};
   (meta.items||[]).forEach(x=>{
     shelf[`${x.platform}/${(x.game||'').toLowerCase()}`]=x; });
@@ -1297,8 +1461,9 @@ RENDER.library=async()=>{
     if(x.rating) bits.push(`<span class="pill">★ ${x.rating}</span>`);
     return bits.length?`<div style="margin-top:2px">${bits.join(' ')}</div>`:'';
   };
+  // A tile opens the game's own page; the shelf editor lives there.
   const grid=`<div class="grid" id="lib-grid">${items.map((g,i)=>`<div class="tile"
-      data-shelf="${i}" style="cursor:pointer" title="Click to set status, rating, notes">
+      data-open="${i}" style="cursor:pointer" title="Open game page">
     <div class="art" style="background-image:url('${esc(g.cover||'')}')"></div>
     <div class="nm">${esc(g.name)}</div>
     <div class="pf">${esc(g.platform||'')}</div>${mark(g)}</div>`).join('')}</div>`;
@@ -1307,18 +1472,20 @@ RENDER.library=async()=>{
        <button class="btn" id="lib-more">Show more
          (${d.total-LIB.offset-items.length} left)</button></div>`:'';
   p.innerHTML=head+grid+more;
-  bindLibraryChips(p);
+  bindLibraryChips(p,platItems);
   const moreBtn=p.querySelector('#lib-more');
   if(moreBtn) moreBtn.onclick=()=>{LIB.limit+=240;go('library');};
-  document.querySelectorAll('[data-shelf]').forEach(t=>t.onclick=()=>
-    shelfEditor(items[Number(t.dataset.shelf)],
-      shelf[`${items[Number(t.dataset.shelf)].platform||''}/`
-        +`${(items[Number(t.dataset.shelf)].name||'').toLowerCase()}`]||{}));
+  p.querySelectorAll('[data-open]').forEach(t=>{
+    const g=items[Number(t.dataset.open)];
+    t.setAttribute('role','link'); t.tabIndex=0;
+    const open=()=>{ go('game/'+encodeURIComponent(g.platform_slug||g.platform||'')+'/'+encodeURIComponent(g.id)); };
+    t.onclick=open; t.onkeydown=e=>{ if(e.key==='Enter') open(); };
+  });
 };
 
-function bindLibraryChips(p){
-  p.querySelectorAll('[data-plat]').forEach(b=>b.onclick=()=>{
-    LIB.platform=b.dataset.plat; LIB.offset=0; LIB.limit=120;
+function bindLibraryChips(p,platItems){
+  bindPicker(p,'lib-plat',platItems||[],v=>{
+    LIB.platform=v; LIB.offset=0; LIB.limit=120;
     go('library');
   });
   p.querySelectorAll('[data-lf]').forEach(s=>s.onchange=()=>{
@@ -1364,140 +1531,399 @@ function shelfEditor(g, meta){
       body:JSON.stringify({platform:g.platform||'',game:g.name,
         status:f.status,rating:Number(f.rating)||0,notes:f.notes})});
     closeModal();
-    toast(r.error?r.error:'Saved'); if(!r.error) go('library');
+    toast(r.error?r.error:'Saved'); if(!r.error) go(location.hash.slice(1)||'library');
+  };
+}
+
+// ---- Releases: the scored list, with a Grab button on each row -----------
+// One implementation for the Add New flow and the game page, so a release
+// chosen by hand behaves identically wherever it was picked. Every release
+// your indexers returned is shown, with the reasoning, so a Grab can overrule
+// the ranking; rejected rows stay visible because why a release was refused
+// is usually the answer you came for.
+async function renderReleases(out,game,platform){
+  const mb=n=>n>=1048576?(n/1048576).toFixed(1)+' MB'
+    :n>0?(n/1024).toFixed(0)+' KB':'—';
+  out.innerHTML='<div class="empty">Searching every indexer…</div>';
+  const d=await j(`/api/v1/release?game=${encodeURIComponent(game)}`
+    +`&platform=${encodeURIComponent(platform||'')}`).catch(()=>({error:'Search failed'}));
+  if(d.error){
+    out.innerHTML=`<p class="help" style="color:var(--warn)">${esc(d.error)}</p>`;
+    return;
+  }
+  if(!d.items.length){
+    out.innerHTML='<div class="empty">Nothing found. A search where '
+      +'every indexer fails looks exactly like one that found nothing &mdash; '
+      +'check Indexers if this is unexpected.</div>';
+    return;
+  }
+  out.innerHTML=`
+    <p class="help"><b>${d.found}</b> releases, <b>${d.accepted}</b> of them
+      acceptable. Rejected rows are shown too, because why a release was
+      refused is usually the answer you came for.</p>
+    <div class="tablewrap"><table><thead><tr><th>Score</th><th>Release</th><th>Size</th>
+      <th>Seeders</th><th>Indexer</th><th>Why</th><th></th></tr></thead><tbody>
+    ${d.items.map(r=>`<tr style="${r.accepted?'':'opacity:.62'}">
+      <td><span class="pill ${r.accepted?'imported':'failed'}">${r.score}</span></td>
+      <td>${esc(r.title)}${r.info_url?` <a href="${esc(r.info_url)}" target="_blank"
+          rel="noopener noreferrer" title="Open on ${esc(r.indexer||'the indexer')}"
+          style="text-decoration:none">&#8599;</a>`:''}
+        ${r.torrent_file_path?`<div class="help" title="Only this path is selected from the collection">File: <code>${esc(r.torrent_file_path)}</code></div>`:''}
+        ${r.platform?` <span class="pill" title="Target platform">${esc(r.platform)}</span>`:''}
+        ${r.private?' <span class="pill">private</span>':''}
+        ${r.protocol==='usenet'?' <span class="pill">usenet</span>':''}</td>
+      <td style="white-space:nowrap">${mb(r.size)}</td>
+      <td>${r.seeders}</td>
+      <td style="color:var(--dim)">${esc(r.indexer||'—')}</td>
+      <td style="color:var(--dim);font-size:12px">${r.reasons.map(esc).join('<br>')}</td>
+      <td><div class="rowact">${r.grabbable
+        ? `<button data-grab="${esc(r.id)}" data-gplat="${esc(r.platform||'')}">Grab</button>`
+        : '<span style="color:var(--dim);font-size:12px">no link</span>'}</div></td>
+      </tr>`).join('')}</tbody></table></div>`;
+  out.querySelectorAll('[data-grab]').forEach(b=>b.onclick=async()=>{
+    b.disabled=true; b.textContent='Grabbing…';
+    const chosen=platform||b.dataset.gplat||'';
+    let r=await j('/api/v1/release/grab',{method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({id:b.dataset.grab,platform:chosen})}).catch(()=>({ok:false}));
+    if(!r.ok && r.needs_platform){
+      const ask=prompt('Which platform should this release be filed under? (e.g. win, snes, psx, switch)');
+      if(ask && ask.trim()){
+        r=await j('/api/v1/release/grab',{method:'POST',
+          headers:{'content-type':'application/json'},
+          body:JSON.stringify({id:b.dataset.grab,platform:ask.trim()})}).catch(()=>({ok:false}));
+      }
+    }
+    b.textContent=r.ok?'Grabbed':'Failed';
+    if(!r.ok) b.disabled=false;
+    toast(r.ok?`Grabbed ${r.release}`:(r.error||'Could not grab that release'));
+    refreshCounts();
+  });
+}
+
+// ---- Add New: find a game, then add it the way Radarr's Add dialog does ----
+const STATE_LABEL={library:'In library',downloading:'Downloading',monitored:'Monitored',
+  unmonitored:'Not monitored','':'Not added'};
+const stateBadge=st=>`<span class="sb sb-${esc(st||'none')}">${esc(STATE_LABEL[st||'']||'')}</span>`;
+const gameHref=(slug,id,title)=>'#game/'+encodeURIComponent(slug)+'/'
+  +(id?encodeURIComponent(id):'~'+encodeURIComponent(title));
+// Set by the global search palette ("Search for ‘…’ to add it"); Add New
+// reads it once and clears it.
+let ADD_PREFILL='';
+
+// The Add dialog: platform, monitor, and what to do right now.
+function addDialog({title,options,platform,afterAdd}){
+  const m=document.createElement('div'); m.className='modal';
+  const opts=(options&&options.length?options:PLATFORMS.map(p=>({slug:p.slug,name:p.name,state:''})));
+  const start=opts.find(o=>o.slug===platform)||opts.find(o=>o.state!=='library')||opts[0]||{slug:'',name:'',state:''};
+  const items=opts.map(o=>({value:o.slug,label:o.name,meta:o.state?STATE_LABEL[o.state]:''}));
+  m.innerHTML=`<div class="box" role="dialog" aria-modal="true" aria-label="Add game">
+    <h3>${esc(title||'Add a game')}</h3>
+    <div class="sub">Add it to Wanted. ROMarr searches your indexers and watches new releases for it.</div>
+    ${title?'':`<div class="field"><label>Title</label><input type="text" id="ad-title"></div>`}
+    <div class="field"><label>Platform</label>
+      ${options&&options.length===1
+        ? `<div>${esc(start.name)}</div><input type="hidden" id="ad-plat" value="${esc(start.slug)}">`
+        : pickerHtml('ad-plat',items,start.slug,'Platform')}</div>
+    <label class="check"><input type="checkbox" id="ad-mon" checked>
+      <span>Monitor — keep searching and watching RSS until it is found. Uncheck to keep it on your wishlist without searching.</span></label>
+    <div class="field"><label>When added</label>
+      <select id="ad-search">
+        <option value="auto">Search now and grab the best release</option>
+        <option value="manual">Search now and let me choose the release</option>
+        <option value="none">Only add it</option></select></div>
+    <div class="foot"><button class="btn ghost sp" data-close>Cancel</button>
+      <button class="btn" id="ad-go">Add game</button></div></div>`;
+  document.body.append(m);
+  if(!(options&&options.length===1)) bindPicker(m,'ad-plat',items);
+  m.onclick=e=>{ if(e.target===m||e.target.dataset.close!==undefined) closeModal(); };
+  const ti=m.querySelector('#ad-title'); if(ti) ti.focus();
+  m.querySelector('#ad-go').onclick=async()=>{
+    const game=(ti?ti.value:title).trim(), plat=m.querySelector('#ad-plat').value;
+    if(!game){toast('Enter a game name');return;}
+    if(!plat){toast('Select a platform');return;}
+    const mode=m.querySelector('#ad-search').value, monitored=m.querySelector('#ad-mon').checked;
+    const btn=m.querySelector('#ad-go'); btn.disabled=true; btn.textContent='Adding…';
+    const r=await j('/api/v1/wanted/add',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({game,platform:plat,monitored,search:mode==='auto'})}).catch(()=>({ok:false,error:'Request failed'}));
+    closeModal();
+    if(!r.ok){toast(r.error||'Could not add that game');return;}
+    refreshCounts();
+    if(mode==='manual'){ go('game/'+encodeURIComponent(plat)+'/~'+encodeURIComponent(game)+'/search'); return; }
+    if(mode==='auto'){
+      const s=r.search||{};
+      toast(s.ok?('Grabbed '+(s.release||game)):('Added'+(monitored?' and monitored':'')+' — no release yet, ROMarr will keep looking'));
+    }else toast('Added '+game+(monitored?' (monitored)':''));
+    if(afterAdd) afterAdd();
   };
 }
 
 RENDER.add=async()=>{
-  $('#page').innerHTML=`<div class="card">
-    <h3>Request a game</h3>
-    <p class="help">ROMarr searches your indexers, picks the healthiest release
-      for the platform, hands it to the download client and files the ROM into RomM.</p>
+  const page=$('#page');
+  page.innerHTML=`<div class="card">
+    <h3>Add New Game</h3>
+    <p class="help">Search for a game, pick it, and ROMarr will find it — now or when a release turns up. Games already on your shelf are marked.</p>
     <div class="row">
-      <div class="field" style="flex:1;margin:0"><label>Game</label>
-        <input type="text" id="g-name" placeholder="Super Mario World"></div>
+      <div class="field" style="flex:1;min-width:220px;margin:0"><label>Game</label>
+        <input type="search" id="a-q" placeholder="Search for a game…" autocomplete="off"></div>
       <div class="field" style="width:230px;margin:0"><label>Platform</label>
-        <select id="g-plat"><option value="" disabled selected hidden>Select a platform</option>${PLATFORMS.map(p=>
-          `<option value="${esc(p.slug)}">${esc(p.name)}</option>`).join('')}</select></div>
-      <button class="btn" id="g-go" style="margin-top:20px">Search &amp; Grab</button>
+        ${pickerHtml('a-plat',platPickerItems(true),'','Platform')}</div>
+      <button class="btn" id="a-go" style="margin-top:20px">Search</button>
     </div>
-    <div id="g-out" style="margin-top:16px"></div></div>`;
-  enhancePlatformSelect($('#g-plat'), 'Select a platform');
-  $('#g-go').onclick=async()=>{
-    const game=$('#g-name').value.trim(), platform=$('#g-plat').value;
-    if(!game){toast('Enter a game name');return;}
-    if(!platform){toast('Select a platform');return;}
-    $('#g-out').innerHTML='<div class="empty">Searching indexers…</div>';
-    const r=await j('/api/request',{method:'POST',
-      headers:{'content-type':'application/json'},
-      body:JSON.stringify({game,platform})});
-    $('#g-out').innerHTML=r.ok
-      ? `<div class="card" style="margin:0"><h3>Grabbed</h3>
-         <p class="help">${esc(r.release)} — ${r.seeders} seeders</p></div>`
-      : `<div class="card" style="margin:0"><h3>Not grabbed</h3>
-         <p class="help">${esc(r.error||'no usable release')}</p></div>`;
-    refreshCounts();
-  };
-};
-
-RENDER.search=async()=>{
-  $('#page').innerHTML=`<div class="card">
-    <h3>Interactive search</h3>
-    <p class="help">Every release your indexers returned, scored, with the
-      reasoning shown &mdash; and a Grab button, so you can overrule the ranking
-      when you disagree with it. This is the page to reach for when a request
-      took the wrong release: the reason it outranked the one you wanted is
-      written next to it.</p>
-    <div class="row">
-      <div class="field" style="flex:1;margin:0"><label>Game</label>
-        <input type="text" id="s-name" placeholder="Phantasy Star IV"></div>
-      <div class="field" style="width:230px;margin:0"><label>Platform</label>
-        <select id="s-plat"><option value="">All platforms</option>${PLATFORMS.map(p=>
-          `<option value="${esc(p.slug)}">${esc(p.name)}</option>`).join('')}</select></div>
-      <button class="btn" id="s-go" style="margin-top:20px">Search</button>
-    </div>
-    <p class="help" style="margin-top:10px">Without a platform there is no
-      platform evidence to score on, so the ranking means less. Pick one when
-      you can.</p>
-    <div id="s-out" style="margin-top:16px"></div></div>`;
-  enhancePlatformSelect($('#s-plat'));
-
-  const mb=n=>n>=1048576?(n/1048576).toFixed(1)+' MB'
-    :n>0?(n/1024).toFixed(0)+' KB':'—';
-
+    <div id="a-out" style="margin-top:16px"></div></div>`;
+  bindPicker(page,'a-plat',platPickerItems(true),()=>{ if(($('#a-q').value||'').trim()) run(); });
+  const out=$('#a-out'); let seq=0;
+  const manualLink=()=>`<p class="help" style="margin-top:14px">Can’t find it? <a href="#" id="a-manual">Add it by exact title</a>.</p>`;
+  const bindManual=()=>{ const a=$('#a-manual'); if(a) a.onclick=e=>{e.preventDefault();
+    addDialog({title:'',options:null,platform:$('#a-plat').value||''});}; };
   const run=async()=>{
-    const game=$('#s-name').value.trim(), platform=$('#s-plat').value;
-    if(!game){toast('Enter a game name');return;}
-    $('#s-out').innerHTML='<div class="empty">Searching every indexer…</div>';
-    const d=await j(`/api/v1/release?game=${encodeURIComponent(game)}`
-      +`&platform=${encodeURIComponent(platform)}`);
-    if(d.error){
-      $('#s-out').innerHTML=`<p class="help" style="color:var(--warn)">${esc(d.error)}</p>`;
-      return;
+    const q=$('#a-q').value.trim();
+    if(q.length<2){out.innerHTML='';return;}
+    const mine=++seq;
+    out.innerHTML='<div class="empty">Searching…</div>';
+    const d=await j('/api/v1/lookup?q='+encodeURIComponent(q)+'&platform='+encodeURIComponent($('#a-plat').value||''))
+      .catch(()=>({configured:true,items:[],error:'Search failed'}));
+    if(mine!==seq) return;
+    if(d.configured===false){
+      out.innerHTML=`<p class="help" style="color:var(--warn)">Game search needs an IGDB connection (Metadata settings). You can still add a game by its exact title.</p>${manualLink()}`;
+      bindManual(); return;
     }
-    if(!d.items.length){
-      $('#s-out').innerHTML='<div class="empty">Nothing found. A search where '
-        +'every indexer fails looks exactly like one that found nothing &mdash; '
-        +'check Indexers if this is unexpected.</div>';
-      return;
-    }
-    $('#s-out').innerHTML=`
-      <p class="help"><b>${d.found}</b> releases, <b>${d.accepted}</b> of them
-        acceptable. Rejected rows are shown too, because why a release was
-        refused is usually the answer you came for.</p>
-      <table><thead><tr><th>Score</th><th>Release</th><th>Size</th>
-        <th>Seeders</th><th>Indexer</th><th>Why</th><th></th></tr></thead><tbody>
-      ${d.items.map((r,i)=>`<tr style="${r.accepted?'':'opacity:.62'}">
-        <td><span class="pill ${r.accepted?'imported':'failed'}">${r.score}</span></td>
-        <td>${esc(r.title)}${r.info_url?` <a href="${esc(r.info_url)}" target="_blank"
-            rel="noopener noreferrer" title="Open on ${esc(r.indexer||'the indexer')}"
-            style="text-decoration:none">&#8599;</a>`:''}
-          ${r.torrent_file_path?`<div class="help" title="Only this path is selected from the collection">File: <code>${esc(r.torrent_file_path)}</code></div>`:''}
-          ${r.platform?` <span class="pill" title="Target platform">${esc(r.platform)}</span>`:''}
-          ${r.private?' <span class="pill">private</span>':''}
-          ${r.protocol==='usenet'?' <span class="pill">usenet</span>':''}</td>
-        <td style="white-space:nowrap">${mb(r.size)}</td>
-        <td>${r.seeders}</td>
-        <td style="color:var(--dim)">${esc(r.indexer||'—')}</td>
-        <td style="color:var(--dim);font-size:12px">${r.reasons.map(esc).join('<br>')}</td>
-        <td><div class="rowact">${r.grabbable
-          ? `<button data-grab="${esc(r.id)}" data-plat="${esc(r.platform||'')}">Grab</button>`
-          : '<span style="color:var(--dim);font-size:12px">no link</span>'}</div></td>
-        </tr>`).join('')}</tbody></table>`;
-
-    document.querySelectorAll('[data-grab]').forEach(b=>b.onclick=async()=>{
-      b.disabled=true; b.textContent='Grabbing…';
-      let chosenPlat=($('#s-plat')&&$('#s-plat').value)||b.dataset.plat||'';
-      let r=await j('/api/v1/release/grab',{method:'POST',
-        headers:{'content-type':'application/json'},
-        body:JSON.stringify({id:b.dataset.grab,platform:chosenPlat})});
-      if(!r.ok && r.needs_platform){
-        const ask=prompt('Which platform should this release be filed under? (e.g. win, snes, psx, switch)');
-        if(ask && ask.trim()){
-          r=await j('/api/v1/release/grab',{method:'POST',
-            headers:{'content-type':'application/json'},
-            body:JSON.stringify({id:b.dataset.grab,platform:ask.trim()})});
-        }
-      }
-      b.textContent=r.ok?'Grabbed':'Failed';
-      if(!r.ok) b.disabled=false;
-      toast(r.ok?`Grabbed ${r.release}`:(r.error||'Could not grab that release'));
-      refreshCounts();
+    if(d.error){ out.innerHTML=`<p class="help" style="color:var(--warn)">${esc(d.error)}</p>${manualLink()}`; bindManual(); return; }
+    if(!d.items.length){ out.innerHTML=`<div class="empty">No games found for “${esc(q)}”.</div>${manualLink()}`; bindManual(); return; }
+    out.innerHTML=`<div class="rcgrid">${d.items.map((g,i)=>`<div class="rc" data-i="${i}">
+        <div class="rc-art" style="background-image:url('${esc(g.cover||'')}')"></div>
+        <div class="rc-body">
+          <div class="rc-t">${esc(g.title)}${g.year?` <span class="rc-y">${g.year}</span>`:''}</div>
+          <div class="rc-g">${esc((g.genres||[]).slice(0,3).join(' · '))}</div>
+          <div class="rc-s">${esc(g.summary||'')}</div>
+          <div class="rc-p">${g.options.map(o=>`<button type="button" class="rc-opt" data-slug="${esc(o.slug)}"
+            title="${esc(STATE_LABEL[o.state||'']||'')}">${esc(o.name)} ${stateBadge(o.state)}</button>`).join('')}</div>
+        </div></div>`).join('')}</div>${manualLink()}`;
+    bindManual();
+    // A game you already have, or are already tracking, opens its own page;
+    // only a game ROMarr knows nothing about opens the Add dialog.
+    const openStateful=(g,opt)=>{ go(opt.state==='library'?
+      'game/'+encodeURIComponent(opt.slug)+'/~'+encodeURIComponent(g.title)
+      :gameHref(opt.slug,'',g.title).slice(1)); };
+    out.querySelectorAll('.rc-opt').forEach(b=>b.onclick=e=>{
+      e.stopPropagation();
+      const g=d.items[Number(b.closest('.rc').dataset.i)], slug=b.dataset.slug;
+      const opt=g.options.find(o=>o.slug===slug)||{};
+      if(opt.state){ openStateful(g,Object.assign({slug},opt)); return; }
+      addDialog({title:g.title,options:g.options,platform:slug,afterAdd:run});
+    });
+    out.querySelectorAll('.rc').forEach(c=>c.onclick=()=>{
+      const g=d.items[Number(c.dataset.i)];
+      const have=g.options.find(o=>o.state);
+      if(have){ openStateful(g,have); }
+      else if(g.options.length===1){ c.querySelector('.rc-opt').click(); }
+      else addDialog({title:g.title,options:g.options,platform:'',afterAdd:run});
     });
   };
-  $('#s-go').onclick=run;
-  $('#s-name').onkeydown=e=>{ if(e.key==='Enter') run(); };
+  $('#a-go').onclick=run;
+  if(ADD_PREFILL){ $('#a-q').value=ADD_PREFILL; ADD_PREFILL=''; run(); }
+  let t=null; $('#a-q').oninput=()=>{clearTimeout(t);t=setTimeout(run,450);};
+  $('#a-q').onkeydown=e=>{ if(e.key==='Enter'){clearTimeout(t);run();} };
+  $('#a-q').focus();
 };
 
+// Interactive Search was folded into Add New (and the game page); `#search`
+// stays as an alias so old links and bookmarks still land somewhere useful.
+RENDER.search=async()=>RENDER.add();
+
+// ---- Global search palette: Ctrl/Cmd+K or "/" --------------------------------
+// Keywords that route a search to the page that owns the setting. The page
+// list itself comes from the nav, so a page without keywords is still found
+// by its name.
+const PALETTE_KEYWORDS={
+  profiles:'region regions ntsc pal video standard format formats chd iso nsz release scoring prefer seeders size beta hacks',
+  media:'rename import library layout folders organise organize overwrite path mapping unpack archive',
+  general:'romm url public address friends clock schedule rss interval protocol',
+  indexers:'prowlarr torznab newznab usenet trackers',
+  clients:'qbittorrent sabnzbd download client browser playwright',
+  libraries:'romm gaseous retrom library backend',
+  connections:'notifications discord webhook telegram email',
+  metadata:'igdb token api key provider cover',
+  hub:'plugins plugin sandbox archive.org isolation',
+  // The Switch Updates & DLC page arrives with the Switch UI; its keywords
+  // are harmless until then because only pages in the nav are searched.
+  switchupdates:'nintendo switch update dlc titledb version missing',
+  missing:'wanted wishlist monitored',
+  add:'search new game request grab download interactive',
+  queue:'progress eta downloading torrent',
+  tasks:'jobs sweep scheduled',
+  logs:'errors debug',
+};
+function openPalette(){
+  if(document.querySelector('.cp')) return;
+  const el=document.createElement('div'); el.className='cp';
+  el.innerHTML=`<div class="cp-box" role="dialog" aria-modal="true" aria-label="Search everything">
+    <input class="cp-in" type="search" placeholder="Search games, settings, pages… or a game to add" autocomplete="off"
+      role="combobox" aria-expanded="true" aria-controls="cp-list">
+    <div class="cp-list" id="cp-list" role="listbox"></div>
+    <div class="cp-foot">↑↓ to move · Enter to open · Esc to close</div></div>`;
+  document.body.appendChild(el);
+  const input=el.querySelector('.cp-in'), list=el.querySelector('.cp-list');
+  const prevFocus=document.activeElement;
+  let rows=[], act=0, seq=0, wanted=null;
+  const close=()=>{ el.remove(); if(prevFocus&&prevFocus.focus) prevFocus.focus(); };
+  const pages=()=>[...document.querySelectorAll('.nav[data-page]')].map(n=>({
+    kind:'page',key:n.dataset.page,title:(n.querySelector('.lbl')||n).textContent.trim(),
+    hay:((n.querySelector('.lbl')||n).textContent+' '+n.dataset.page+' '+(PALETTE_KEYWORDS[n.dataset.page]||'')).toLowerCase()}));
+  const open_=r=>{
+    close();
+    if(r.kind==='game') go('game/'+encodeURIComponent(r.slug)+'/'+encodeURIComponent(r.id));
+    else if(r.kind==='wanted') go(gameHref(r.slug,'',r.title).slice(1));
+    else if(r.kind==='page') go(r.key);
+    else if(r.kind==='add'){ ADD_PREFILL=r.q; go('add'); }
+  };
+  const paint=()=>{
+    if(act>=rows.length) act=Math.max(0,rows.length-1);
+    let last='';
+    list.innerHTML=rows.map((r,i)=>{
+      const head=r.group!==last?`<div class="cp-h">${esc(r.group)}</div>`:''; last=r.group;
+      const art=r.cover?`<div class="cp-art" style="background-image:url('${esc(r.cover)}')"></div>`:'';
+      return `${head}<div class="cp-i${i===act?' act':''}" role="option" data-i="${i}" id="cp-o${i}">${art}
+        <div class="cp-t"><b>${esc(r.title)}</b>${r.sub?`<small>${esc(r.sub)}</small>`:''}</div>
+        ${r.hint?`<span class="cp-k">${esc(r.hint)}</span>`:''}</div>`;}).join('')
+      ||'<div class="cp-h">Type to search</div>';
+    input.setAttribute('aria-activedescendant',rows.length?'cp-o'+act:'');
+    const a=list.querySelector('.act'); if(a&&a.scrollIntoView) a.scrollIntoView({block:'nearest'});
+  };
+  const run=async()=>{
+    const q=input.value.trim(), ql=q.toLowerCase(), mine=++seq;
+    if(!q){ rows=pages().slice(0,8).map(p=>({...p,group:'Pages',hint:'Go to'})); act=0; paint(); return; }
+    const pageHits=pages().filter(p=>ql.split(/\s+/).every(w=>p.hay.includes(w))).slice(0,6)
+      .map(p=>({...p,group:'Pages & settings',hint:'Open'}));
+    let games=[];
+    if(q.length>=2){
+      const d=await j('/api/v1/game?limit=8&q='+encodeURIComponent(q)).catch(()=>({items:[]}));
+      if(mine!==seq) return;
+      games=(d.items||[]).slice(0,8).map(g=>({kind:'game',id:g.id,slug:g.platform_slug||g.platform||'',title:g.name,
+        sub:g.platform,cover:g.cover,group:'In your library',hint:'Open'}));
+      if(wanted===null) wanted=(await j('/api/v1/wanted/missing').catch(()=>({items:[]}))).items||[];
+      if(mine!==seq) return;
+    }
+    const wantedHits=(wanted||[]).filter(w=>w.game.toLowerCase().includes(ql)).slice(0,4)
+      .map(w=>({kind:'wanted',slug:w.platform,title:w.game,sub:w.platform+(w.monitored===false?' · wishlist':' · wanted'),
+        group:'Wanted',hint:'Open'}));
+    const add={kind:'add',q,title:`Search for “${q}” to add it`,
+      sub:games.length||wantedHits.length?'Not what you own? Find it online and add it':'Nothing in your library matches — find it and add it',
+      group:'Add a game',hint:'Search'};
+    // When nothing you own matches, the way to get it is the first thing offered.
+    rows=(games.length||wantedHits.length)?[...games,...wantedHits,...pageHits,add]:[add,...pageHits];
+    act=0; paint();
+  };
+  let t=null; input.oninput=()=>{clearTimeout(t);t=setTimeout(run,180);};
+  input.onkeydown=e=>{
+    if(e.key==='ArrowDown'){e.preventDefault();act=Math.min(act+1,rows.length-1);paint();}
+    else if(e.key==='ArrowUp'){e.preventDefault();act=Math.max(act-1,0);paint();}
+    else if(e.key==='Enter'){e.preventDefault(); if(rows[act]) open_(rows[act]);}
+    else if(e.key==='Escape'){e.preventDefault();close();}
+  };
+  list.onmousedown=e=>e.preventDefault();
+  list.onclick=e=>{const i=e.target.closest('.cp-i'); if(i&&rows[Number(i.dataset.i)]) open_(rows[Number(i.dataset.i)]);};
+  list.onmousemove=e=>{const i=e.target.closest('.cp-i'); if(i&&Number(i.dataset.i)!==act){act=Number(i.dataset.i);
+    list.querySelectorAll('.cp-i').forEach((n,k)=>n.classList.toggle('act',k===act));}};
+  el.onmousedown=e=>{ if(e.target===el) close(); };
+  input.focus(); run();
+}
+document.addEventListener('keydown',e=>{
+  const tag=(e.target.tagName||'').toLowerCase(), typing=['input','textarea','select'].includes(tag)||e.target.isContentEditable;
+  if((e.key==='k'||e.key==='K')&&(e.ctrlKey||e.metaKey)){e.preventDefault();openPalette();}
+  else if(e.key==='/'&&!typing&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();openPalette();}
+});
+document.addEventListener('click',e=>{ if(e.target.closest&&e.target.closest('#palette-btn')) openPalette(); });
+
+// ---- The game page ---------------------------------------------------------
+// #game/<platform slug>/<RomM id | ~title>[/search]. A game that is only on
+// the Wanted list has no id, so it is addressed by title.
+RENDER.game=async(renderEpoch=routeEpoch)=>{
+  const [slug,idOrTitle,flag]=ROUTE_ARGS;
+  const page=$('#page');
+  const isTitle=(idOrTitle||'').startsWith('~');
+  const d=await j('/api/v1/game/detail?platform='+encodeURIComponent(slug||'')
+    +(isTitle?'&title='+encodeURIComponent(idOrTitle.slice(1)):'&id='+encodeURIComponent(idOrTitle||''))
+    ).catch(()=>null);
+  if(renderEpoch!==routeEpoch) return;
+  if(!d||!d.title){ page.innerHTML='<div class="empty">Game not found.</div>'; return; }
+  const it=d.item||{}, w=d.wanted, q=d.queue||[], h=d.history||[];
+  const state=d.in_library?'library':(q.some(x=>['grabbed','downloading','queued'].includes(x.state))?'downloading'
+    :(w?(w.monitored?'monitored':'unmonitored'):''));
+  const facts=[['Released',it.released],['Rating',it.rating?('★ '+num(it.rating)):''],
+    ['Genres',(it.genres||[]).join(', ')],['Franchise',(it.franchises||[]).join(', ')],
+    ['Developer / publisher',(it.companies||[]).join(', ')],['Modes',(it.modes||[]).join(', ')],
+    ['Players',it.players],['In RomM since',it.added]].filter(x=>x[1]);
+  // #g-alert, #g-swu and #g-snd are filled by the Switch and Soundtrack cards.
+  page.innerHTML=`<div id="g-alert"></div><div class="card gh">
+      <div class="gh-art" style="background-image:url('${esc(it.cover||'')}')"></div>
+      <div class="gh-main">
+        <h2>${esc(d.title)} ${it.year?`<span class="rc-y">${it.year}</span>`:''}</h2>
+        <div class="gh-sub">${esc(d.platform_name)} ${stateBadge(state)}</div>
+        <div class="gh-act">
+          ${d.romm_url?`<a class="btn" href="${esc(d.romm_url)}" target="_blank" rel="noopener noreferrer">Open in RomM ↗</a>`:''}
+          ${!d.in_library?`<button class="btn" id="g-add">${w?'Search now':'Add to Wanted'}</button>`:''}
+          ${w?`<button class="btn ghost" id="g-mon" aria-pressed="${w.monitored}">${w.monitored?'Monitored ✓':'Not monitored'}</button>`:''}
+          <button class="btn ghost" id="g-int">Interactive search</button>
+          <button class="btn ghost" id="g-shelf">Shelf: status, rating, notes</button>
+        </div>
+        ${d.in_library?`<p class="help" style="margin-top:10px">Metadata, covers and files are managed in RomM — use “Open in RomM” to change them.</p>`:''}
+        ${facts.length?`<dl class="gh-facts">${facts.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`:''}
+        ${(d.meta&&(d.meta.status||d.meta.rating||d.meta.notes))?`<p class="help" style="margin-top:10px">
+          ${d.meta.status?`<span class="pill">${esc(d.meta.status)}</span> `:''}${d.meta.rating?`<span class="pill">★ ${num(d.meta.rating)}/10</span> `:''}
+          ${esc(d.meta.notes||'')}</p>`:''}
+      </div></div>
+    <div id="g-swu"></div>
+    ${(d.in_library&&d.rom_id)?'<div id="g-snd"></div>':''}
+    <div class="card" id="g-rel" ${flag==='search'?'':'hidden'}><h3>Interactive search</h3><div id="g-relout"></div></div>
+    ${q.length?`<div class="card"><h3>Downloads</h3><div class="tablewrap"><table><thead><tr><th>Release</th><th>State</th><th>Detail</th></tr></thead><tbody>
+      ${q.map(x=>`<tr><td>${esc(x.release||'—')}</td><td>${esc(x.state)}</td><td style="color:var(--dim)">${esc(x.detail||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}
+    ${h.length?`<div class="card"><h3>History</h3><div class="tablewrap"><table><thead><tr><th>When</th><th>Event</th><th>Release</th><th>Detail</th></tr></thead><tbody>
+      ${h.map(x=>`<tr><td>${esc(fmtDate(x.at||x.time||''))}</td><td>${esc(x.kind)}</td><td>${esc(x.release||'')}</td><td style="color:var(--dim)">${esc(x.detail||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}
+    ${(!d.in_library&&w&&w.last_error)?`<p class="help">Last search: ${esc(w.last_error)} (${fmt(w.attempts)} attempt${w.attempts===1?'':'s'})</p>`:''}`;
+  // Stage 3b hook: the Soundtrack card (#g-snd) and the Switch "Updates & DLC"
+  // card (#g-swu, Switch games only) are drawn here, with `d`, `renderEpoch`,
+  // `relBox`/`relOut` and renderReleases() for their "Search" buttons.
+  const relBox=$('#g-rel'), relOut=$('#g-relout');
+  const openRel=()=>{ relBox.hidden=false; renderReleases(relOut,d.title,d.platform); relBox.scrollIntoView({behavior:'smooth',block:'start'}); };
+  if(flag==='search') renderReleases(relOut,d.title,d.platform);
+  $('#g-int').onclick=openRel;
+  $('#g-shelf').onclick=()=>shelfEditor({name:d.title,platform:(it.platform||d.platform)},d.meta||{});
+  const here=()=>go('game/'+ROUTE_ARGS.map(encodeURIComponent).join('/'));
+  const mon=$('#g-mon'); if(mon) mon.onclick=async()=>{
+    const r=await j('/api/v1/wanted/monitor',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({game:d.title,platform:d.platform,monitored:!w.monitored})});
+    if(r.ok) here();
+  };
+  const add=$('#g-add'); if(add) add.onclick=async()=>{
+    add.disabled=true; add.textContent='Searching…';
+    const r=await j('/api/v1/wanted/add',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({game:d.title,platform:d.platform,monitored:true,search:true})}).catch(()=>({ok:false}));
+    const s=r.search||{};
+    toast(s.ok?('Grabbed '+(s.release||d.title)):'No release yet — still monitored');
+    refreshCounts(); here();
+  };
+};
+
+let MISSING_VIEW='all';
 RENDER.missing=async()=>{
-  const d=await j('/api/v1/wanted/missing');
-  $('#page').innerHTML=`<div class="row" style="margin-bottom:14px">
+  const all=await j('/api/v1/wanted/missing');
+  const nMon=all.items.filter(w=>w.monitored!==false).length, nWish=all.items.length-nMon;
+  const d={items:all.items.filter(w=>MISSING_VIEW==='all'||(MISSING_VIEW==='wishlist')===(w.monitored===false))};
+  const seg=(k,l,n)=>`<button class="btn ${MISSING_VIEW===k?'':'ghost'}" data-mview="${k}" style="padding:4px 12px;font-size:12.5px">${l} ${n}</button>`;
+  $('#page').innerHTML=`<div class="row" style="margin-bottom:10px">
+      ${seg('all','All',all.items.length)}${seg('monitored','Monitored',nMon)}${seg('wishlist','Wishlist',nWish)}
+      <span class="help" style="margin:0">Wishlist = on your list but not monitored, so ROMarr never searches for it.</span></div>
+    <div class="row" style="margin-bottom:14px">
       <button class="btn" id="w-all">Search All</button>
       <span style="color:var(--dim);font-size:12.5px">
         ${d.items.length} game(s) requested but not yet imported</span></div>
     ${d.items.length?`<table><thead><tr><th>Game</th><th>Platform</th>
-      <th>Added</th><th>Attempts</th><th>Last error</th><th></th></tr></thead><tbody>
-      ${d.items.map(w=>`<tr><td>${esc(w.game)}</td><td>${esc(w.platform||'—')}</td>
+      <th>Monitored</th><th>Added</th><th>Attempts</th><th>Last error</th><th></th></tr></thead><tbody>
+      ${d.items.map(w=>`<tr${w.monitored===false?' style="opacity:.62"':''}><td><a href="${esc(gameHref(w.platform,'',w.game))}">${esc(w.game)}</a></td><td>${esc(w.platform||'—')}</td>
+        <td><button class="mini" data-mon-game="${esc(w.game)}" data-mon-platform="${esc(w.platform)}"
+          data-mon="${w.monitored===false?'0':'1'}" aria-pressed="${w.monitored!==false}"
+          title="Monitored games are searched by the sweep and watched in RSS">${w.monitored===false?'Off':'On'}</button></td>
         <td title="${esc(w.added)}">${esc(fmtDate(w.added))}</td><td>${w.attempts}</td>
         <td style="color:var(--dim)">${esc(w.last_error||'—')}</td>
         <td><button class="mini" data-drop-game="${esc(w.game)}"
@@ -1505,6 +1931,7 @@ RENDER.missing=async()=>{
           title="Stop looking for this. It stays out of Wanted until you ask for it again."
           >Remove</button></td></tr>`).join('')}
       </tbody></table>`:'<div class="empty">Nothing missing.</div>'}`;
+  $('#page').querySelectorAll('[data-mview]').forEach(x=>x.onclick=()=>{MISSING_VIEW=x.dataset.mview; go('missing');});
   const b=$('#w-all'); if(b) b.onclick=async()=>{
     b.disabled=true; b.textContent='Searching…';
     const r=await j('/api/v1/command',{method:'POST',
@@ -1513,6 +1940,12 @@ RENDER.missing=async()=>{
     toast(`Searched ${r.searched??0}, grabbed ${r.grabbed??0}`);
     go('missing'); refreshCounts();
   };
+  $('#page').querySelectorAll('button[data-mon-game]').forEach(x=>x.onclick=async()=>{
+    x.disabled=true;
+    const r=await j('/api/v1/wanted/monitor',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({game:x.dataset.monGame,platform:x.dataset.monPlatform,monitored:x.dataset.mon!=='1'})});
+    if(r.ok) go('missing'); else {x.disabled=false; toast('Could not change monitoring');}
+  });
   // Dropping a request, which Wanted could not do at all: the list was only
   // ever emptied by an import, so a typo went on being searched for forever.
   $('#page').querySelectorAll('button[data-drop-game]').forEach(x=>x.onclick=async()=>{
@@ -4504,7 +4937,7 @@ RENDER.setup=async()=>{
     content='<h3>Choose your first small task</h3><p class="help">Start with one game so you can see each step. You can reopen this guide from <b>Settings → Setup Guide</b> whenever you need it.</p>'
       +(SETUP.mode==='organize'
         ?'<p><a class="btn" href="#manualimport">Preview existing ROMs</a></p><p class="help">Manual Import shows what ROMarr recognizes before you import. For missing games and DAT comparison, open <a href="#collections">Collections</a>. Exact duplicate cleanup starts with an audit under <a href="#stats">Stats</a>.</p>'
-        :'<p><a class="btn" href="#search">Preview a game search</a></p><p class="help">Interactive Search shows the available releases before you choose one. Follow its progress in <a href="#queue">Queue</a>. If you prefer to start with files you already have, use <a href="#manualimport">Manual Import</a>.</p>')
+        :'<p><a class="btn" href="#search">Preview a game search</a></p><p class="help">Add New finds a game and its releases before you choose one. Follow its progress in <a href="#queue">Queue</a>. If you prefer to start with files you already have, use <a href="#manualimport">Manual Import</a>.</p>')
       +'<h4 style="margin-top:22px">Want a dedicated player?</h4><p class="help">Cartridge is an optional companion for a RomM library. Choose the version for your device; ROMarr works without it.</p>'
       +'<div class="row" style="flex-wrap:wrap"><a class="btn ghost" href="https://github.com/BlizzHacker/romarr/releases/download/v1.8.0/Cartridge-Windows-Portable-0.2.0-x64.exe" target="_blank" rel="noopener">Cartridge for Windows</a><a class="btn ghost" href="https://apps.microsoft.com/detail/9MXC51W17LH4" target="_blank" rel="noopener">Cartridge for Xbox</a></div>'
       +'<p class="help">Need help? <a href="https://github.com/BlizzHacker/romarr/issues" target="_blank" rel="noopener">Open a GitHub issue</a> with your ROMarr version, what you expected, and the relevant error. Remove passwords and API keys from logs.</p>';
@@ -5305,7 +5738,10 @@ def page() -> str:
 <div id="navwrap">{_nav_html()}</div>
 {_theme_control_html()}</nav>
 <div id="main">
-  <div id="top"><h1>Games</h1><input id="search" placeholder="Filter…" autocomplete="off"></div>
+  <div id="top"><h1>Games</h1><input id="search" placeholder="Filter…" autocomplete="off"
+    aria-label="Filter games">
+    <button id="palette-btn" class="btn ghost" type="button" aria-haspopup="dialog"
+      style="margin-inline-start:auto;padding:6px 12px;font-size:12.5px">Search everything <kbd>Ctrl K</kbd></button></div>
   <div class="page" id="page"></div>
 </div>
 <script>{JS}</script></body></html>"""

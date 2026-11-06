@@ -13,7 +13,7 @@ environment-dependent: no DNS for romm.internal, sandbox is a docker env).
 | 6 | Switch report + attach | done (API, store setting ignored_dlc, counts().switchgaps; UI is stage 3; TITLED_NAMES=1 + memory 1536m belong to the ops stage) |
 | 7 | Unpacking (tar family, nested) | done |
 | 8 | Soundtracks | done (backend, docs and tests; UI card/page is stage 3) |
-| 9 | UI | not yet (stage 3) |
+| 9 | UI | partial: stage 3a done (picker + compact library header, router with arguments, merged Add New + `renderReleases`, game page shell, Missing tabs/toggle, search palette, tests); stage 3b open (see below) |
 | 10 | Ops | not yet (end stage) |
 
 ## Stage 1 result (backend, items 1-7)
@@ -50,3 +50,27 @@ Tests: baseline 4 failed / 2735 passed / 2 skipped; now 4 failed (the same four)
 * Test fix: the job-wait helpers now also wait for `finished` (stamped after the undo journal is written);
   `test_music_library_search_and_add` was flaky under CPU load (undo ran before the journal, `removed` was 0).
   The same race exists in Tim's main; production code is unchanged.
+
+## Stage 3a result (UI, item 9 first half)
+
+Done (all in `romarr/ui.py`, plain English strings, no i18n catalogue):
+
+* 9.1 `pickerHtml`/`bindPicker`/`platPickerItems` + `.pp*` CSS; library platform filter is the picker (chip wall gone),
+  compact header `.libstats` / `.lfrow`; library tiles open `#game/<slug>/<id>`.
+* 9.2 `go('page/arg/...')`, `ROUTE_ARGS`, `ROUTE_SPEC` (hashchange only renders for changes made outside `go`),
+  `routeEpoch` (renderers get `renderEpoch` and may drop a stale render), `#search` -> `#add`, `game` lights Library.
+* 9.3 Add New (IGDB cards, state badges, `addDialog`, exact-title fallback, `ADD_PREFILL`), nav entry for Interactive
+  Search removed, shared `renderReleases(out,game,platform)`.
+* 9.4 `RENDER.game` (cover, facts, Open in RomM, monitor toggle, Add to Wanted/Search now, interactive search panel,
+  shelf editor via the existing `shelfEditor`, downloads, history, `#g-alert`, `#g-swu`, `#g-snd`).
+* 9.5 Missing: monitored On/Off column, game links, All / Monitored / Wishlist tabs (`MISSING_VIEW`).
+* 9.6 Search palette (Ctrl/Cmd+K, `/`, top-bar button, `PALETTE_KEYWORDS`); Filter box only on Games.
+* 9.7 Tests: `tests/test_ui_picker.py`, `tests/test_ui_addnew.py`; adjusted `test_ui_pages.py`, `test_ui.py`
+  (#121/#122 assertions about the old Add/Interactive Search selects), `test_interactive_search.py`.
+
+Stage 3b must still do (item 9 remainder): Soundtrack card (fill `#g-snd`; hook comment in `RENDER.game`), Switch
+"Updates & DLC" card in `#g-swu` + `#g-alert` banner, library Switch banner + tile `.gap` badges (CSS `.tile .gap`,
+`.alert-bar` already added) + nav badge, Switch Updates page (`RENDER.switchupdates`, nav entry, title in `go()`),
+Soundtracks page (+ Duplicates tab), Queue page progress/ETA/Refresh, Profiles page (video standard, formats by
+console, regions note), General "RomM address for links", Media Management unpacking help, Hub isolation banner.
+Not verifiable here: real browser load (no Playwright in the sandbox); the JS was checked with `node --check`.

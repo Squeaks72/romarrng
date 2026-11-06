@@ -98,3 +98,20 @@ handed to every plugin. Neither is acceptable (Tim's hard rule), so:
   container with `--tmpfs /tmp` or the sandbox probe reports "unavailable" (ops stage).
 * The plugin uid needs read access to the plugin directory under `$ROM_HUB_HOME` (group/other readable;
   default UMASK 002 satisfies this).
+
+## UI stage 3a (item 9)
+
+* Upstream's `enhancePlatformSelect` (searchable `<select>`, #120/#121/#122) is kept for every form that already uses
+  it (audit, rename, manual import, calendar, platform rules). The library filter, Add New and the Add dialog use
+  Tim's `pickerHtml`/`bindPicker` instead, because those need a count/state on each row and a hidden input carrying
+  the id; the two coexist (`.rp-*` vs `.pp*`). Upstream tests that asserted the old `s-plat`/`g-plat` selects were
+  updated to assert the picker.
+* Upstream's library banner (`.card` + `.st`) and platform chip wall were replaced by `.libstats` + the picker; all
+  of upstream's text (source split, "counted from cached rows", genre coverage) was kept.
+* Upstream's Interactive Search page was folded into Add New and the game page; its table (score, why, private,
+  usenet, torrent file path, target-platform pill, `needs_platform` prompt on Grab) became `renderReleases`.
+  `RENDER.search` stays as an alias and `go()` rewrites `#search` to `#add`; the Hub/Get-started buttons still work.
+* Upstream's `go()` re-rendered twice on a nav click (it set the hash, then `hashchange` called `go` again). `go()`
+  now records `ROUTE_SPEC` and the hashchange handler ignores the change it caused itself.
+* Upstream's Filter box was shown on Games and Add New; it is Games only now (Add New has its own search field).
+* Grab buttons carry `data-gplat` (not `data-plat`) so the "no chip wall" test can forbid `data-plat=`.

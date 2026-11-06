@@ -141,8 +141,10 @@ def test_searchable_platform_dropdowns_and_all_platforms_filter():
     assert ".rp-dropdown" in html
     assert "enhancePlatformSelect" in html
     assert "platformsAZ" in html
-    # Interactive Search uses consistent 'All platforms' label
-    assert '<select id="s-plat"><option value="">All platforms</option>' in html
+    # Add New (which absorbed Interactive Search) uses the searchable picker with
+    # the consistent 'Any platform' label; the library filter says 'All platforms'.
+    assert "{value:'',label:'Any platform'}" in html
+    assert "{value:'',label:'All platforms'" in html
     # Fix existing filenames includes 'Select a platform' placeholder
     assert '<select id="rn-plat"><option value="" disabled selected hidden>Select a platform</option>' in html
 
@@ -151,7 +153,8 @@ def test_issue_122_platform_placeholder_defaults_and_dropdown_display():
     """Issue #122: Platform placeholder defaults, validation, and dropdown filtering."""
     html = page()
     # 1. Placeholders are present on Add New, Library Audit, and Fix Existing Filenames
-    assert '<select id="g-plat"><option value="" disabled selected hidden>Select a platform</option>' in html
+    #    (Add New now uses the picker, whose Add dialog validates the platform.)
+    assert "pickerHtml('a-plat'" in html
     assert '<select id="au-plat"><option value="" disabled selected hidden>Select a platform</option>' in html
     assert '<select id="rn-plat"><option value="" disabled selected hidden>Select a platform</option>' in html
 
