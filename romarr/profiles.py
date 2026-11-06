@@ -435,6 +435,18 @@ class ReleaseProfile:
 _INFOHASH = re.compile(r"btih:([0-9a-fA-F]{40}|[0-9a-zA-Z]{32})")
 
 
+def normalise_infohash(value: str) -> str:
+    """Canonicalize hex and base32 v1 torrent hashes, including old queue rows."""
+    import base64
+    value = str(value or "").strip().lower()
+    if len(value) == 32:
+        try:
+            return base64.b32decode(value.upper()).hex()
+        except ValueError:
+            pass
+    return value
+
+
 def release_id(release) -> str:
     """A stable identity for one release.
 

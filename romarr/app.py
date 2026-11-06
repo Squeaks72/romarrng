@@ -45,6 +45,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote_plus, urlparse
 
 import time
+import unicodedata
 
 from .libraries import (
     LIBRARY_TYPES, build_library, build_library_from_config, library_counts,
@@ -78,9 +79,11 @@ from .metadata import PROVIDERS as METADATA_PROVIDERS
 from .notify import (NOTIFIERS, Message, Notifier, failed, grabbed, imported,
                      FIELD_HELP, FIELD_LABELS, send_test,
                      update_available)
-from .profiles import Blocklist, ReleaseProfile, release_id
+from .profiles import Blocklist, ReleaseProfile, normalise_infohash, release_id
 from .upgrade import is_upgrade, merge_tags, scan as scan_directory
-from .metadata import Metadata, calendar as metadata_calendar
+from .metadata import (Metadata, calendar as metadata_calendar,
+                       igdb_catalog_config, igdb_catalog_platforms,
+                       igdb_catalog_search)
 from .metadata import discover as metadata_discover
 from .openapi import spec as openapi_spec
 from .ops import (LogRing, RateLimiter, make_backup, read_backup,
@@ -101,7 +104,7 @@ LIST_SECRETS = ("api_key", "openxbl_key", "npsso", "itchio_key",
                 "battlenet_cookie", "humble_cookie")
 from .scheduler import Scheduler, next_search_due
 from .selection import Release, best_release, infer_platform, judge, score
-from .store import Event, QueueItem, SeerrRequest, Store
+from .store import Event, QueueItem, SeerrRequest, Store, now_iso
 from .ui import favicon_svg as ui_favicon_svg
 from .ui import page as ui_page
 from .ui import link_page as ui_link_page
@@ -119,6 +122,24 @@ VERSION = derive_version()
 # from everything else in a shared client -- the same reason Radarr and Sonarr
 # each use a category of their own.
 DEFAULT_CATEGORY = "romarr"
+
+
+SECRET_MASK = "********"
+#: Stored lists whose items carry credentials, and which fields. Metadata
+#: providers and connections are also served by dedicated endpoints that mask
+#: the same names; import lists use LIST_SECRETS above.
+MASKED_ITEM_FIELDS = {
+    "metadata_providers": ("api_key", "token", "client_id", "client_secret"),
+    "connections": ("url", "token", "password", "key"),
+    "import_lists": LIST_SECRETS,
+}
+_SECRET_KEY_WORDS = ("secret", "password", "token", "passkey", "api_key", "apikey")
+
+
+def mask_item(item, fields):
+    if not isinstance(item, dict):
+        return item
+    return {k: (SECRET_MASK if k in fields and v else v) for k, v in item.items()}
 
 
 def redact_query_credentials(value: str) -> str:
@@ -1342,7 +1363,43 @@ class ROMarr:
         for secret in ("_api_key", "_password_hash", "_peers",
                        "_oidc_client_secret"):
             out.pop(secret, None)
+        # Everything else that carries a credential, by the same masking the
+        # dedicated endpoints already use. The dedicated endpoints masked these;
+        # this one did not, so GET/PUT /api/v1/config returned the IGDB token,
+        # notification webhook URLs and import-list keys in the clear.
+        for key, fields in MASKED_ITEM_FIELDS.items():
+            if isinstance(out.get(key), list):
+                out[key] = [mask_item(item, fields) for item in out[key]]
+        for key, value in list(out.items()):
+            if (isinstance(value, str) and value
+                    and any(t in key.lower() for t in _SECRET_KEY_WORDS)):
+                out[key] = SECRET_MASK
         return out
+
+    def restore_masked_items(self, patch: dict) -> dict:
+        """Undo masking in a settings patch so a masked echo never overwrites a secret."""
+        for key, fields in MASKED_ITEM_FIELDS.items():
+            items = patch.get(key)
+            if not isinstance(items, list):
+                continue
+            stored = {str(i.get("id")): i for i in self.store.settings.get(key, [])
+                      if isinstance(i, dict) and i.get("id")}
+            fixed = []
+            for item in items:
+                if isinstance(item, dict):
+                    old = stored.get(str(item.get("id")), {})
+                    item = dict(item)
+                    for f in fields:
+                        if item.get(f) in (SECRET_MASK, None) or (f in item and item[f] == ""
+                                                                  and old.get(f)):
+                            item[f] = old.get(f, "")
+                fixed.append(item)
+            patch[key] = fixed
+        for key in list(patch):
+            if (isinstance(patch[key], str) and patch[key] == SECRET_MASK
+                    and any(t in key.lower() for t in _SECRET_KEY_WORDS)):
+                patch[key] = self.store.settings.get(key, "")
+        return patch
 
     def setup_status(self) -> dict:
         """A quick setup checklist, without probing services or returning secrets."""
@@ -2439,6 +2496,152 @@ class ROMarr:
         self.store.set_queue(items)
 
     # -- wanted ---------------------------------------------------------------
+
+    # -- finding new games and monitoring them (the Sonarr/Radarr loop) ------
+
+    @staticmethod
+    def _title_key(value) -> str:
+        plain = unicodedata.normalize("NFKD", str(value or ""))
+        plain = plain.encode("ascii", "ignore").decode("ascii").casefold()
+        return re.sub(r"[^a-z0-9]+", "", plain)
+
+    @staticmethod
+    def _slug_of(game) -> str:
+        slug = str(getattr(game, "platform_slug", "") or "")
+        if slug:
+            return slug
+        plat = resolve(str(getattr(game, "platform", "") or ""))
+        return plat.slug if plat is not None else ""
+
+    def _owned_keys(self) -> set:
+        library, _, _ = self._library_cache
+        return {(self._title_key(g.name), self._slug_of(g).casefold())
+                for g in (library or [])}
+
+    def _igdb_platform_ids(self, cfg: dict, slug: str) -> list[int]:
+        """IGDB platform ids whose names resolve to this ROMarr platform."""
+        cache = getattr(self, "_igdb_platform_cache", None)
+        if cache is None or time.time() - cache[0] > 6 * 3600:
+            try:
+                cache = (time.time(), igdb_catalog_platforms(cfg))
+            except Exception:  # noqa: BLE001 - search still works unfiltered
+                cache = (time.time(), [])
+            self._igdb_platform_cache = cache
+        ids = []
+        for row in cache[1]:
+            plat = resolve(row.get("name", ""))
+            if plat is not None and plat.slug == slug:
+                ids.append(int(row["id"]))
+        return ids
+
+    def _game_state(self, title: str, slug: str, known: set | None = None) -> str:
+        """library | downloading | monitored | unmonitored | '' for one game."""
+        key = self._title_key(title)
+        if known is None:
+            known = self._owned_keys()
+        if (key, slug.casefold()) in known:
+            return "library"
+        for q in self.store.queue:
+            if (q.platform == slug and self._title_key(q.game) == key
+                    and q.state in ("grabbed", "downloading", "queued")):
+                return "downloading"
+        for w in self.store.wanted:
+            if w.platform == slug and self._title_key(w.game) == key:
+                return "monitored" if w.monitored else "unmonitored"
+        return ""
+
+    def lookup(self, query: str, platform_name: str = "") -> dict:
+        """Search IGDB for games to add, with where each one stands here."""
+        cfg = igdb_catalog_config(self.store.list_items("metadata_providers"))
+        if cfg is None:
+            return {"configured": False, "items": []}
+        platform = resolve(platform_name) if platform_name else None
+        ids = self._igdb_platform_ids(cfg, platform.slug) if platform else []
+        try:
+            rows, _ = igdb_catalog_search(cfg, query, 24, 0, ids or None)
+        except Exception as err:  # noqa: BLE001
+            log.warning("IGDB lookup failed: %s", err.__class__.__name__)
+            return {"configured": True, "items": [], "error": "IGDB did not answer"}
+        known = self._owned_keys()
+        items = []
+        for row in rows:
+            options, seen = [], set()
+            for opt in row.get("platformOptions") or []:
+                plat = resolve(opt.get("name", ""))
+                if plat is None or plat.slug in seen:
+                    continue
+                if platform is not None and plat.slug != platform.slug:
+                    continue
+                seen.add(plat.slug)
+                options.append({"slug": plat.slug, "name": plat.name,
+                                "state": self._game_state(row["title"], plat.slug, known)})
+            if not options:
+                continue
+            year = (row.get("releaseDate") or "")[:4]
+            items.append({"igdb_id": row.get("igdbId"), "title": row["title"],
+                          "year": int(year) if year.isdigit() else None,
+                          "cover": row.get("coverUrl") or "",
+                          "summary": row.get("summary") or "",
+                          "genres": row.get("genres") or [],
+                          "options": options})
+        return {"configured": True, "items": items}
+
+    def add_wanted(self, game: str, platform_name: str, *, monitored: bool = True,
+                   search: bool = False) -> dict:
+        """Add a game the way Radarr's Add dialog does: monitor it, maybe search now."""
+        platform = resolve(platform_name)
+        if platform is None:
+            return {"ok": False, "error": f"unknown platform: {platform_name!r}"}
+        state = self._game_state(game, platform.slug)
+        if state == "library":
+            return {"ok": False, "error": "already in the library", "state": state}
+        self.store.want(game, platform.slug, monitored=monitored)
+        self.store.set_monitored(game, platform.slug, monitored)
+        self.store.record(Event(kind="ignored", game=game, platform=platform.slug,
+                                detail="added to Wanted" + ("" if monitored else " (unmonitored)")))
+        result = {"ok": True, "state": "monitored" if monitored else "unmonitored"}
+        if search:
+            result["search"] = self.request(game, platform.slug)
+        return result
+
+    def game_detail(self, platform_slug: str, game_id: str = "", title: str = "") -> dict:
+        """Everything the game page shows, assembled from what ROMarr already has."""
+        platform = resolve(platform_slug)
+        slug = platform.slug if platform else platform_slug
+        row = None
+        library, _, _ = self._library_cache
+        for g in library or []:
+            if self._slug_of(g).casefold() == slug.casefold() \
+                    and ((game_id and str(getattr(g, "id", "")) == str(game_id))
+                         or (not game_id and self._title_key(g.name) == self._title_key(title))):
+                row = g
+                break
+        name = (row.name if row is not None else title) or ""
+        key = self._title_key(name)
+        view = None
+        if row is not None:
+            page = self.library_view(platform=str(getattr(row, "platform", "") or ""),
+                                     q=name, limit=40)
+            view = next((i for i in page.get("items", [])
+                         if str(i.get("id")) == str(getattr(row, "id", ""))), None)
+        wanted = next((asdict(w) for w in self.store.wanted
+                       if w.platform == slug and self._title_key(w.game) == key), None)
+        queue = [asdict(q) for q in self.store.queue
+                 if q.platform == slug and self._title_key(q.game) == key]
+        history = [e for e in self.store.history(500)
+                   if e.get("platform") == slug and self._title_key(e.get("game")) == key][:25]
+        s = self.store.settings
+        romm = (s.get("romm_public_url") or s.get("_romm_url") or "").rstrip("/")
+        if not romm:
+            libs = self.store.list_items("libraries")
+            romm = str((libs[0].get("url") if libs else "") or "").rstrip("/")
+        rom_id = str(getattr(row, "id", "") or "") if row is not None else ""
+        return {"platform": slug, "platform_name": platform.name if platform else slug,
+                "title": name, "in_library": row is not None, "item": view,
+                "rom_id": rom_id, "wanted": wanted, "queue": queue, "history": history,
+                "meta": (self.store.game_meta(str(getattr(row, "platform", "") or slug), name)
+                         if name else {}),
+                "romm_url": f"{romm}/rom/{rom_id}" if romm and rom_id else ""}
 
     def drop_request(self, game: str, platform_name: str) -> bool:
         """Take something off Wanted without pretending it arrived.
@@ -5302,6 +5505,9 @@ class ROMarr:
         """
         searched = grabbed_count = skipped = skipped_in_flight = 0
         for item in list(self.store.wanted):
+            if not item.monitored:
+                skipped += 1
+                continue
             if auto and not next_search_due(item.attempts, item.searched_at):
                 skipped += 1
                 continue
@@ -5334,9 +5540,11 @@ class ROMarr:
         between missing-search sweeps: a release that appears an hour after
         you asked is grabbed within the hour, not at the next sweep.
         """
-        wanted = list(self.store.wanted)
-        if not wanted:
+        if not self.store.wanted:
             return "nothing wanted, nothing to match"
+        wanted = [w for w in self.store.wanted if w.monitored]
+        if not wanted:
+            return "nothing monitored, nothing to match"
         releases, sources = [], 0
         candidates: list[tuple[str, object]] = []
         if self.prowlarr._config.base_url:
@@ -6793,6 +7001,16 @@ def make_handler(service: ROMarr):
                     sort=(query.get("sort") or [""])[0]))
             if route.path == "/api/v1/wanted/missing":
                 return self._json(200, {"items": service.store.missing()})
+            if route.path == "/api/v1/lookup":
+                term = (query.get("q") or [""])[0].strip()
+                if not term or len(term) > 200:
+                    return self._json(400, {"error": "q is required"})
+                return self._json(200, service.lookup(term, (query.get("platform") or [""])[0]))
+            if route.path == "/api/v1/game/detail":
+                return self._json(200, service.game_detail(
+                    (query.get("platform") or [""])[0],
+                    (query.get("id") or [""])[0],
+                    (query.get("title") or [""])[0]))
             if route.path == "/api/v1/queue":
                 return self._json(200, {"items": [asdict(i) for i in service.queue]})
             if route.path == "/api/v1/history":
@@ -8045,6 +8263,22 @@ def make_handler(service: ROMarr):
                             only_if_not_cancelled=True)
                 return self._json(202, integration_view(
                     service.store.get_seerr_request(ext_id)))
+            if route.path == "/api/v1/wanted/add":
+                game = str(body.get("game") or "").strip()
+                platform = str(body.get("platform") or "").strip()
+                if not game or not platform:
+                    return self._json(400, {"error": "game and platform are required"})
+                return self._json(200, service.add_wanted(
+                    game, platform, monitored=bool(body.get("monitored", True)),
+                    search=bool(body.get("search"))))
+            if route.path == "/api/v1/wanted/monitor":
+                game = str(body.get("game") or "").strip()
+                platform = resolve(str(body.get("platform") or ""))
+                if not game or platform is None:
+                    return self._json(400, {"error": "game and platform are required"})
+                ok = service.store.set_monitored(game, platform.slug,
+                                                 bool(body.get("monitored", True)))
+                return self._json(200 if ok else 404, {"ok": ok})
             if route.path == "/api/v1/release/grab":
                 release_id = (body.get("id") or "").strip()
                 if not release_id:
@@ -8250,6 +8484,7 @@ def make_handler(service: ROMarr):
                 secret = body.get("_oidc_client_secret")
                 if "_oidc_client_secret" in body and secret in ("", "********"):
                     body.pop("_oidc_client_secret")
+                body = service.restore_masked_items(dict(body))
                 updated = service.store.update_settings(body)
                 if any(str(k).startswith("oidc") or k == "_oidc_client_secret"
                        for k in body):

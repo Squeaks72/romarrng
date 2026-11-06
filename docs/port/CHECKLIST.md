@@ -6,10 +6,10 @@ environment-dependent: no DNS for romm.internal, sandbox is a docker env).
 | # | Feature | Status |
 |---|---|---|
 | 1 | Plugin confinement (uid helper + Landlock + env allowlist) | not yet |
-| 2 | Scoring (video standard, formats, regions, whole-word titles) | not yet |
+| 2 | Scoring (video standard, formats, regions, whole-word titles) | done (regions: upstream implementation kept + case fix, see DECISIONS) |
 | 3 | Queue (progress, queue_view, Fails., duplicate grab guard) | not yet |
-| 4 | Monitoring / wishlist / lookup / game detail | not yet |
-| 5 | Secret masking | not yet |
+| 4 | Monitoring / wishlist / lookup / game detail | done (API + store + IGDB search; UI is stage 3) |
+| 5 | Secret masking | done |
 | 6 | Switch report + attach | not yet |
 | 7 | Unpacking (tar family, nested) | not yet |
 | 8 | Soundtracks | not yet (stage 2) |

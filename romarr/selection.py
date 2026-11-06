@@ -216,6 +216,30 @@ _TOKEN_TO_REGIONS = {
     "jue": {"japan", "usa", "europe"}, "uej": {"usa", "europe", "japan"}, "jeu": {"japan", "europe", "usa"},
 }
 
+#: Spellings people (and the settings page) use for the names detect_regions
+#: returns.
+_REGION_ALIAS = {"us": "usa", "u": "usa", "ntsc-u": "usa", "north america": "usa",
+                 "united states": "usa", "global": "world", "eu": "europe",
+                 "eur": "europe", "pal": "europe", "jp": "japan", "jpn": "japan",
+                 "ntsc-j": "japan"}
+
+
+def _region_names(raw) -> list[str]:
+    """Preferred regions as detect_regions spells them: lower case, aliases resolved.
+
+    The settings page stores "USA, World, Europe, Japan" capitalised, while
+    detect_regions returns "usa"; compared as written, a custom order never
+    matched and strict mode refused every release, USA included.
+    """
+    out: list[str] = []
+    for item in raw or []:
+        name = str(item or "").strip().lower()
+        name = _REGION_ALIAS.get(name, name)
+        if name and name not in out:
+            out.append(name)
+    return out or ["usa", "world", "europe", "japan"]
+
+
 def detect_regions(title: str) -> set[str]:
     lowered = title.lower()
     detected = set()
@@ -456,7 +480,7 @@ def judge(release: Release, wanted: str,
 
     detected_regions = detect_regions(release.title)
     if profile and getattr(profile, "region_mode", "prefer") == "strict":
-        pref_list = getattr(profile, "preferred_regions", None) or ["usa", "world", "europe", "japan"]
+        pref_list = _region_names(getattr(profile, "preferred_regions", None))
         if detected_regions and not any(r in pref_list for r in detected_regions):
             return Judgement(-300, verdict=f"region outside allowed list ({', '.join(sorted(detected_regions))})")
 
@@ -475,9 +499,8 @@ def judge(release: Release, wanted: str,
             region_handled = True
 
     if not region_handled:
-        pref_list = getattr(profile, "preferred_regions", None) if profile else None
-        if not pref_list:
-            pref_list = ["usa", "world", "europe", "japan"]
+        pref_list = _region_names(getattr(profile, "preferred_regions", None)
+                                  if profile else None)
         n = len(pref_list)
         matched_ranks = [(pref_list.index(r), r) for r in detected_regions if r in pref_list]
         if matched_ranks:

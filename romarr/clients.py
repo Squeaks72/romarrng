@@ -170,6 +170,11 @@ class QBittorrent:
     def last_error(self) -> str:
         return getattr(self._added, "error", "")
 
+    @property
+    def last_reject(self) -> str:
+        """"not_accepted" when the last add got HTTP 200 with a "Fails." body."""
+        return getattr(self._added, "reject", "")
+
     def _url(self, path: str) -> str:
         return f"{self._config.base_url.rstrip('/')}/api/v2/{path.lstrip('/')}"
 
@@ -223,9 +228,18 @@ class QBittorrent:
                 "tags": tag}
         if save_path:
             data["savepath"] = save_path
+        self._added.reject = ""
         response = self._post("torrents/add", data=data, timeout=self._config.timeout)
         if not response.ok:
             log.warning("qbittorrent add failed: %s", response.status_code)
+            return False
+        # qBittorrent answers HTTP 200 either way: "Ok." when it took the
+        # torrent and "Fails." when it did not (a link it could not fetch, or a
+        # torrent it already has). Treating every 200 as success marked grabs
+        # that never happened, which then sat in the queue forever.
+        if str(getattr(response, "text", "") or "").strip().lower().startswith("fails"):
+            log.warning("qbittorrent did not accept the torrent")
+            self._added.reject = "not_accepted"
             return False
         self._added.job_id = "qbit-tag:" + tag
         return True
@@ -625,6 +639,39 @@ class QBittorrent:
             else:
                 done.append(row)
         return done
+
+    def progress(self) -> dict[str, dict]:
+        """Live state of every torrent in our category, keyed by info-hash.
+
+        What the Queue page shows so nobody has to open qBittorrent: percent
+        done, seconds left (None when qBittorrent has no estimate, which it
+        reports as 8640000), and current speed. `tags` carries the romarr-<id>
+        tag ROMarr put on the torrent, which is how a row whose job id is a
+        tag (not a hash) finds its torrent.
+        """
+        if not self._authed:
+            self.login()
+        response = self._get("torrents/info",
+                             params={"category": self._config.category},
+                             timeout=self._config.timeout)
+        response.raise_for_status()
+        out: dict[str, dict] = {}
+        for row in response.json():
+            key = str(row.get("hash") or "").lower()
+            if not key:
+                continue
+            eta = row.get("eta")
+            out[key] = {
+                "name": str(row.get("name") or ""),
+                "tags": [t.strip() for t in str(row.get("tags") or "").split(",")
+                         if t.strip()],
+                "progress": round(float(row.get("progress") or 0.0) * 100, 1),
+                "eta": int(eta) if isinstance(eta, (int, float)) and 0 <= eta < 8640000 else None,
+                "speed": int(row.get("dlspeed") or 0),
+                "dl_state": str(row.get("state") or ""),
+                "total": int(row.get("total_size") or row.get("size") or 0),
+            }
+        return out
 
     def reselect(self, row: dict) -> bool:
         """Set every file in one torrent back to normal priority.
