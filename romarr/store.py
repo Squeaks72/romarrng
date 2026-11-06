@@ -151,6 +151,10 @@ class QueueItem:
     # timeout.
     download_client: str = ""
     manual: bool = False
+    file_selection_required: bool = False
+    selected_file: dict = field(default_factory=dict)
+    import_preview: dict = field(default_factory=dict)
+    import_intent: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -282,6 +286,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # {platform slug: [extension, ...]} best first; see ReleaseProfile.formats.
     "preferred_formats": {},
     "rename_on_import": True,
+    "prefer_hardlinks": False,
+    "retain_downloads_after_import": True,
     "overwrite_existing": False,
     # Profile: for ROMs the meaningful axis is region and revision, not
     # bitrate -- this is the games equivalent of a quality profile.
@@ -935,7 +941,7 @@ class Store:
                 if any(q.state == "imported" for q in queue):
                     return "available"
                 if status in ("dispatching", "downloading") or any(
-                        q.state in ("queued", "grabbed") for q in queue):
+                        q.state in ("queued", "grabbed", "import-review") for q in queue):
                     return "active"
                 item["status"] = "cancelled"
                 item["error"] = ""
