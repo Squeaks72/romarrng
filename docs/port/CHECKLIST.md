@@ -13,7 +13,7 @@ environment-dependent: no DNS for romm.internal, sandbox is a docker env).
 | 6 | Switch report + attach | done (API, store setting ignored_dlc, counts().switchgaps; UI is stage 3; TITLED_NAMES=1 + memory 1536m belong to the ops stage) |
 | 7 | Unpacking (tar family, nested) | done |
 | 8 | Soundtracks | done (backend, docs and tests; UI card/page is stage 3) |
-| 9 | UI | partial: stage 3a done (picker + compact library header, router with arguments, merged Add New + `renderReleases`, game page shell, Missing tabs/toggle, search palette, tests); stage 3b open (see below) |
+| 9 | UI | done (adapted): stages 3a + 3b; only the items under "Stage 3b result" are unverifiable without a live install |
 | 10 | Ops | not yet (end stage) |
 
 ## Stage 1 result (backend, items 1-7)
@@ -74,3 +74,25 @@ Stage 3b must still do (item 9 remainder): Soundtrack card (fill `#g-snd`; hook 
 Soundtracks page (+ Duplicates tab), Queue page progress/ETA/Refresh, Profiles page (video standard, formats by
 console, regions note), General "RomM address for links", Media Management unpacking help, Hub isolation banner.
 Not verifiable here: real browser load (no Playwright in the sandbox); the JS was checked with `node --check`.
+
+## Stage 3b result (UI, item 9 second half)
+
+All in `romarr/ui.py`, plain English, no translation catalogue (`toast`, `confirm`, `fmtDate` instead of Tim's helpers).
+
+* Game page: `soundtrackCard` (track count, Undo, Search with per-format Download, Open and manual links, music-library
+  modal, `/soundtracks/jobs` progress polling until `state != running` AND `finished`, 409 `held_by` -> confirm -> `force:true`);
+  `switchCard` (installed/latest, badge, Search buttons via `relBox`/`relOut`/`renderReleases`, per-DLC Search/Ignore,
+  Ignore all N, Restore, POST `/switch/ignore`) and the `#g-alert` "Heads up" banner.
+* `RENDER.switchupdates` (nav "Switch Updates & DLC", count key `switchgaps`), library banner + tile `.gap` badges from
+  `/switch/gaps`, nav badge through the generic `data-ct` loop.
+* `RENDER.soundtracks` with the Duplicates tab (scan, keep radio + Merge, Merged list + Undo, job follow).
+* Queue: `.pbar`/`.pmeta` progress, ETA/speed, `QBIT_STATE`, "not in qBittorrent", Refresh (`?refresh=1`) + "Updated <time>",
+  4 s refresh of only the progress cells (full redraw if rows changed), game name links to the game page.
+* Settings: Profiles gets video standard + strict (global and per-platform) and the "File formats by console" editor
+  (global; `preferred_formats`, `fmt-add` picker); regions are saved lower case and the default list is lower case;
+  General "RomM address for links"; Media Management "Unpacking." help; Hub banner says uid isolation vs Landlock.
+  `settingsPage` skips blank/`********` secret fields and `fld` never renders a masked value.
+* Tests: `tests/test_ui_stage3b.py` (structure assertions + `node --check`); existing nav/renderer/title tests pass unchanged.
+* Verified in headless Chromium (Playwright, throwaway script, not committed) with a faked API: every new page and both
+  cards rendered with no JS errors. Not verifiable here: behaviour against a real RomM/qBittorrent (job polling timing,
+  the 409 flow end to end).
