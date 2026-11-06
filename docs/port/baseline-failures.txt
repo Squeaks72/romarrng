@@ -1,0 +1,4 @@
+tests/test_asset_proxy.py::test_the_relay_serves_a_configured_library_origin
+tests/test_asset_proxy.py::test_the_relay_passes_a_library_404_through
+tests/test_asset_proxy.py::test_an_https_library_origin_is_also_allowed
+tests/test_selfupdate.py::test_a_git_checkout_is_detected_as_self_updatable
