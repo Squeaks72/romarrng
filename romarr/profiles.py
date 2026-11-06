@@ -93,6 +93,47 @@ def _region_matches(region_key: str, lowered: str) -> bool:
     return False
 
 
+#: How much a matching / opposing video standard moves a release. Larger than
+#: the gap between USA and Europe on the built-in region ladder (20), so a stated
+#: preference wins over it, but far below a verified dump (50) plus availability.
+VIDEO_STANDARD_POINTS = 30
+
+#: NTSC: North America and Japan. PAL: Europe and Australasia. Word-bounded so
+#: "usa" never matches inside another word; the single letters are the
+#: GoodTools codes, which only count inside brackets.
+_NTSC_MARKERS = re.compile(
+    r"(?<![a-z0-9])(?:ntsc(?:[- ]?[ujm])?|usa|japan)(?![a-z0-9])"
+    r"|[(\[](?:u|j|ju|uj)[)\]]")
+_PAL_MARKERS = re.compile(
+    r"(?<![a-z0-9])(?:pal(?:[- ]?[a-z])?|europe|australia|germany|france|spain|italy"
+    r"|netherlands|sweden)(?![a-z0-9])"
+    r"|[(\[](?:e|eu|eur)[)\]]")
+
+
+#: Format preference weights: your first choice is worth the most, each step
+#: down is worth less, never below half a step.
+FORMAT_FIRST_POINTS = 30
+FORMAT_STEP_POINTS = 10
+
+
+def _clean_formats(raw) -> dict[str, list[str]]:
+    """{platform: [ext, ...]} from stored settings, tolerating any shape."""
+    out: dict[str, list[str]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for slug, exts in raw.items():
+        if not isinstance(exts, (list, tuple)):
+            continue
+        seen: list[str] = []
+        for e in exts:
+            word = str(e or "").strip().lower().lstrip(".")
+            if re.fullmatch(r"[a-z0-9]{1,8}", word) and word not in seen:
+                seen.append(word)
+        if seen:
+            out[str(slug)] = seen
+    return out
+
+
 @dataclass
 class ReleaseProfile:
     """Preferred, excluded and required terms, sizing limits, and scoring preferences.
@@ -130,6 +171,16 @@ class ReleaseProfile:
     region_mode: str = "prefer"
     #: Fan translation policy: "exclude" | "prefer" | "fill" | "keep_both"
     translation_policy: str = "exclude"
+    #: "ntsc", "pal" or "" (no preference). North America and Japan are NTSC;
+    #: Europe and Australia are PAL. Ranking only, unless `video_strict`.
+    video_standard: str = ""
+    #: Refuse a release that names only the other standard, instead of just
+    #: ranking it lower. A release naming both (USA, Europe) or neither is kept.
+    video_strict: bool = False
+    #: Per console, formats in order of preference ("chd" before "iso"), as
+    #: file-extension words. Ranking only: a release naming none of them is not
+    #: penalised, because most release titles do not name a format at all.
+    formats: dict[str, list[str]] = field(default_factory=dict)
     _settings_ref: dict | None = None
 
     @property
@@ -257,7 +308,16 @@ class ReleaseProfile:
         region_mode = str(platform_cfg.get("region_mode") or settings.get("region_mode") or "prefer").strip().lower()
         translation_policy = str(platform_cfg.get("translation_policy") or settings.get("translation_policy") or "exclude").strip().lower()
 
+        standard = str(platform_cfg.get("video_standard")
+                       or settings.get("video_standard") or "").strip().lower()
+        strict_raw = platform_cfg.get("video_standard_strict")
+        if strict_raw is None:
+            strict_raw = settings.get("video_standard_strict")
+
         return cls(
+            video_standard=standard if standard in ("ntsc", "pal") else "",
+            video_strict=bool(strict_raw),
+            formats=_clean_formats(settings.get("preferred_formats")),
             preferred=preferred,
             excluded=excluded,
             required=required,
@@ -273,8 +333,39 @@ class ReleaseProfile:
             _settings_ref=settings,
         )
 
+    def _video(self, lowered: str) -> bool | None:
+        """Whether a release matches the preferred video standard.
+
+        True / False when it names exactly one standard, None when it names
+        both or neither -- a (USA, Europe) dump runs on either console, and a
+        title with no region tells us nothing.
+        """
+        if not self.video_standard:
+            return None
+        ntsc = bool(_NTSC_MARKERS.search(lowered))
+        pal = bool(_PAL_MARKERS.search(lowered))
+        if ntsc == pal:
+            return None
+        return ntsc if self.video_standard == "ntsc" else pal
+
+    def _format_points(self, lowered: str, platform_slug: str) -> tuple[int, str] | None:
+        """Points for the best-ranked preferred format the release names."""
+        order = self.formats.get(platform_slug or "")
+        if not order:
+            return None
+        for rank, ext in enumerate(order):
+            if re.search(r"(?<![a-z0-9])" + re.escape(ext) + r"(?![a-z0-9])", lowered):
+                return (max(FORMAT_FIRST_POINTS - rank * FORMAT_STEP_POINTS,
+                            FORMAT_STEP_POINTS // 2),
+                        f"format: {ext.upper()} is your #{rank + 1} for this console")
+        return None
+
     def refusal(self, lowered: str, size: int = 0) -> str:
         """Why this release is refused outright, or "" if it is not."""
+        if self.video_strict and self._video(lowered) is False:
+            other = "PAL" if self.video_standard == "ntsc" else "NTSC"
+            return (f"{other} release refused: you require "
+                    f"{self.video_standard.upper()}")
         for term in self.excluded:
             if _matches(term, lowered):
                 return f"excluded by release profile ({term!r})"
@@ -287,12 +378,20 @@ class ReleaseProfile:
             return f"larger than release profile maximum size ({self.max_size_mb}MB)"
         return ""
 
-    def adjustments(self, lowered: str) -> list[tuple[int, str]]:
+    def adjustments(self, lowered: str, platform_slug: str = "") -> list[tuple[int, str]]:
         """Point changes this profile makes, ready for `Judgement.reasons`."""
         out = []
         for term, points in self.preferred:
             if points and _matches(term, lowered):
                 out.append((points, f"release profile prefers {term!r}"))
+        fmt = self._format_points(lowered, platform_slug)
+        if fmt:
+            out.append(fmt)
+        match = self._video(lowered)
+        if match is not None:
+            std = self.video_standard.upper()
+            out.append((VIDEO_STANDARD_POINTS if match else -VIDEO_STANDARD_POINTS,
+                        f"video standard: {'is' if match else 'is not'} {std}"))
         return out
 
     def region_score_for(self, lowered: str) -> tuple[int, str] | None:
