@@ -87,5 +87,13 @@ if [ -e "$STATE" ] && ! su-exec "${PUID}:${PGID}" test -r "$STATE"; then
     exit 1
 fi
 
+# Plugin isolation helper: only ROMarr's group may execute it, so the separate
+# plugin uid it drops to cannot use it to come back.
+LAUNCHER=/usr/local/libexec/romarr-plugin-launch
+if [ -f "$LAUNCHER" ]; then
+    chown "root:${PGID}" "$LAUNCHER" && chmod 4750 "$LAUNCHER" || \
+        echo "ROMarr: could not restrict ${LAUNCHER}; plugin isolation disabled." >&2
+fi
+
 echo "ROMarr: starting as ${PUID}:${PGID} with umask ${UMASK}"
 exec su-exec "${PUID}:${PGID}" "$@"

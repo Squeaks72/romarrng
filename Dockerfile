@@ -13,6 +13,11 @@ FROM python:3.13-alpine AS builder
 # pyseccomp compiles against -- the sandbox ROM Hub confines plugins with.
 RUN apk add --no-cache build-base libseccomp-dev
 
+# The setuid helper that runs Hub plugins as a separate uid on kernels without
+# Landlock (Unraid). See docker/plugin-launch.c.
+COPY docker/plugin-launch.c /tmp/plugin-launch.c
+RUN gcc -O2 -Wall -o /tmp/romarr-plugin-launch /tmp/plugin-launch.c
+
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --prefix=/install -r /tmp/requirements.txt
 
@@ -50,6 +55,11 @@ ARG TARGETARCH
 RUN apk add --no-cache su-exec tzdata libarchive-tools libseccomp git
 
 COPY --from=builder /install /usr/local
+# Setuid helper that runs Hub plugins as a separate uid (no Landlock needed).
+# The entrypoint restricts it to ROMarr's group at start.
+RUN mkdir -p /usr/local/libexec
+COPY --from=builder /tmp/romarr-plugin-launch /usr/local/libexec/romarr-plugin-launch
+RUN chmod 4750 /usr/local/libexec/romarr-plugin-launch
 
 # pyseccomp asks ctypes.util.find_library("seccomp") before opening the C
 # library. On Alpine that helper relies on linker/compiler discovery tools

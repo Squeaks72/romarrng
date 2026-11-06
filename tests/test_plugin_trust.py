@@ -1,8 +1,8 @@
 """What a plugin subprocess is handed.
 
-ROM Hub plugins are code, and running one means running it with ROMarr's
-privileges -- there is no sandbox and SECURITY.md says so. That makes the
-environment the one boundary actually being enforced, so it is worth a test.
+ROM Hub's seccomp filter confines network and execution, and ROMarr adds
+Landlock filesystem rules. The environment allowlist remains a separate
+boundary and must not hand plugins ROMarr's or its clients' credentials.
 
 It used to be `dict(os.environ, ...)`: every plugin inherited ROMARR_API_KEY,
 ROMARR_PASSWORD, PROWLARR_API_KEY, QBITTORRENT_PASS and LIBRARY_PASSWORD. A
@@ -17,6 +17,14 @@ import pathlib
 import pytest
 
 from romarr import hub
+
+
+@pytest.fixture(autouse=True)
+def plugin_environment_is_confined(monkeypatch):
+    # These tests pin the environment allowlist; sandbox availability belongs
+    # to the separate sandbox tests and varies with the host running pytest.
+    monkeypatch.setattr(hub, "sandbox_state",
+                        lambda: (True, "Landlock and seccomp available"))
 
 
 @pytest.fixture
@@ -56,9 +64,11 @@ def test_no_secret_value_reaches_a_plugin_under_any_name(environment):
         assert value not in present, f"{name}'s value reached the plugin"
 
 
-def test_the_library_credentials_it_needs_do_get_through(environment):
-    """The boundary has to still let the plugin do its job: import and enrich
-    both need somewhere to import into."""
+def test_the_library_credentials_get_through_only_when_opted_in(
+        environment, monkeypatch):
+    """A plugin that imports itself needs somewhere to import into, so the
+    operator can opt in. By default it gets the URL and no password."""
+    monkeypatch.setenv("ROMARR_PLUGIN_BACKEND_CREDENTIALS", "1")
     env = hub._plugin_env()
     assert env.get("ROMM_URL") == "http://romm:8080"
     assert env.get("ROMM_USER") == "romarr"

@@ -7763,6 +7763,12 @@ def make_handler(service: ROMarr):
                 return self._json(200, {"available": hub.available(),
                                         "sandboxed": confined,
                                         "sandbox_detail": why,
+                                        # Which boundary holds plugins: a separate uid
+                                        # (kernels with no Landlock, e.g. Unraid),
+                                        # Landlock, or none.
+                                        "isolation": ("uid" if hub._uid_mode()
+                                                      else "landlock" if confined
+                                                      else "none"),
                                         "searchable_plugins": searchable,
                                         # The Plugins page says out loud what
                                         # enabling a plugin now does: its

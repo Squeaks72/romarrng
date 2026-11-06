@@ -12,6 +12,16 @@
 # `playwright install --with-deps chromium` yourself if you want one in here.
 # Tag: ghcr.io/blizzhacker/romarr:browser  (and :<version>-browser)
 
+# The setuid helper that runs Hub plugins as a separate uid on kernels without
+# Landlock (Unraid) is compiled here so the runtime image carries no compiler.
+FROM python:3.13-slim AS launcher
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gcc libc6-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY docker/plugin-launch.c /tmp/plugin-launch.c
+RUN gcc -O2 -Wall -o /tmp/romarr-plugin-launch /tmp/plugin-launch.c
+
+
 FROM python:3.13-slim
 
 ARG TARGETARCH
@@ -34,6 +44,12 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt \
       pip install --no-cache-dir \
         "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/f30123ff9113c2a8067e76e177a2405ca66561ab.tar.gz"; \
     fi
+
+# Setuid helper that runs Hub plugins as a separate uid (no Landlock needed).
+# The entrypoint restricts it to ROMarr's group at start.
+RUN mkdir -p /usr/local/libexec
+COPY --from=launcher /tmp/romarr-plugin-launch /usr/local/libexec/romarr-plugin-launch
+RUN chmod 4750 /usr/local/libexec/romarr-plugin-launch
 
 WORKDIR /app
 COPY romarr/ /app/romarr/

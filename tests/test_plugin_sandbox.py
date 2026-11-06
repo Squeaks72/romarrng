@@ -31,11 +31,12 @@ def test_no_opt_out_when_the_sandbox_is_available(monkeypatch):
         "ROMarr disabled ROM Hub's confinement while it was available")
 
 
-def test_the_opt_out_is_used_only_when_confinement_is_impossible(monkeypatch):
-    """Refusing to run plugins at all would be worse: the Hub fails closed, so
-    without the flag an install with no seccomp simply cannot use plugins."""
+def test_missing_confinement_fails_closed_until_explicitly_enabled(monkeypatch):
     monkeypatch.setattr(hub, "sandbox_state",
                         lambda: (False, "pyseccomp is not installed"))
+    with pytest.raises(RuntimeError, match="ROMARR_ALLOW_UNSANDBOXED_PLUGINS=1"):
+        hub._plugin_env()
+    monkeypatch.setenv("ROMARR_ALLOW_UNSANDBOXED_PLUGINS", "1")
     assert hub._plugin_env()["ROM_HUB_ALLOW_UNSANDBOXED"] == "1"
 
 
@@ -43,6 +44,7 @@ def test_falling_back_is_logged_loudly(monkeypatch, caplog):
     """Silently dropping confinement is how this went unnoticed."""
     monkeypatch.setattr(hub, "sandbox_state",
                         lambda: (False, "pyseccomp is not installed"))
+    monkeypatch.setenv("ROMARR_ALLOW_UNSANDBOXED_PLUGINS", "1")
     with caplog.at_level("WARNING"):
         hub._plugin_env()
     said = " ".join(r.getMessage()
@@ -55,6 +57,7 @@ def test_the_advice_matches_the_reason(monkeypatch, caplog):
     """"Install pyseccomp" is useless when the problem is a missing Hub."""
     monkeypatch.setattr(hub, "sandbox_state",
                         lambda: (False, "ROM Hub is not available (ImportError)"))
+    monkeypatch.setenv("ROMARR_ALLOW_UNSANDBOXED_PLUGINS", "1")
     with caplog.at_level("WARNING"):
         hub._plugin_env()
     said = " ".join(r.getMessage()
@@ -89,6 +92,8 @@ def test_a_probe_error_says_what_runtime_piece_is_missing(monkeypatch):
         RuntimeError("Unable to find libseccomp"))
     monkeypatch.setitem(sys.modules, "rom_hub", package)
     monkeypatch.setitem(sys.modules, "rom_hub.sandbox", sandbox)
+    from romarr.plugin_runtime import landlock
+    monkeypatch.setattr(landlock, "probe", lambda: (True, "ok"))
     ok, why = hub.sandbox_state()
     assert ok is False
     assert "RuntimeError: Unable to find libseccomp" in why
@@ -99,6 +104,7 @@ def test_credentials_are_still_withheld_either_way(monkeypatch):
     turning one on must not quietly relax the other."""
     monkeypatch.setenv("ROMARR_API_KEY", "romarr-secret")
     monkeypatch.setenv("QBITTORRENT_PASS", "qbit-secret")
+    monkeypatch.setenv("ROMARR_ALLOW_UNSANDBOXED_PLUGINS", "1")
     for state in ((True, "ok"), (False, "pyseccomp is not installed")):
         monkeypatch.setattr(hub, "sandbox_state", lambda s=state: s)
         env = hub._plugin_env()

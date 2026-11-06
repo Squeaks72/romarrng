@@ -113,6 +113,10 @@ def _reset():
 
 def _wire(monkeypatch, declares_torrent=True, proc=None):
     """Point hub.resolve_torrents at fakes: registry + PluginProcess."""
+    # Confinement is covered by test_plugin_*; here the fake PluginProcess has
+    # no environment hook to wrap and no real sandbox to ask about.
+    monkeypatch.setattr(hub, "_install_plugin_runtime_hardening", lambda *a: None)
+    monkeypatch.setattr(hub, "_unsandboxed", lambda: False)
     class _Manifest:
         capabilities = {"torrent": "x.y:Z"} if declares_torrent else {}
         network = ["minerva-archive.org"]

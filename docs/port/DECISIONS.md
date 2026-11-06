@@ -66,3 +66,35 @@
   only the attach-into-game-folder rule (`switch_attach_dir`, update/ and dlc/) was ported.
 * TitleDB names (needed for the full DLC list) stay opt-in via `TITLED_NAMES=1`; Tim's Unraid template
   sets it with a 1536m memory limit. That is a deployment setting for the ops stage, not code.
+
+## Plugin confinement (item 1)
+
+What upstream had: `hub._plugin_env` already used an environment allowlist, `rom_hub`'s own
+`plugin_environment` allowlist covers in-process search/fetch, and `ROM_HUB_ALLOW_UNSANDBOXED` was only
+set when the seccomp probe failed (not unconditionally). But a plugin still ran as ROMarr's own uid and
+could read `/config/romarr.json` (every credential ROMarr holds), and the library username/password were
+handed to every plugin. Neither is acceptable (Tim's hard rule), so:
+
+* Landlock runtime ported from ROMarrNG (`plugin_runtime/landlock.py`, `scratch.py`, `syscall_guard.py`,
+  `sitecustomize.py`) and the hub wrapper (`_install_plugin_runtime_hardening`: trusted `-S` bootstrap,
+  private tmpfs scratch, Popen guard) is installed before `search`, `fetch` AND upstream's
+  `resolve_torrents` (which also spawns plugin processes and does not exist in ROMarrNG).
+* Where the kernel has no Landlock (Unraid) plugins run as uid 10001 through the setuid helper
+  `docker/plugin-launch.c` (installed 4750 root:PGID by the entrypoint). `sitecustomize` fails closed if the
+  child is root or can read the state file; `hub.uid_isolation_state()` proves the helper by running it.
+  The state file is 0600 because `Store.save` writes it through `mkstemp`.
+* Fail closed: with no confinement available, plugin calls are refused unless the operator sets
+  `ROMARR_ALLOW_UNSANDBOXED_PLUGINS=1` (upstream silently fell back to unsandboxed). That variable is a
+  deliberate, loud operator choice and is the ONLY way a plugin can run with ROMarr's privileges.
+* Library credentials are withheld from plugins unless `ROMARR_PLUGIN_BACKEND_CREDENTIALS=1`.
+* `/api/v1/hub/status` gains `isolation` (`uid` | `landlock` | `none`).
+* `tests/conftest.py` stubs `uid_isolation_state` so tests see the same answer everywhere.
+* NOT ported from ROMarrNG's hub: passing `prepare_assets`/`prepare_secrets` (plugin data assets and
+  secret config) to `PluginProcess` - upstream does not do it and it is outside the confinement brief; the
+  confinement code reads `process.data_assets` if present.
+* Dockerfile (Alpine): the C helper is compiled in the existing builder stage. Dockerfile.browser (Debian,
+  single stage upstream) gets a small `launcher` stage so the runtime carries no compiler.
+* Plugin scratch requires a finite tmpfs for /tmp or /dev/shm (`scratch.tmpfs_root`); on Unraid run the
+  container with `--tmpfs /tmp` or the sandbox probe reports "unavailable" (ops stage).
+* The plugin uid needs read access to the plugin directory under `$ROM_HUB_HOME` (group/other readable;
+  default UMASK 002 satisfies this).
