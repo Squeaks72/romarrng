@@ -73,6 +73,8 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "/api/v1/switch/ignore": ("POST", "Stop (or resume) reporting specific Switch DLC title ids as missing."),
     "/api/v1/soundtracks/game": ("GET", "What soundtrack RomM holds for a game (`id` = RomM game id) and what ROMarr added."),
     "/api/v1/soundtracks/search": ("GET", "Ranked soundtrack candidates from the enabled sources, plus manual-search links."),
+    "/api/v1/soundtracks/torrents": ("GET", "Indexer search for a soundtrack with hand-typed terms; results are unscored."),
+    "/api/v1/soundtracks/torrents/grab": ("POST", "Send a picked soundtrack torrent to the download client; not imported as a ROM."),
     "/api/v1/soundtracks/download": ("POST", "Start a background download-and-upload of a candidate into RomM's Jukebox; one job per game."),
     "/api/v1/soundtracks/jobs": ("GET", "Soundtrack jobs, newest first, with progress."),
     "/api/v1/soundtracks/undo": ("POST", "Remove exactly the soundtrack files ROMarr added to a game."),
