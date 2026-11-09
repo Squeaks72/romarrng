@@ -821,6 +821,11 @@ class ROMarr:
             "HashIndex", "Read ROM hashes from the library for netplay",
             lambda: 86400 if self.store.settings.get("hash_index", True) else 0,
             lambda: self.start_hash_seed(quiet=True).get("detail", ""))
+        # Soundtrack torrents the user picked: add the audio to RomM once they finish.
+        self.scheduler.add(
+            "SoundtrackTorrents", "Add finished soundtrack torrents to RomM",
+            lambda: 30 if self._soundtracks_watching() else 0,
+            self.soundtrack_watch_tick)
         self.scheduler.start()
 
         # The scheduler does not fire a daily job until a day has passed, so
@@ -3032,6 +3037,36 @@ class ROMarr:
         game, _api = self._soundtrack_target(game_id)
         return self.soundtrack_store().search(game, self.soundtrack_sources(), term)
 
+    SOUNDTRACK_CATEGORY = "romarr-soundtracks"
+
+    def _soundtracks_watching(self) -> bool:
+        """Cheap gate for the scheduler: only open the soundtrack db once it exists."""
+        st = getattr(self, "_soundtracks", None)
+        if st is None:
+            if not soundtracks_mod.db_path_for(self._env.get("ROMARR_DATA", "/opt/romarr/romarr.json")).exists():
+                return False
+            st = self.soundtrack_store()
+        return bool(st.active_watches())
+
+    def soundtrack_watch_tick(self) -> str:
+        """Check watched soundtrack torrents; upload the audio of finished ones to RomM. Never touches the torrent."""
+        store = self.soundtrack_store()
+        if not store.active_watches():
+            return "nothing to watch"
+        client = next((c for c in self.clients if isinstance(c, QBittorrent) and getattr(c, "configured", True)), None)
+        if client is None:
+            return "no qBittorrent client"
+        rows = [r for r in client.torrents() if r.get("category") == self.SOUNDTRACK_CATEGORY]
+        maps = self.store.settings.get("remote_path_mappings")
+        notes = store.process_watches(rows, lambda k: self._soundtrack_target(k),
+                                      lambda p: str(map_remote_path(p, maps)))
+        return "; ".join(notes) or "watching"
+
+    def soundtrack_watch_cancel(self, game_id: str) -> dict:
+        self._soundtrack_target(game_id)
+        self.soundtrack_store().cancel_watch(str(game_id))
+        return {"ok": True}
+
     def soundtrack_torrents(self, game_id: str, term: str = "") -> dict:
         """Indexer search with a hand-typed term. Results are unscored and never ROM-judged."""
         game, _api = self._soundtrack_target(game_id)
@@ -3067,18 +3102,25 @@ class ROMarr:
         client = pick_client(pick.protocol, self.clients)
         if client is None:
             return {"ok": False, "error": f"no download client configured for {pick.protocol}"}
+        if not isinstance(client, QBittorrent):
+            return {"ok": False, "error": "soundtrack torrents are tracked through qBittorrent only"}
         url = pick.download_url
         local_fetch = getattr(self.prowlarr, "is_prowlarr_download_url", None)
+        cat = self.SOUNDTRACK_CATEGORY
         try:
-            if isinstance(client, QBittorrent) and callable(local_fetch) and local_fetch(url):
+            if callable(local_fetch) and local_fetch(url):
                 torrent = self.prowlarr.fetch_torrent(url)
-                ok = client.add(torrent) if isinstance(torrent, str) else client.add_torrent_file(torrent)
+                ok = (client.add(torrent, category=cat) if isinstance(torrent, str)
+                      else client.add_torrent_file(torrent, category=cat))
             else:
-                ok = client.add(url)
+                ok = client.add(url, category=cat)
         except ProwlarrDownloadError as err:
             return {"ok": False, "error": str(err)}
         if not ok:
-            return {"ok": False, "error": getattr(client, "last_error", "") or f"{client.name} rejected the release"}
+            return {"ok": False, "error": client.last_error or f"{client.name} rejected the release"}
+        tag = client.last_job_id.removeprefix("qbit-tag:")
+        if tag:
+            self.soundtrack_store().add_watch(str(game_id), tag, pick.title)
         return {"ok": True, "release": pick.title, "client": client.name}
 
     def soundtrack_download(self, game_id: str, candidate: dict, fmt: str, force: bool = False) -> dict:
@@ -8677,6 +8719,9 @@ def make_handler(service: ROMarr):
                     return self._json(400, {"error": "id and release are required"})
                 return self._soundtrack_reply(lambda: service.soundtrack_torrent_grab(
                     str(body.get("id") or ""), str(body["release"])))
+            if route.path == "/api/v1/soundtracks/torrents/cancel":
+                return self._soundtrack_reply(lambda: service.soundtrack_watch_cancel(
+                    str((body or {}).get("id") or "")))
             if route.path == "/api/v1/soundtracks/dups/scan":
                 return self._soundtrack_reply(service.soundtrack_dups_scan)
             if route.path == "/api/v1/soundtracks/dups/merge":

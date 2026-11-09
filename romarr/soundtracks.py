@@ -689,6 +689,8 @@ CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY, key TEXT, path TEXT, 
 CREATE TABLE IF NOT EXISTS merges(id INTEGER PRIMARY KEY, drop_id TEXT, keep_id TEXT, drop_title TEXT, keep_title TEXT,
     files TEXT, ts REAL, state TEXT);
 CREATE TABLE IF NOT EXISTS dup_scan(id INTEGER PRIMARY KEY CHECK (id = 1), ts REAL, groups TEXT);
+CREATE TABLE IF NOT EXISTS watch(id INTEGER PRIMARY KEY, key TEXT, tag TEXT, release TEXT, state TEXT, message TEXT,
+    pct REAL DEFAULT 0, added REAL, updated REAL, seen REAL);
 """
 
 
@@ -774,7 +776,7 @@ class Soundtracks:
         return {"id": key, "title": game.get("name", ""), "tracks": tracks, "track_count": len(tracks) if tracks is not None else None,
                 "undoable": self._journal_count(key), "state": s["status"] if s else "unsearched",
                 "note": (s["note"] if s else "") or "", "provider": (s["provider"] if s else "") or "",
-                "job": self.job_for(key), "error": error}
+                "job": self.job_for(key), "watch": self.watch_for(key), "error": error}
 
     # -- search --
     def search(self, game: dict, enabled: tuple[str, ...] = ("zophar", "archive"), term: str = "") -> dict:
@@ -802,6 +804,156 @@ class Soundtracks:
         self._set_sound(key, status="found" if uniq else "none", cands=json.dumps(uniq))
         return {"id": key, "title": title, "candidates": uniq, "errors": errors,
                 "links": manual_links(title, game.get("platform_name", ""))}
+
+    # -- torrent watches --
+    def add_watch(self, key: str, tag: str, release: str) -> int:
+        """Start watching a torrent (identified by its qBittorrent tag) for this game."""
+        now = time.time()
+        with self._lock:
+            c = self._db()
+            try:
+                c.execute("UPDATE watch SET state='cancelled', updated=? WHERE key=? AND state NOT IN ('added','failed','lost','cancelled')",
+                          (now, key))
+                cur = c.execute("INSERT INTO watch(key,tag,release,state,message,pct,added,updated,seen) VALUES(?,?,?,?,?,?,?,?,?)",
+                                (key, tag, release[:300], "downloading", "Waiting for the torrent to start", 0.0, now, now, now))
+                c.commit()
+                return int(cur.lastrowid)
+            finally:
+                c.close()
+
+    def _set_watch(self, wid: int, **kw) -> None:
+        with self._lock:
+            c = self._db()
+            try:
+                for k, v in kw.items():
+                    if k not in ("state", "message", "pct", "seen"):
+                        raise ValueError(k)
+                    c.execute(f"UPDATE watch SET {k}=? WHERE id=?", (v, wid))
+                c.execute("UPDATE watch SET updated=? WHERE id=?", (time.time(), wid))
+                c.commit()
+            finally:
+                c.close()
+
+    def active_watches(self) -> list[dict]:
+        c = self._db()
+        try:
+            return [dict(r) for r in c.execute("SELECT * FROM watch WHERE state NOT IN ('added','failed','lost','cancelled') ORDER BY id")]
+        finally:
+            c.close()
+
+    def watch_for(self, key: str) -> dict | None:
+        """The active torrent watch for a game, else the most recent one (so a failure stays visible)."""
+        c = self._db()
+        try:
+            r = c.execute("SELECT * FROM watch WHERE key=? ORDER BY (state NOT IN ('added','failed','lost','cancelled')) DESC, id DESC",
+                          (key,)).fetchone()
+        finally:
+            c.close()
+        return dict(r) if r else None
+
+    def cancel_watch(self, key: str) -> None:
+        with self._lock:
+            c = self._db()
+            try:
+                c.execute("UPDATE watch SET state='cancelled', message='Stopped watching; the torrent is still in your download client', "
+                          "updated=? WHERE key=? AND state NOT IN ('added','failed','lost','cancelled')", (time.time(), key))
+                c.commit()
+            finally:
+                c.close()
+
+    def process_watches(self, rows: list[dict], resolve: Callable[[str], tuple[dict, RommApi]],
+                        map_path: Callable[[str], str]) -> list[str]:
+        """One pass over the watched torrents. `rows` is the client's torrent list for the soundtrack category.
+
+        `resolve(key)` returns (game, RommApi) or raises LookupError while the library is still loading.
+        Returns human-readable notes about what changed, for the scheduler's log.
+        """
+        notes = []
+        for w in self.active_watches():
+            row = next((r for r in rows if w["tag"] in {t.strip() for t in str(r.get("tags") or "").split(",")}), None)
+            now = time.time()
+            if row is None:
+                if now - (w["seen"] or w["added"]) > WATCH_LOST_AFTER:
+                    self._set_watch(w["id"], state="lost", message="The torrent is no longer in the download client")
+                    notes.append(f"{w['release']}: lost")
+                continue
+            pct = float(row.get("progress") or 0.0)
+            if "error" in str(row.get("state") or "").lower() and "missing" in str(row.get("state") or "").lower():
+                self._set_watch(w["id"], state="failed", message="The download client reports missing files", seen=now)
+                continue
+            if pct < 1.0:
+                self._set_watch(w["id"], pct=pct, seen=now, state="downloading",
+                                message=f"Downloading {pct * 100:.0f}%" + (f", {int(row['num_seeds'])} seeders" if row.get("num_seeds") else ""))
+                continue
+            try:
+                game, api = resolve(w["key"])
+            except (LookupError, RuntimeError, ValueError):
+                self._set_watch(w["id"], pct=1.0, seen=now, message="Finished; waiting for the RomM library to load")
+                continue
+            path = map_path(str(row.get("content_path") or row.get("save_path") or ""))
+            self._set_watch(w["id"], pct=1.0, seen=now, state="importing", message="Download finished; choosing tracks")
+            try:
+                done = self._import_torrent(w, game, api, path, str(row.get("name") or w["release"]))
+            except Exception as ex:  # noqa: BLE001 - recorded on the watch, never raised into the scheduler
+                msg = api._redact(str(ex)) if isinstance(ex, RommError) else (str(ex) if isinstance(ex, (ValueError, JobBusy)) else ex.__class__.__name__)
+                log.warning("soundtrack torrent import for %s failed: %s", w["key"], ex.__class__.__name__)
+                if isinstance(ex, JobBusy):
+                    self._set_watch(w["id"], state="downloading", message="Finished; waiting for the current soundtrack job")
+                else:
+                    self._set_watch(w["id"], state="failed", message=msg[:300])
+                continue
+            notes.append(f"{w['release']}: {done}")
+        return notes
+
+    def _import_torrent(self, w: dict, game: dict, api: RommApi, path: str, name: str) -> str:
+        files, zips = torrent_content(path)
+        kept, ext = choose_audio(files)
+        key = str(game["id"])
+        if not kept and zips:
+            return self._import_zips(w, game, api, zips, name)
+        if not kept:
+            hint = "; it only holds archives ROMarr cannot open" if not files and any(
+                f.lower().endswith((".rar", ".7z")) for _dp, _d, fns in os.walk(path) for f in fns) else ""
+            if not os.path.exists(path):
+                hint = f"; the path {path!r} is not visible to ROMarr (mount it or add a remote path mapping)"
+            self._set_watch(w["id"], state="failed", message=("No audio RomM can play was found in the torrent" + hint)[:300])
+            return "no audio"
+        job = self._begin_job([key], game["name"], "torrent")
+        self._run_album(job, game, api, "torrent:" + name, kept, provider="torrent")
+        if job["state"] == "error":
+            self._set_watch(w["id"], state="failed", message=job["message"][:300])
+            return "failed"
+        extra = f" ({len(files) - len(kept)} files in other formats left out)" if len(files) > len(kept) else ""
+        self._set_watch(w["id"], state="added", message=job["message"] + extra)
+        return f"added {job['made']}"
+
+    def _import_zips(self, w: dict, game: dict, api: RommApi, zips: list[str], name: str) -> str:
+        key = str(game["id"])
+        job = self._begin_job([key], game["name"], "torrent")
+        sink = RommSink(api, key, self.tmp_dir)
+        progress = self._progress(job)
+        try:
+            for z in zips:
+                check_zip(z)
+                for member, chunks in iter_zip_audio(z):
+                    sink(member, chunks)
+                    job["made"] = len(sink.sent)
+            made = len(sink.sent)
+            self._set_sound(key, status="downloaded" if made else "found", provider="torrent", title=game["name"],
+                            chosen=json.dumps({"provider": "torrent", "id": "torrent:" + name, "title": name}),
+                            files=len(api.tracks(key)) if made else 0, note=f"{made} track(s) from a torrent")
+            job.update(state="done", made=made, pct=1.0, step="Done")
+            self._set_watch(w["id"], state="added" if made else "failed",
+                            message=(f"Added {made} track{'s' if made != 1 else ''} from the torrent's zip" if made
+                                     else "The torrent's zip held no audio RomM can play"))
+            return f"added {made}"
+        finally:
+            try:
+                self._journal_sent(key, sink.sent, api)
+            except Exception:  # noqa: BLE001
+                log.warning("could not journal the torrent upload for %s", key)
+            job["finished"] = time.time()
+            progress("Done")
 
     # -- jobs --
     def job_for(self, key: str) -> dict | None:
@@ -1300,8 +1452,10 @@ class Soundtracks:
         self._spawn(self._run_album, job, game, api, album_id, files, run_async=run_async)
         return dict(job)
 
-    def _run_album(self, job: dict, game: dict, api: RommApi, album_id: str, files: list[tuple[str, str, int]]) -> None:
+    def _run_album(self, job: dict, game: dict, api: RommApi, album_id: str, files: list[tuple[str, str, int]],
+                   provider: str = "library") -> None:
         key, progress = job["game_id"], self._progress(job)
+        origin = "the music library" if provider == "library" else "a torrent"
         sent: list[str] = []
         made = skipped = 0
         try:
@@ -1330,8 +1484,8 @@ class Soundtracks:
                 job["made"], job["skipped"] = made, skipped
             title = os.path.basename(album_id.rstrip("/"))
             self._set_sound(key, status="downloaded" if made else "found", files=len(api.tracks(key)) if made else 0,
-                            provider="library", chosen=json.dumps({"provider": "library", "id": album_id, "title": title}),
-                            title=game["name"], note=f"{made} track(s) from the music library, {skipped} skipped (already there or refused)")
+                            provider=provider, chosen=json.dumps({"provider": provider, "id": album_id, "title": title}),
+                            title=game["name"], note=f"{made} track(s) from {origin}, {skipped} skipped (already there or refused)")
             job.update(state="done", made=made, skipped=skipped, pct=1.0, step="Done",
                        message=f"Added {made} track{'s' if made != 1 else ''} from {title}"
                                + (f"; {skipped} skipped (already there)" if skipped else ""))
@@ -1346,6 +1500,48 @@ class Soundtracks:
             except Exception:  # noqa: BLE001
                 log.warning("could not journal the album upload for %s", key)
             job["finished"] = time.time()
+
+
+# ------------------------------------------------------------------ torrents --
+#
+# A torrent the user picked for a game is handed to qBittorrent under its own
+# category and watched here. When it finishes, the audio RomM can play is
+# chosen and uploaded exactly like a music-library album (journaled, undoable).
+# The torrent itself is never touched: it keeps seeding and nothing is deleted.
+
+#: Best first. One family is kept so a torrent that ships MP3 and FLAC of the same
+#: album does not store it twice; chiptune rips only win when nothing else is there.
+FORMAT_ORDER = (".mp3", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".flac", ".wav", ".spc", ".vgm", ".vgz", ".gym")
+#: How long a watched torrent may be missing from the client before it is given up on.
+WATCH_LOST_AFTER = 600
+WATCH_DONE = ("added", "failed", "lost", "cancelled")
+
+
+def choose_audio(files: list[tuple[str, str, int]]) -> tuple[list[tuple[str, str, int]], str]:
+    """Keep the files of the single best audio format present. Returns (files, extension kept)."""
+    by_ext: dict[str, list] = {}
+    for f in files:
+        by_ext.setdefault(os.path.splitext(f[0])[1].lower(), []).append(f)
+    for ext in FORMAT_ORDER:
+        if by_ext.get(ext):
+            return by_ext[ext], ext
+    return [], ""
+
+
+def torrent_content(path: str) -> tuple[list[tuple[str, str, int]], list[str]]:
+    """Audio files in a finished torrent's content path, plus zips inside it that were not opened."""
+    if not path or not os.path.exists(path):
+        return [], []
+    real = os.path.realpath(path)
+    if os.path.isfile(real):
+        if _is_audio(os.path.basename(real)):
+            return [(header_safe(safe_name(os.path.basename(real))), real, os.path.getsize(real))], []
+        return [], ([real] if real.lower().endswith(".zip") else [])
+    files = collect_album(real)
+    zips = []
+    for dp, _dns, fns in os.walk(real):
+        zips += [os.path.join(dp, f) for f in sorted(fns) if f.lower().endswith(".zip") and not f.startswith(".")]
+    return files, zips
 
 
 class JobBusy(Exception):

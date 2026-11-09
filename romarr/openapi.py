@@ -75,6 +75,7 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "/api/v1/soundtracks/search": ("GET", "Ranked soundtrack candidates from the enabled sources, plus manual-search links."),
     "/api/v1/soundtracks/torrents": ("GET", "Indexer search for a soundtrack with hand-typed terms; results are unscored."),
     "/api/v1/soundtracks/torrents/grab": ("POST", "Send a picked soundtrack torrent to the download client; not imported as a ROM."),
+    "/api/v1/soundtracks/torrents/cancel": ("POST", "Stop watching a game's soundtrack torrent; the torrent stays in the download client."),
     "/api/v1/soundtracks/download": ("POST", "Start a background download-and-upload of a candidate into RomM's Jukebox; one job per game."),
     "/api/v1/soundtracks/jobs": ("GET", "Soundtrack jobs, newest first, with progress."),
     "/api/v1/soundtracks/undo": ("POST", "Remove exactly the soundtrack files ROMarr added to a game."),

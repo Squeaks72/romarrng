@@ -240,11 +240,11 @@ class QBittorrent:
             return response
         return self._session.post(self._url(path), **kwargs)
 
-    def add(self, magnet_or_url: str, *, save_path: str | None = None) -> bool:
+    def add(self, magnet_or_url: str, *, save_path: str | None = None, category: str | None = None) -> bool:
         if not self._authed:
             self.login()
         tag = "romarr-" + secrets.token_hex(12)
-        data = {"urls": magnet_or_url, "category": self._config.category,
+        data = {"urls": magnet_or_url, "category": category or self._config.category,
                 "tags": tag}
         if save_path:
             data["savepath"] = save_path
@@ -265,7 +265,7 @@ class QBittorrent:
         return True
 
     def add_torrent_file(self, torrent: bytes, *,
-                         save_path: str | None = None) -> bool:
+                         save_path: str | None = None, category: str | None = None) -> bool:
         """Upload a locally fetched .torrent and confirm qBittorrent added it.
 
         Prowlarr links are only reachable from ROMarr's network and carry its
@@ -277,7 +277,7 @@ class QBittorrent:
             self.login()
         tag = "romarr-" + secrets.token_hex(12)
         self._added.job_id = ""
-        data = {"category": self._config.category, "tags": tag}
+        data = {"category": category or self._config.category, "tags": tag}
         if save_path:
             data["savepath"] = save_path
         try:

@@ -2300,14 +2300,22 @@ function soundtrackCard(d,epoch){
       +((job&&job.state==='error')?` Last attempt failed: ${job.message}`:'')
       +((job&&job.state==='done'&&job.message)?` ${job.message}.`:'');
     prog.innerHTML=running?bar(job):'';
+    const wt=s.watch;
+    if(wt&&!['added','cancelled'].includes(wt.state)){
+      const active=['downloading','importing'].includes(wt.state);
+      stat.textContent+=` Torrent “${wt.release}”: ${wt.message}.`+(active?' It will be added to RomM automatically when it finishes.':'');
+      if(active&&!running){ timer=setTimeout(load,10000); }
+    } else if(wt&&wt.state==='added'&&!s.undoable&&!running){ stat.textContent+=` ${wt.message}.`; }
     act.innerHTML=`<button class="btn" id="snd-find" ${running?'disabled':''}>Search for a soundtrack</button>
       <button class="btn ghost" id="snd-tor-go" ${running?'disabled':''}>Search torrents</button>
       <button class="btn ghost" id="snd-lib" ${running?'disabled':''}>Use an album from your music library</button>
+      ${(wt&&['downloading','importing'].includes(wt.state))?`<button class="btn ghost" id="snd-wcancel">Stop watching torrent</button>`:''}
       ${s.undoable?`<button class="btn danger" id="snd-undo" ${running?'disabled':''}>Undo (remove ${fmt(s.undoable)} added)</button>`:''}`;
     $('#snd-find').onclick=find;
     $('#snd-tor-go').onclick=torrents;
     $('#snd-lib').onclick=pickAlbum;
     const u=$('#snd-undo'); if(u) u.onclick=undo;
+    const wc=$('#snd-wcancel'); if(wc) wc.onclick=async()=>{ await sndPost('/api/v1/soundtracks/torrents/cancel',{id:d.rom_id}).catch(()=>SND_DOWN); load(); };
     if(running&&job.id) watch(job.id);
   };
   const undo=async()=>{
@@ -2350,8 +2358,8 @@ function soundtrackCard(d,epoch){
     };
     q.oninput=()=>{ clearTimeout(wait); wait=setTimeout(run,300); };
   };
-  // Manual indexer search with the typed terms. Grab only hands the torrent to the
-  // download client: nothing is imported as a ROM, and the files are not attached to RomM.
+  // Manual indexer search with the typed terms. Grab hands the torrent to qBittorrent; the server then
+  // watches it and uploads the audio to RomM on completion. It is never imported as a ROM.
   const torrents=async()=>{
     const b=$('#snd-tor-go'), out=$('#snd-tor'); b.disabled=true; b.textContent='Searching…';
     out.innerHTML='';
@@ -2361,7 +2369,7 @@ function soundtrackCard(d,epoch){
     b.disabled=false; b.textContent='Search torrents';
     if(r.error){ out.innerHTML=`<p class="help" role="alert">${esc(r.error)}</p>`; return; }
     const it=r.items||[];
-    out.innerHTML=it.length?`<p class="help">Torrents for “${esc(r.term)}”. Grab sends the torrent to your download client only; it is not imported or attached to RomM.</p>
+    out.innerHTML=it.length?`<p class="help">Torrents for “${esc(r.term)}”. Grab sends the torrent to qBittorrent; when it finishes ROMarr adds its audio to this game in RomM (you can undo it).</p>
       <div class="tablewrap"><table><caption class="sr-only">Torrent results</caption>
       <thead><tr><th scope="col">Release</th><th scope="col">Size</th><th scope="col">Seeders</th><th scope="col">Indexer</th><th scope="col"><span class="sr-only">Grab</span></th></tr></thead><tbody>
       ${it.map((x,i)=>`<tr><td>${esc(x.title)}${x.info_url?` <a href="${esc(x.info_url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>`:''}</td>
@@ -2371,8 +2379,8 @@ function soundtrackCard(d,epoch){
     out.querySelectorAll('.tor-grab').forEach(btn=>btn.onclick=async()=>{
       btn.disabled=true; btn.textContent='Grabbing…';
       const g=await sndPost('/api/v1/soundtracks/torrents/grab',{id:d.rom_id,release:it[+btn.dataset.i].id}).catch(()=>SND_DOWN);
-      btn.textContent=g.ok?'Sent':'Grab'; if(!g.ok) btn.disabled=false;
-      toast(g.ok?`Sent to ${g.client}`:(g.error||'Could not grab that release'));
+      btn.textContent=g.ok?'Sent':'Grab'; if(!g.ok) btn.disabled=false; else load();
+      toast(g.ok?`Sent to ${g.client}; ROMarr will add it when it finishes`:(g.error||'Could not grab that release'));
     });
   };
   $('#snd-q').onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); $('#snd-find')&&$('#snd-find').click(); } };
