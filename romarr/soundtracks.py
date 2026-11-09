@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import itertools
 import html
 import json
 import logging
@@ -907,53 +908,78 @@ class Soundtracks:
 
     def _import_torrent(self, w: dict, game: dict, api: RommApi, path: str, name: str) -> str:
         files, zips = torrent_content(path)
-        kept, ext = choose_audio(files)
+        members = zip_members(zips)
+        # One format family is chosen across loose files AND zip members together.
+        _kept, ext = choose_audio(files + [(m[0], "", 0) for m in members])
         key = str(game["id"])
-        if not kept and zips:
-            return self._import_zips(w, game, api, zips, name)
-        if not kept:
-            hint = "; it only holds archives ROMarr cannot open" if not files and any(
-                f.lower().endswith((".rar", ".7z")) for _dp, _d, fns in os.walk(path) for f in fns) else ""
+        if not ext:
+            hint = ""
             if not os.path.exists(path):
                 hint = f"; the path {path!r} is not visible to ROMarr (mount it or add a remote path mapping)"
+            elif any(f.lower().endswith((".rar", ".7z")) for _dp, _d, fns in os.walk(path) for f in fns):
+                hint = "; it only holds archives ROMarr cannot open (rar/7z)"
             self._set_watch(w["id"], state="failed", message=("No audio RomM can play was found in the torrent" + hint)[:300])
             return "no audio"
-        job = self._begin_job([key], game["name"], "torrent")
-        self._run_album(job, game, api, "torrent:" + name, kept, provider="torrent")
-        if job["state"] == "error":
-            self._set_watch(w["id"], state="failed", message=job["message"][:300])
-            return "failed"
-        extra = f" ({len(files) - len(kept)} files in other formats left out)" if len(files) > len(kept) else ""
-        self._set_watch(w["id"], state="added", message=job["message"] + extra)
-        return f"added {job['made']}"
+        loose = [f for f in files if os.path.splitext(f[0])[1].lower() == ext]
+        zipped = [m for m in members if os.path.splitext(m[0])[1].lower() == ext]
+        made, notes = 0, []
+        if loose:
+            job = self._begin_job([key], game["name"], "torrent")
+            self._run_album(job, game, api, "torrent:" + name, loose, provider="torrent")
+            if job["state"] == "error":
+                self._set_watch(w["id"], state="failed", message=job["message"][:300])
+                return "failed"
+            made += job["made"]
+        if zipped:
+            made += self._import_zip_members(game, api, zipped, name)
+        left = len(files) + len(members) - len(loose) - len(zipped)
+        self._set_watch(w["id"], state="added" if made else "failed",
+                        message=(f"Added {made} {ext[1:].upper()} track{'s' if made != 1 else ''}" +
+                                 (f"; {left} files in other formats left out" if left else "")) if made
+                        else "Everything in the torrent was already on this game or refused by RomM")
+        return f"added {made}"
 
-    def _import_zips(self, w: dict, game: dict, api: RommApi, zips: list[str], name: str) -> str:
+    def _import_zip_members(self, game: dict, api: RommApi, members: list[tuple[str, str, str]], name: str) -> int:
+        """Upload the chosen zip members (name, zip path, member name) through RomM; returns how many were taken."""
         key = str(game["id"])
         job = self._begin_job([key], game["name"], "torrent")
         sink = RommSink(api, key, self.tmp_dir)
-        progress = self._progress(job)
         try:
-            for z in zips:
-                check_zip(z)
-                for member, chunks in iter_zip_audio(z):
-                    sink(member, chunks)
-                    job["made"] = len(sink.sent)
+            for zpath, group in itertools.groupby(sorted(members, key=lambda m: m[1]), key=lambda m: m[1]):
+                wanted = {m[2]: m[0] for m in group}
+                with zipfile.ZipFile(zpath) as z:
+                    for info in z.infolist():
+                        if info.filename not in wanted:
+                            continue
+
+                        def chunks(info=info, z=z):
+                            left = info.file_size
+                            with z.open(info) as src:
+                                while True:
+                                    b = src.read(1 << 20)
+                                    if not b:
+                                        return
+                                    left -= len(b)
+                                    if left < 0:
+                                        raise ValueError(f"{info.filename} is larger than its header says")
+                                    yield b
+                        sink(wanted[info.filename], chunks())
+                        job["made"] = len(sink.sent)
             made = len(sink.sent)
             self._set_sound(key, status="downloaded" if made else "found", provider="torrent", title=game["name"],
                             chosen=json.dumps({"provider": "torrent", "id": "torrent:" + name, "title": name}),
-                            files=len(api.tracks(key)) if made else 0, note=f"{made} track(s) from a torrent")
+                            files=len(api.tracks(key)) if made else 0, note=f"{made} track(s) from a torrent's zip")
             job.update(state="done", made=made, pct=1.0, step="Done")
-            self._set_watch(w["id"], state="added" if made else "failed",
-                            message=(f"Added {made} track{'s' if made != 1 else ''} from the torrent's zip" if made
-                                     else "The torrent's zip held no audio RomM can play"))
-            return f"added {made}"
+            return made
+        except Exception as ex:  # noqa: BLE001
+            job.update(state="error", step="Failed", message=str(ex) if isinstance(ex, ValueError) else ex.__class__.__name__)
+            raise
         finally:
             try:
                 self._journal_sent(key, sink.sent, api)
             except Exception:  # noqa: BLE001
                 log.warning("could not journal the torrent upload for %s", key)
             job["finished"] = time.time()
-            progress("Done")
 
     # -- jobs --
     def job_for(self, key: str) -> dict | None:
@@ -1526,6 +1552,27 @@ def choose_audio(files: list[tuple[str, str, int]]) -> tuple[list[tuple[str, str
         if by_ext.get(ext):
             return by_ext[ext], ext
     return [], ""
+
+
+def zip_members(zips: list[str]) -> list[tuple[str, str, str]]:
+    """[(name to store, zip path, member name)] for the audio inside each zip.
+
+    Folders inside the zip are folded into the name ("CD2 - 01 Intro.mp3") so discs do not collide.
+    An unreadable or oversized zip is skipped.
+    """
+    out = []
+    for zp in zips:
+        try:
+            check_zip(zp)
+            with zipfile.ZipFile(zp) as z:
+                for i in z.infolist():
+                    if i.is_dir() or not audio_member_name(i.filename):
+                        continue
+                    parts = [p for p in i.filename.replace("\\", "/").split("/") if p and p != ".."]
+                    out.append((header_safe(safe_name(" - ".join(parts))), zp, i.filename))
+        except (zipfile.BadZipFile, ValueError, OSError):
+            continue
+    return out
 
 
 def torrent_content(path: str) -> tuple[list[tuple[str, str, int]], list[str]]:

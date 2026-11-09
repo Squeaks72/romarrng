@@ -103,3 +103,16 @@ def test_choose_audio_prefers_mp3_then_flac_then_chiptune():
     assert st.choose_audio([f("a.flac"), f("b.spc")])[1] == ".flac"
     assert st.choose_audio([f("b.spc")])[1] == ".spc"
     assert st.choose_audio([]) == ([], "")
+
+
+def test_zip_members_and_loose_files_share_one_format_and_discs_do_not_collide(store, api, romm, tmp_path):
+    root = tmp_path / "x"
+    put(str(root / "bonus.flac"))
+    os.makedirs(root, exist_ok=True)
+    (root / "ost.zip").write_bytes(make_zip({"CD1/01 A.mp3": b"a", "CD2/01 A.mp3": b"b", "CD1/01 A.flac": b"f", "cover.jpg": b"j"}))
+    store.add_watch("42", "romarr-abc", "Thing")
+    run(store, api, [row("romarr-abc", 1.0, str(root))])
+    w = store.watch_for("42")
+    assert w["state"] == "added", w["message"]
+    assert sorted(romm.tracks[42].values()) == ["CD1 - 01 A.mp3", "CD2 - 01 A.mp3"]
+    assert store._journal_count("42") == 2
