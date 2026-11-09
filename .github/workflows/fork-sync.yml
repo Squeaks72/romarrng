@@ -1,0 +1,146 @@
+name: Fork sync
+
+# Keeps this fork current with upstream (BlizzHacker/romarr), then rebuilds the
+# image Tim's Unraid server runs.
+#
+# `main` is a pure mirror of upstream and is never committed to directly, so it
+# can always be fast-forwarded. `tim` (the default branch) is upstream plus the
+# fork's own work. Unlike the Uchiyomi and MangaBaka forks, `tim` is MERGED with
+# upstream rather than rebased: this repository's history was already a series
+# of upstream merges with large ported feature sets, and replaying those
+# commits one by one conflicts on almost every sync, where a merge only
+# conflicts on what upstream changed since the last one. No force-push needed.
+#
+# Timing: the image has to exist before CA Auto Update pulls it, 04:00 in
+# America/Chicago -- 09:00 UTC. GitHub queues scheduled workflows under load
+# (4-7 hours late has been seen on the sister forks) and sometimes drops them,
+# so this runs twice, well ahead of the pull and off the top of the hour:
+#
+#   22:21 UTC  worst case lands ~05:00 the next day
+#   01:45 UTC  worst case lands ~08:30
+#
+# The second run is almost always a no-op. If both are dropped, re-run by hand:
+#   gh workflow run fork-sync.yml --repo Squeaks72/romarrng --ref tim
+#
+# A merge that does not apply cleanly, or a merged tree whose tests fail, stops
+# here and fails the run without pushing anything: a stale image is better than
+# a broken one. The nightly caretaker session reads the failure and repairs it.
+#
+# Pushing a merge that changes .github/workflows/ needs the SYNC_TOKEN secret (a
+# fine-grained PAT on this repo only, Contents + Workflows read/write);
+# GITHUB_TOKEN may never push such a commit. Without it the run fails with
+# "SYNC_TOKEN needed" on the nights upstream edits its workflows.
+#
+# Upstream's own workflows (docker, Windows, Cartridge proof) are kept DISABLED
+# here: docker.yml would try to publish to ghcr.io/blizzhacker and fail. A new
+# upstream workflow arrives enabled, so the order is: merge, push `tim` (which
+# registers it), disable anything that is not fork-*.yml, then mirror `main`.
+
+on:
+  schedule:
+    - cron: '21 22 * * *'
+    - cron: '45 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+      pushed_with_pat: ${{ steps.merge.outputs.pushed_with_pat }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: tim
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Merge upstream into tim
+        id: merge
+        env:
+          HAS_PAT: ${{ secrets.SYNC_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          git config user.name  "Squeaks72"
+          git config user.email "Squeaks72@users.noreply.github.com"
+          git remote add upstream https://github.com/BlizzHacker/romarr.git
+          git fetch --tags upstream main
+          echo "pushed_with_pat=$HAS_PAT" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "already contains upstream/main"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          before=$(git rev-parse HEAD)
+          version=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null || echo unknown)
+          if ! git merge --no-edit -m "Merge upstream ${version} ($(git rev-parse --short upstream/main))" upstream/main; then
+            echo "::error title=Merge conflict::$(git diff --name-only --diff-filter=U | tr '\n' ' ')"
+            git merge --abort || true
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if ! git diff --quiet "$before" HEAD -- .github/workflows && [ "$HAS_PAT" != "true" ]; then
+            echo "::error title=SYNC_TOKEN needed::upstream changed .github/workflows/, which GITHUB_TOKEN may not push. Add a SYNC_TOKEN secret (fine-grained PAT: this repo, Contents + Workflows read/write)."
+            exit 1
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Test the merged tree
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+          python -m pytest tests/ -q
+
+      - name: Push tim
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          # A fast-forward of tim; if another session pushed meanwhile this is
+          # refused and the next run picks it up.
+          git push origin HEAD:tim
+          echo "::notice title=Synced::tim now contains upstream ${{ steps.merge.outputs.version }}"
+
+      - name: Keep upstream's workflows disabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sleep 10
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows" --paginate \
+            --jq '.workflows[] | select(.state == "active") | select(.path | startswith(".github/workflows/")) | select(.path | test("/fork-[^/]+\\.ya?ml$") | not) | "\(.id) \(.path)"' |
+          while read -r id path; do
+            echo "::notice title=Disabled upstream workflow::$path"
+            gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/$id/disable"
+          done
+
+      - name: Mirror upstream onto main
+        run: |
+          set -euo pipefail
+          git push --force origin "upstream/main:refs/heads/main"
+
+  build:
+    needs: sync
+    if: needs.sync.outputs.changed == 'true' && needs.sync.outputs.pushed_with_pat != 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/fork-build.yml
