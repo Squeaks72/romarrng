@@ -3028,9 +3028,58 @@ class ROMarr:
         game, api = self._soundtrack_target(game_id)
         return self.soundtrack_store().status(game, api)
 
-    def soundtrack_search(self, game_id: str) -> dict:
+    def soundtrack_search(self, game_id: str, term: str = "") -> dict:
         game, _api = self._soundtrack_target(game_id)
-        return self.soundtrack_store().search(game, self.soundtrack_sources())
+        return self.soundtrack_store().search(game, self.soundtrack_sources(), term)
+
+    def soundtrack_torrents(self, game_id: str, term: str = "") -> dict:
+        """Indexer search with a hand-typed term. Results are unscored and never ROM-judged."""
+        game, _api = self._soundtrack_target(game_id)
+        term = (term or "").strip()[:200] or f"{game['name']} soundtrack"
+        try:
+            releases = self.prowlarr.search(term)
+        except Exception as err:  # noqa: BLE001
+            log.warning("soundtrack torrent search failed for %r: %s", term, err)
+            return {"error": f"search failed: {type(err).__name__}", "term": term, "items": []}
+        releases = sorted(releases, key=lambda r: -(getattr(r, "seeders", 0) or 0))[:50]
+        held, items = {}, []
+        for n, r in enumerate(releases):
+            rid = f"s{abs(hash((term, r.title, r.size, r.indexer))):x}{n:02d}"
+            held[rid] = r
+            items.append({"id": rid, "title": r.title, "size": r.size, "seeders": r.seeders,
+                          "indexer": r.indexer, "protocol": r.protocol,
+                          "info_url": getattr(r, "info_url", ""), "grabbable": bool(r.download_url)})
+        with self._lock:
+            snd = self.__dict__.setdefault("_snd_torrents", {})
+            snd[str(game_id)] = held
+            while len(snd) > 8:
+                snd.pop(next(iter(snd)))
+        return {"term": term, "items": items}
+
+    def soundtrack_torrent_grab(self, game_id: str, release_id: str) -> dict:
+        """Hand a picked torrent to the download client. It is NOT queued for ROM import."""
+        with self._lock:
+            pick = (self.__dict__.get("_snd_torrents", {}).get(str(game_id)) or {}).get(release_id)
+        if pick is None:
+            return {"ok": False, "error": "that search has expired -- run it again"}
+        if not pick.download_url:
+            return {"ok": False, "error": "release offers no usable download link"}
+        client = pick_client(pick.protocol, self.clients)
+        if client is None:
+            return {"ok": False, "error": f"no download client configured for {pick.protocol}"}
+        url = pick.download_url
+        local_fetch = getattr(self.prowlarr, "is_prowlarr_download_url", None)
+        try:
+            if isinstance(client, QBittorrent) and callable(local_fetch) and local_fetch(url):
+                torrent = self.prowlarr.fetch_torrent(url)
+                ok = client.add(torrent) if isinstance(torrent, str) else client.add_torrent_file(torrent)
+            else:
+                ok = client.add(url)
+        except ProwlarrDownloadError as err:
+            return {"ok": False, "error": str(err)}
+        if not ok:
+            return {"ok": False, "error": getattr(client, "last_error", "") or f"{client.name} rejected the release"}
+        return {"ok": True, "release": pick.title, "client": client.name}
 
     def soundtrack_download(self, game_id: str, candidate: dict, fmt: str, force: bool = False) -> dict:
         game, api = self._soundtrack_target(game_id)
@@ -7596,7 +7645,10 @@ def make_handler(service: ROMarr):
                     (query.get("id") or [""])[0]))
             if route.path == "/api/v1/soundtracks/search":
                 return self._soundtrack_reply(lambda: service.soundtrack_search(
-                    (query.get("id") or [""])[0]))
+                    (query.get("id") or [""])[0], (query.get("q") or [""])[0]))
+            if route.path == "/api/v1/soundtracks/torrents":
+                return self._soundtrack_reply(lambda: service.soundtrack_torrents(
+                    (query.get("id") or [""])[0], (query.get("q") or [""])[0]))
             if route.path == "/api/v1/soundtracks/dups":
                 return self._soundtrack_reply(service.soundtrack_dups)
             if route.path == "/api/v1/soundtracks/library/search":
@@ -8620,6 +8672,11 @@ def make_handler(service: ROMarr):
                 return self._soundtrack_reply(lambda: service.soundtrack_download(
                     str(body.get("id") or ""), body["candidate"], str(body.get("format") or ""),
                     force=body.get("force") is True))
+            if route.path == "/api/v1/soundtracks/torrents/grab":
+                if not isinstance(body, dict) or not body.get("release"):
+                    return self._json(400, {"error": "id and release are required"})
+                return self._soundtrack_reply(lambda: service.soundtrack_torrent_grab(
+                    str(body.get("id") or ""), str(body["release"])))
             if route.path == "/api/v1/soundtracks/dups/scan":
                 return self._soundtrack_reply(service.soundtrack_dups_scan)
             if route.path == "/api/v1/soundtracks/dups/merge":

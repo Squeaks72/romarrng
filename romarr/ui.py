@@ -2267,7 +2267,10 @@ function soundtrackCard(d,epoch){
     <div id="snd-status" role="status" aria-live="polite" class="help">Asking RomM what it has…</div>
     <div id="snd-prog"></div>
     <div class="gh-act" id="snd-act" style="margin-top:10px"></div>
-    <div id="snd-res" style="margin-top:12px"></div></div>`;
+    <div class="field" style="margin-top:10px"><label for="snd-q">Search terms</label>
+      <input type="search" id="snd-q" value="${esc(d.title)}" autocomplete="off"></div>
+    <div id="snd-res" style="margin-top:12px"></div>
+    <div id="snd-tor" style="margin-top:12px"></div></div>`;
   const stat=$('#snd-status'), prog=$('#snd-prog'), act=$('#snd-act'), res=$('#snd-res');
   let timer=null;
   const gone=()=>epoch!==routeEpoch||!stat.isConnected;
@@ -2298,9 +2301,11 @@ function soundtrackCard(d,epoch){
       +((job&&job.state==='done'&&job.message)?` ${job.message}.`:'');
     prog.innerHTML=running?bar(job):'';
     act.innerHTML=`<button class="btn" id="snd-find" ${running?'disabled':''}>Search for a soundtrack</button>
+      <button class="btn ghost" id="snd-tor-go" ${running?'disabled':''}>Search torrents</button>
       <button class="btn ghost" id="snd-lib" ${running?'disabled':''}>Use an album from your music library</button>
       ${s.undoable?`<button class="btn danger" id="snd-undo" ${running?'disabled':''}>Undo (remove ${fmt(s.undoable)} added)</button>`:''}`;
     $('#snd-find').onclick=find;
+    $('#snd-tor-go').onclick=torrents;
     $('#snd-lib').onclick=pickAlbum;
     const u=$('#snd-undo'); if(u) u.onclick=undo;
     if(running&&job.id) watch(job.id);
@@ -2345,10 +2350,36 @@ function soundtrackCard(d,epoch){
     };
     q.oninput=()=>{ clearTimeout(wait); wait=setTimeout(run,300); };
   };
+  // Manual indexer search with the typed terms. Grab only hands the torrent to the
+  // download client: nothing is imported as a ROM, and the files are not attached to RomM.
+  const torrents=async()=>{
+    const b=$('#snd-tor-go'), out=$('#snd-tor'); b.disabled=true; b.textContent='Searching…';
+    out.innerHTML='';
+    let q=$('#snd-q').value.trim(); if(q===d.title) q+=' soundtrack';
+    const r=await j('/api/v1/soundtracks/torrents?id='+id+'&q='+encodeURIComponent(q)).catch(()=>SND_DOWN);
+    if(gone()||!out.isConnected) return;
+    b.disabled=false; b.textContent='Search torrents';
+    if(r.error){ out.innerHTML=`<p class="help" role="alert">${esc(r.error)}</p>`; return; }
+    const it=r.items||[];
+    out.innerHTML=it.length?`<p class="help">Torrents for “${esc(r.term)}”. Grab sends the torrent to your download client only; it is not imported or attached to RomM.</p>
+      <div class="tablewrap"><table><caption class="sr-only">Torrent results</caption>
+      <thead><tr><th scope="col">Release</th><th scope="col">Size</th><th scope="col">Seeders</th><th scope="col">Indexer</th><th scope="col"><span class="sr-only">Grab</span></th></tr></thead><tbody>
+      ${it.map((x,i)=>`<tr><td>${esc(x.title)}${x.info_url?` <a href="${esc(x.info_url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>`:''}</td>
+        <td style="white-space:nowrap">${esc(sndBytes(x.size))}</td><td>${fmt(x.seeders)}</td><td>${esc(x.indexer||'—')}</td>
+        <td>${x.grabbable?`<button class="btn ghost tor-grab" data-i="${i}">Grab</button>`:'<span class="help">no link</span>'}</td></tr>`).join('')}
+      </tbody></table></div>`:'<p class="help">No torrents found. Try different terms.</p>';
+    out.querySelectorAll('.tor-grab').forEach(btn=>btn.onclick=async()=>{
+      btn.disabled=true; btn.textContent='Grabbing…';
+      const g=await sndPost('/api/v1/soundtracks/torrents/grab',{id:d.rom_id,release:it[+btn.dataset.i].id}).catch(()=>SND_DOWN);
+      btn.textContent=g.ok?'Sent':'Grab'; if(!g.ok) btn.disabled=false;
+      toast(g.ok?`Sent to ${g.client}`:(g.error||'Could not grab that release'));
+    });
+  };
+  $('#snd-q').onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); $('#snd-find')&&$('#snd-find').click(); } };
   const find=async()=>{
     const b=$('#snd-find'); b.disabled=true; b.textContent='Searching…';
     res.innerHTML='';
-    const r=await j('/api/v1/soundtracks/search?id='+id).catch(()=>SND_DOWN);
+    const r=await j('/api/v1/soundtracks/search?id='+id+'&q='+encodeURIComponent($('#snd-q').value)).catch(()=>SND_DOWN);
     if(gone()||!res.isConnected) return;
     b.disabled=false; b.textContent='Search again';
     if(r.error){ res.innerHTML=`<p class="help" role="alert">${esc(r.error)}</p>`; return; }

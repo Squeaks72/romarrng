@@ -777,8 +777,8 @@ class Soundtracks:
                 "job": self.job_for(key), "error": error}
 
     # -- search --
-    def search(self, game: dict, enabled: tuple[str, ...] = ("zophar", "archive")) -> dict:
-        key, title = str(game["id"]), game["name"]
+    def search(self, game: dict, enabled: tuple[str, ...] = ("zophar", "archive"), term: str = "") -> dict:
+        key, title = str(game["id"]), (term.strip()[:200] or game["name"])
         cands: list[dict] = []
         errors: list[str] = []
         for name, (search_fn, _) in self.providers.items():
