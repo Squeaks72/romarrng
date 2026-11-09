@@ -265,7 +265,7 @@ class ReleaseProfile:
         preferred_regions = platform_cfg.get("preferred_regions")
         if not preferred_regions:
             preferred_regions = settings.get("preferred_regions") or []
-        preferred_regions = [str(r).strip() for r in preferred_regions if str(r).strip()]
+        preferred_regions = [str(r).strip().casefold() for r in preferred_regions if str(r).strip()]
 
         raw_region_scores = platform_cfg.get("region_scores")
         if not raw_region_scores:
@@ -360,14 +360,14 @@ class ReleaseProfile:
                         f"format: {ext.upper()} is your #{rank + 1} for this console")
         return None
 
-    def refusal(self, lowered: str, size: int = 0) -> str:
+    def refusal(self, lowered: str, size: int = 0, *, content_path: str = "") -> str:
         """Why this release is refused outright, or "" if it is not."""
         if self.video_strict and self._video(lowered) is False:
             other = "PAL" if self.video_standard == "ntsc" else "NTSC"
             return (f"{other} release refused: you require "
                     f"{self.video_standard.upper()}")
         for term in self.excluded:
-            if _matches(term, lowered):
+            if _matches(term, lowered) or (content_path and _matches(term, content_path.lower())):
                 return f"excluded by release profile ({term!r})"
         for term in self.required:
             if not _matches(term, lowered):

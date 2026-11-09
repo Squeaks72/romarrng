@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from .platforms import DISC, Platform, by_slug, resolve, same_machine
@@ -167,24 +168,29 @@ _TRANSLATION_TAG = re.compile(
     re.IGNORECASE,
 )
 
-_USA_TAG = re.compile(r"[\(\[]\s*(usa|us)\s*[\)\]]", re.IGNORECASE)
-_JAPAN_TAG = re.compile(r"[\(\[]\s*(japan|jp|jpn|j)\s*[\)\]]", re.IGNORECASE)
-_LANG_TAG = re.compile(r"[\(\[]\s*([a-z]{2})\s*[\)\]]", re.IGNORECASE)
+_TAG_RE = re.compile(r"[\(\[]([^\)\]]+)[\)\]]")
+# Language codes used in release tags. A two-letter tag alone is not evidence
+# of a language: NP is the Nintendo Power release format, for example.
+_LANGUAGE_CODES = frozenset("""
+af ar bg ca cs cy da de el en es et eu fa fi fr ga gl he hi hr hu id is it
+ja ko lt lv mk ms nl no pl pt ro ru sk sl sr sv th tr uk vi zh
+""".split())
+
 
 def is_foreign_language_tag(title: str) -> bool:
-    if _USA_TAG.search(title):
-        for m in _LANG_TAG.finditer(title):
-            lang = m.group(1).lower()
-            if lang not in ("en", "us"):
-                return True
-    if _JAPAN_TAG.search(title):
-        for m in _LANG_TAG.finditer(title):
-            lang = m.group(1).lower()
-            if lang not in ("ja", "jp", "j"):
-                return True
-    return False
+    regions = detect_regions(title)
+    allowed = {"en"}
+    if "japan" in regions:
+        allowed.add("ja")
+    if not regions.intersection({"usa", "japan"}):
+        return False
+    languages = set()
+    for tag in _TAG_RE.findall(title.lower()):
+        codes = set(re.split(r"[,/ ]+", tag.strip()))
+        if codes and codes <= _LANGUAGE_CODES:
+            languages.update(codes)
+    return bool(languages and languages.isdisjoint(allowed))
 
-_TAG_RE = re.compile(r"[\(\[]([^\)\]]+)[\)\]]")
 
 _TOKEN_TO_REGIONS = {
     "usa": {"usa"}, "us": {"usa"}, "united states": {"usa"}, "america": {"usa"},
@@ -208,7 +214,6 @@ _TOKEN_TO_REGIONS = {
     "russia": {"russia"}, "ru": {"russia"}, "rus": {"russia"},
     "poland": {"poland"}, "pl": {"poland"}, "pol": {"poland"},
     "canada": {"canada"}, "ca": {"canada"},
-    "en": {"usa", "europe"},
     "u": {"usa"}, "e": {"europe"}, "j": {"japan"}, "w": {"world"}, "a": {"australia"},
     "g": {"germany"}, "f": {"france"}, "s": {"spain"}, "i": {"italy"}, "k": {"korea"},
     "c": {"china"}, "b": {"brazil"},
@@ -216,43 +221,24 @@ _TOKEN_TO_REGIONS = {
     "jue": {"japan", "usa", "europe"}, "uej": {"usa", "europe", "japan"}, "jeu": {"japan", "europe", "usa"},
 }
 
-#: Spellings people (and the settings page) use for the names detect_regions
-#: returns.
-_REGION_ALIAS = {"us": "usa", "u": "usa", "ntsc-u": "usa", "north america": "usa",
-                 "united states": "usa", "global": "world", "eu": "europe",
-                 "eur": "europe", "pal": "europe", "jp": "japan", "jpn": "japan",
-                 "ntsc-j": "japan"}
-
-
-def _region_names(raw) -> list[str]:
-    """Preferred regions as detect_regions spells them: lower case, aliases resolved.
-
-    The settings page stores "USA, World, Europe, Japan" capitalised, while
-    detect_regions returns "usa"; compared as written, a custom order never
-    matched and strict mode refused every release, USA included.
-    """
-    out: list[str] = []
-    for item in raw or []:
-        name = str(item or "").strip().lower()
-        name = _REGION_ALIAS.get(name, name)
-        if name and name not in out:
-            out.append(name)
-    return out or ["usa", "world", "europe", "japan"]
-
 
 def detect_regions(title: str) -> set[str]:
     lowered = title.lower()
     detected = set()
-    found_any_tag = False
+    ambiguous = set()
     for tag_content in _TAG_RE.findall(lowered):
-        tokens = [t.strip() for t in re.split(r"[,/ ]+", tag_content) if t.strip()]
+        tokens = [t for t in re.split(r"[,/ ]+", tag_content.strip()) if t]
         if not tokens:
             continue
-        if all(token in _TOKEN_TO_REGIONS for token in tokens):
-            found_any_tag = True
+        if all(token in _LANGUAGE_CODES for token in tokens):
+            # A standalone compact country code still works as a region when
+            # there is no stronger evidence. A list like En,Fr is language.
+            if len(tokens) == 1:
+                ambiguous.update(_TOKEN_TO_REGIONS.get(tokens[0], ()))
+        elif all(token in _TOKEN_TO_REGIONS for token in tokens):
             for token in tokens:
                 detected.update(_TOKEN_TO_REGIONS[token])
-    if not found_any_tag:
+    if not detected:
         if re.search(r"\bpal\b", lowered):
             detected.add("europe")
         if re.search(r"\bntsc-u\b", lowered) or re.search(r"\bntsc-us\b", lowered):
@@ -261,6 +247,8 @@ def detect_regions(title: str) -> set[str]:
             detected.add("japan")
         elif re.search(r"\bntsc\b", lowered):
             detected.update({"usa", "japan"})
+    if not detected:
+        detected = ambiguous
     return detected
 
 # "[MULTI5]", "[MULTi8-ENG]", "MULTi10-PLAZA". In every result seen this marks
@@ -335,6 +323,34 @@ class Release:
     # Keep that path server-side with the release; it is never a download URL.
     torrent_file_path: str = ""
     file_selection_required: bool = False
+    content_kind: str = ""
+
+
+def collection_content_kind(path: str) -> str:
+    """Classify known collection media hierarchies, never words in a title.
+
+    The final component is a filename, not a content branch. A Games folder
+    nested under Manuals does not turn a document into a playable release.
+    """
+    parts = [re.sub(r"[\s_-]+", "-", unicodedata.normalize("NFKC", part).strip().casefold())
+             for part in re.split(r"[\\/]+", str(path or "")) if part.strip() not in ("", ".")]
+    directories = set(parts[:-1])
+    if directories & {"manual", "manuals"}:
+        return "manual"
+    if directories & {"commercial", "commercials"}:
+        return "commercial"
+    if "tosec-pix" in directories:
+        return "associated-media"
+    return ""
+
+
+def collection_content_refusal(release) -> str:
+    kind = collection_content_kind(getattr(release, "torrent_file_path", ""))
+    kind = kind or getattr(release, "content_kind", "")
+    if kind in {"manual", "commercial", "associated-media"}:
+        label = "TOSEC-PIX associated media" if kind == "associated-media" else kind
+        return f"non-game collection content ({label})"
+    return ""
 
 
 def is_game_release(release: Release) -> bool:
@@ -424,11 +440,15 @@ def judge(release: Release, wanted: str,
     meant the block, and reading it the other way round is the worst available
     interpretation.
     """
+    content_refusal = collection_content_refusal(release)
+    if content_refusal:
+        return Judgement(-1200, verdict=content_refusal)
     if blocklist is not None and release in blocklist:
         return Judgement(-2000,
                          verdict=f"blocklisted: {blocklist.reason_for(release)}")
     if profile:
-        refusal = profile.refusal(release.title.lower(), getattr(release, "size", 0))
+        refusal = profile.refusal(release.title.lower(), getattr(release, "size", 0),
+                                  content_path=release.torrent_file_path)
         if refusal:
             return Judgement(-900, verdict=refusal)
     if not is_game_release(release):
@@ -479,8 +499,8 @@ def judge(release: Release, wanted: str,
             add(min(release.seeders, 20) * 2, f"{release.seeders} seeders")
 
     detected_regions = detect_regions(release.title)
+    pref_list = getattr(profile, "preferred_regions", None) or ["usa", "world", "europe", "japan"]
     if profile and getattr(profile, "region_mode", "prefer") == "strict":
-        pref_list = _region_names(getattr(profile, "preferred_regions", None))
         if detected_regions and not any(r in pref_list for r in detected_regions):
             return Judgement(-300, verdict=f"region outside allowed list ({', '.join(sorted(detected_regions))})")
 
@@ -499,8 +519,6 @@ def judge(release: Release, wanted: str,
             region_handled = True
 
     if not region_handled:
-        pref_list = _region_names(getattr(profile, "preferred_regions", None)
-                                  if profile else None)
         n = len(pref_list)
         matched_ranks = [(pref_list.index(r), r) for r in detected_regions if r in pref_list]
         if matched_ranks:
@@ -508,7 +526,7 @@ def judge(release: Release, wanted: str,
             best_rank, best_region = matched_ranks[0]
             pts = int(round(40 * (n - best_rank) / n))
             add(pts, f"region {best_region}")
-        else:
+        elif not detected_regions:
             region = 0
             label = ""
             for markers, value in _REGION_SCORE:

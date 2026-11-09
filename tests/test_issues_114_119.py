@@ -80,7 +80,8 @@ def test_issue_115_tag_matches_before_shared_infohash():
 
 
 @pytest.mark.parametrize("retain", [True, False])
-def test_issue_115_history_and_collection_cleanup(tmp_path, retain):
+@pytest.mark.parametrize("selective", [True, False])
+def test_issue_115_history_and_collection_cleanup(tmp_path, retain, selective):
     from romarr.app import ROMarr
 
     # Create download folder with a valid ROM
@@ -129,9 +130,9 @@ def test_issue_115_history_and_collection_cleanup(tmp_path, retain):
     # Queue item with qbit-tag
     q_item = QueueItem("Tetris", "gb", "Tetris (World).gb", 10, "grabbed",
                        release_id="btih:colhash", download_id="qbit-tag:romarr-tetris",
-                       download_client="qbit", file_selection_required=True,
+                       download_client="qbit", file_selection_required=selective,
                        selected_file={"path": rom_file.name, "index": 0,
-                                      "size": rom_file.stat().st_size, "hash": "colhash"})
+                                      "size": rom_file.stat().st_size, "hash": "colhash"} if selective else {})
     svc.store.enqueue(q_item)
 
     # Process import
@@ -150,13 +151,17 @@ def test_issue_115_history_and_collection_cleanup(tmp_path, retain):
 # ==============================================================================
 
 def test_issue_116_preferred_regions_rank_scoring():
-    profile = ReleaseProfile(preferred_regions=["france", "europe", "world", "usa", "japan"])
+    profile = ReleaseProfile.from_settings({"preferred_regions": [" France ", "Europe", "World", "USA", "Japan"]})
     # 5 regions: rank 0 (france) -> 40, rank 1 (europe) -> 32, rank 3 (usa) -> 16
-    j_fr = judge(Release("Game (Europe) (En,Fr,De).sfc", 1024 * 1024, 10, (1000,), "", "torrent"),
+    j_fr = judge(Release("Game (France) (Fr).sfc", 1024 * 1024, 10, (1000,), "", "torrent"),
                  "game", resolve("snes"), profile=profile)
     j_us = judge(Release("Game (USA).sfc", 1024 * 1024, 10, (1000,), "", "torrent"),
                  "game", resolve("snes"), profile=profile)
-    assert j_fr.points > j_us.points
+    j_eu = judge(Release("Game (Europe) (En,Fr,De).sfc", 1024 * 1024, 10, (1000,), "", "torrent"),
+                 "game", resolve("snes"), profile=profile)
+    assert j_fr.points > j_eu.points > j_us.points
+    assert (32, "region europe") in j_eu.reasons
+    assert not any(label == "region france" for _, label in j_eu.reasons)
     assert any("region france" in r and "40" in r for r in j_fr.why())
     assert any("region usa" in r and "16" in r for r in j_us.why())
 
@@ -168,7 +173,13 @@ def test_issue_116_tag_filtering_disc_a_not_australia():
 
 
 def test_issue_116_strict_region_mode():
-    profile = ReleaseProfile(preferred_regions=["usa"], region_mode="strict")
+    profile = ReleaseProfile.from_settings({
+        "preferred_regions": ["Japan"],
+        "platform_profiles": {"snes": {"preferred_regions": ["USA"], "region_mode": "strict"}},
+    }, resolve("snes"))
+    j_us = judge(Release("Game (USA).sfc", 1024 * 1024, 10, (1000,), "", "torrent"),
+                 "game", resolve("snes"), profile=profile)
+    assert j_us.accepted and (40, "region usa") in j_us.reasons
     # Outside preferred regions -> rejected
     j_jp = judge(Release("Game (Japan).sfc", 1024 * 1024, 10, (1000,), "", "torrent"),
                  "game", resolve("snes"), profile=profile)
@@ -196,6 +207,29 @@ def test_issue_116_usa_pt_penalty():
     j = judge(Release("Chrono Trigger (USA) (Pt) (BR Group).sfc", 1024 * 1024, 10, (1000,), "", "torrent"),
               "Chrono Trigger", resolve("snes"), profile=profile)
     assert any("not English, or a fan translation" in r and "-150" in r for r in j.why())
+
+
+@pytest.mark.parametrize("tag", ["En", "NP", "Ja,En"])
+def test_issue_138_japan_english_and_nintendo_power_are_not_penalized(tag):
+    profile = ReleaseProfile.from_settings({"preferred_regions": ["USA", "Japan"]})
+    title = f"Game (Japan) ({tag}).sfc"
+    assert detect_regions(title) == {"japan"}
+    result = judge(Release(title, 1024 * 1024, 10, (1000,), "", "torrent"),
+                   "game", resolve("snes"), profile=profile)
+    assert (20, "region japan") in result.reasons
+    assert not any(label == "not English, or a fan translation" for _, label in result.reasons)
+
+
+def test_issue_138_language_tags_do_not_grant_region_points_or_bypass_strict_mode():
+    assert detect_regions("Game (En,Fr).sfc") == set()
+    assert detect_regions("Game (FR).sfc") == {"france"}
+    assert detect_regions("Game (Japan, USA) (En,Ja).sfc") == {"japan", "usa"}
+    profile = ReleaseProfile.from_settings({"preferred_regions": ["France", "Europe"]})
+    us = Release("Game (USA).sfc", 1024 * 1024, 10, (1000,), "", "torrent")
+    assert not any(label.startswith("region ") for _, label in judge(us, "game", resolve("snes"), profile=profile).reasons)
+    japanese = Release("Game (Japan) (En).sfc", 1024 * 1024, 10, (1000,), "", "torrent")
+    strict = ReleaseProfile.from_settings({"preferred_regions": ["USA"], "region_mode": "strict"})
+    assert "region outside allowed list (japan)" == judge(japanese, "game", resolve("snes"), profile=strict).verdict
 
 
 # ==============================================================================
