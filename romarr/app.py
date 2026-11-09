@@ -3153,6 +3153,9 @@ class ROMarr:
     def soundtrack_library_search(self, query: str) -> dict:
         return self.soundtrack_store().library_search(self.music_library_root(), query)
 
+    def soundtrack_library_browse(self, rel: str) -> dict:
+        return self.soundtrack_store().library_browse(self.music_library_root(), rel)
+
     def soundtrack_library_add(self, game_id: str, album_id: str) -> dict:
         game, api = self._soundtrack_target(game_id)
         return self.soundtrack_store().start_album(game, api, self.music_library_root(), album_id)
@@ -7696,6 +7699,9 @@ def make_handler(service: ROMarr):
             if route.path == "/api/v1/soundtracks/library/search":
                 return self._soundtrack_reply(lambda: service.soundtrack_library_search(
                     (query.get("q") or [""])[0]))
+            if route.path == "/api/v1/soundtracks/library/browse":
+                return self._soundtrack_reply(lambda: service.soundtrack_library_browse(
+                    (query.get("path") or [""])[0]))
             if route.path == "/api/v1/soundtracks/jobs":
                 return self._json(200, {"items": service.soundtrack_store().jobs()})
             if route.path == "/api/v1/game/detail":

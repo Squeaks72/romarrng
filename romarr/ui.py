@@ -2331,8 +2331,12 @@ function soundtrackCard(d,epoch){
     m.innerHTML=`<div class="box" role="dialog" aria-modal="true" aria-label="Use an album from your music library">
       <h3>Use an album from your music library</h3>
       <div class="sub">Search your music folder. The audio RomM can play is added to ${esc(d.title)}; the folder itself is never changed.</div>
-      <div class="field"><label for="alb-q">Album or artist</label><input type="search" id="alb-q"></div>
-      <div id="alb-res" role="status" aria-live="polite" class="help"></div>
+      <div class="row" role="tablist" aria-label="How to pick" style="gap:6px;margin-bottom:8px">
+        <button class="btn" role="tab" id="alb-t-s" aria-selected="true">Search</button>
+        <button class="btn ghost" role="tab" id="alb-t-b" aria-selected="false">Browse folders</button></div>
+      <div id="alb-search"><div class="field"><label for="alb-q">Album or artist</label><input type="search" id="alb-q" autocomplete="off" placeholder="Artist or album name, e.g. Arctic Monkeys"></div>
+      <div id="alb-res" role="status" aria-live="polite" class="help"></div></div>
+      <div id="alb-browse" hidden></div>
       <div class="foot"><button class="btn ghost sp" data-close>Close</button></div></div>`;
     document.body.append(m);
     m.onclick=e=>{ if(e.target===m||e.target.dataset.close!==undefined) closeModal(); };
@@ -2340,15 +2344,24 @@ function soundtrackCard(d,epoch){
     let seq=0, wait=null;
     const run=async()=>{
       const mine=++seq, term=q.value.trim();
-      if(!term){ out.textContent=''; return; }
       const r=await j('/api/v1/soundtracks/library/search?q='+encodeURIComponent(term)).catch(()=>SND_DOWN);
       if(mine!==seq||!out.isConnected) return;
       if(r.error){ out.textContent=r.error; return; }
       const a=r.albums||[];
-      out.innerHTML=a.length?`<div class="tablewrap"><table><caption class="sr-only">Albums in the music library</caption>
+      // Suggestions: clicking one puts the name in the box, so it is clear what kind of text belongs there.
+      const sugg=term?[...new Set(a.map(x=>x.id.split('/')[0]).filter(n=>n&&n!==term))].slice(0,6):(r.samples||[]);
+      const chips=sugg.length?`<div class="row" style="gap:6px;flex-wrap:wrap;margin:6px 0">${term?'<span class="help">Artists:</span>':'<span class="help">Try:</span>'}
+        ${sugg.map(n=>`<button type="button" class="btn ghost alb-sg" style="padding:2px 10px;font-size:12px">${esc(n)}</button>`).join('')}</div>`:'';
+      const hit=()=>out.querySelectorAll('.alb-sg').forEach(b=>b.onclick=()=>{ q.value=b.textContent; q.focus(); run(); });
+      if(!term){
+        out.innerHTML=`<p class="help">Type part of an artist or album name. ${fmt(r.total||0)} albums by ${fmt(r.artists||0)} artists in the library.</p>${chips}`;
+        hit(); return;
+      }
+      out.innerHTML=chips+(a.length?`<div class="tablewrap"><table><caption class="sr-only">Albums in the music library</caption>
         <thead><tr><th scope="col">Album</th><th scope="col">Tracks</th><th scope="col">Size</th><th scope="col"><span class="sr-only">Add</span></th></tr></thead><tbody>
         ${a.map((x,i)=>`<tr><td>${esc(x.id)}</td><td>${fmt(x.tracks)}</td><td>${esc(sndBytes(x.bytes))}</td>
-          <td><button class="btn alb-use" data-i="${i}">Use this album</button></td></tr>`).join('')}</tbody></table></div>`:'No album matches.';
+          <td><button class="btn alb-use" data-i="${i}">Use this album</button></td></tr>`).join('')}</tbody></table></div>`:'<p class="help">No album matches.</p>');
+      hit();
       out.querySelectorAll('.alb-use').forEach(btn=>btn.onclick=async()=>{
         out.querySelectorAll('.alb-use').forEach(o=>o.disabled=true);
         const g=await sndPost('/api/v1/soundtracks/library/add',{id:d.rom_id,album:a[+btn.dataset.i].id}).catch(()=>SND_DOWN);
@@ -2356,7 +2369,41 @@ function soundtrackCard(d,epoch){
         closeModal(); toast('Adding the album'); load();
       });
     };
-    q.oninput=()=>{ clearTimeout(wait); wait=setTimeout(run,300); };
+    q.oninput=()=>{ clearTimeout(wait); wait=setTimeout(run,150); };
+    q.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); const f=out.querySelector('.alb-use'); if(f) f.click(); } };
+    run();
+    // Folder browser: walk the library one level at a time; any folder with audio beneath it can be used.
+    const bro=m.querySelector('#alb-browse'), tS=m.querySelector('#alb-t-s'), tB=m.querySelector('#alb-t-b');
+    const show=b=>{ m.querySelector('#alb-search').hidden=b; bro.hidden=!b;
+      tS.className=b?'btn ghost':'btn'; tB.className=b?'btn':'btn ghost'; tS.setAttribute('aria-selected',!b); tB.setAttribute('aria-selected',b);
+      if(b&&!bro.dataset.loaded){ bro.dataset.loaded=1; walk(''); } };
+    tS.onclick=()=>{ show(false); q.focus(); }; tB.onclick=()=>show(true);
+    const walk=async rel=>{
+      bro.innerHTML='<p class="help">Loading…</p>';
+      const r=await j('/api/v1/soundtracks/library/browse?path='+encodeURIComponent(rel)).catch(()=>SND_DOWN);
+      if(!bro.isConnected) return;
+      if(r.error){ bro.innerHTML=`<p class="help" role="alert">${esc(r.error)}</p>`; return; }
+      const parts=r.path?r.path.split('/'):[];
+      const crumbs=['<button type="button" class="btn ghost alb-go" data-p="" style="padding:2px 8px">Library</button>']
+        .concat(parts.map((n,i)=>`<button type="button" class="btn ghost alb-go" data-p="${esc(parts.slice(0,i+1).join('/'))}" style="padding:2px 8px">${esc(n)}</button>`)).join(' / ');
+      bro.innerHTML=`<div class="row" style="gap:4px;flex-wrap:wrap;margin-bottom:8px">${crumbs}</div>
+        ${r.path?`<div class="row" style="margin-bottom:8px"><span class="help sp">${r.tracks?fmt(r.tracks)+' audio files here':'Subfolders are included'}</span>
+          <button class="btn alb-here">Use this folder</button></div>`:''}
+        <div class="tablewrap" style="max-height:320px;overflow:auto"><table><caption class="sr-only">Folders</caption><tbody>
+        ${r.dirs.length?r.dirs.map(x=>`<tr><td><button type="button" class="btn ghost alb-go" data-p="${esc((r.path?r.path+'/':'')+x.name)}" style="border:0;padding:2px 6px">📁 ${esc(x.name)}</button></td>
+          <td class="help">${x.tracks?fmt(x.tracks)+' tracks':''}</td>
+          <td><button type="button" class="btn alb-use2" data-p="${esc((r.path?r.path+'/':'')+x.name)}">Use</button></td></tr>`).join(''):'<tr><td class="help">No subfolders.</td></tr>'}
+        </tbody></table></div>`;
+      bro.querySelectorAll('.alb-go').forEach(b=>b.onclick=()=>walk(b.dataset.p));
+      const use=async p=>{
+        bro.querySelectorAll('button').forEach(o=>o.disabled=true);
+        const g=await sndPost('/api/v1/soundtracks/library/add',{id:d.rom_id,album:p}).catch(()=>SND_DOWN);
+        if(g.error){ toast(g.error); bro.querySelectorAll('button').forEach(o=>o.disabled=false); return; }
+        closeModal(); toast('Adding the album'); load();
+      };
+      bro.querySelectorAll('.alb-use2').forEach(b=>b.onclick=()=>use(b.dataset.p));
+      const h=bro.querySelector('.alb-here'); if(h) h.onclick=()=>use(r.path);
+    };
   };
   // Manual indexer search with the typed terms. Grab hands the torrent to qBittorrent; the server then
   // watches it and uploads the audio to RomM on completion. It is never imported as a ROM.

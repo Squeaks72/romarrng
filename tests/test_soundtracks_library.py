@@ -229,3 +229,15 @@ def test_library_search_is_cached_and_reports_albums(store, lib):
     assert [a["id"] for a in store.library_search(str(lib), "zelda")["albums"]] == ["Other/Zelda"]      # within the cache window
     store._albums = None
     assert len(store.library_search(str(lib), "zelda")["albums"]) == 2
+
+
+def test_browse_lists_one_level_and_refuses_to_leave_the_library(lib, tmp_path):
+    top = st.browse_library(str(lib))
+    assert top["path"] == "" and {d["name"] for d in top["dirs"]} >= {"Other", "Fan"}
+    sub = st.browse_library(str(lib), "Other")
+    assert sub["path"] == "Other" and any(d["name"] == "Zelda" and d["tracks"] > 0 for d in sub["dirs"])
+    for bad in ("..", "../x", "/etc", "bad\x00", "Other/Missing"):
+        with pytest.raises(ValueError):
+            st.browse_library(str(lib), bad)
+    os.symlink(tmp_path, lib / "escape")
+    assert "escape" not in {d["name"] for d in st.browse_library(str(lib))["dirs"]}

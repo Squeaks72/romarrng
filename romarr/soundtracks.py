@@ -659,6 +659,34 @@ def resolve_album(root: str, album_id: str) -> str:
     return src
 
 
+def browse_library(root: str, rel: str = "") -> dict:
+    """One level of the music library: its subfolders and how many audio files each holds directly.
+
+    `rel` is a path under `root` ("" is the root itself). Nothing outside the root is ever listed.
+    """
+    if not isinstance(rel, str) or "\x00" in rel:
+        raise ValueError("that folder is not inside the music library")
+    real_root = os.path.realpath(root)
+    here = os.path.realpath(os.path.join(real_root, rel))
+    if os.path.commonpath([here, real_root]) != real_root or not os.path.isdir(here):
+        raise ValueError("that folder is not inside the music library")
+    dirs, audio = [], 0
+    for e in sorted(os.scandir(here), key=lambda e: e.name.lower()):
+        if e.name.startswith("."):
+            continue
+        real = os.path.realpath(e.path)
+        if e.is_dir() and os.path.commonpath([real, real_root]) == real_root:
+            try:
+                direct = sum(1 for f in os.scandir(real) if f.is_file() and _is_audio(f.name))
+            except OSError:
+                direct = 0
+            dirs.append({"name": e.name, "tracks": direct})
+        elif e.is_file() and _is_audio(e.name):
+            audio += 1
+    path = "" if here == real_root else os.path.relpath(here, real_root)
+    return {"path": path, "dirs": dirs, "tracks": audio}
+
+
 def collect_album(src: str) -> list[tuple[str, str, int]]:
     """[(file name to store, path, size)] for the audio under `src`.
 
@@ -1462,8 +1490,17 @@ class Soundtracks:
             self._albums = (real, time.time(), albums)
         return albums
 
+    def library_browse(self, root: str, rel: str) -> dict:
+        if not root or not os.path.isdir(root):
+            raise ValueError("the music library folder is not available; set music_library_root and mount it read-only")
+        return browse_library(root, rel)
+
     def library_search(self, root: str, query: str) -> dict:
-        return {"albums": search_albums(self.library_albums(root), query)}
+        albums = self.library_albums(root)
+        artists = sorted({a["id"].split("/")[0] for a in albums if "/" in a["id"]}, key=str.lower)
+        step = max(len(artists) // 6, 1)
+        return {"albums": search_albums(albums, query), "total": len(albums), "artists": len(artists),
+                "samples": artists[::step][:6]}
 
     def start_album(self, game: dict, api: RommApi, root: str, album_id: str, run_async: bool = True) -> dict:
         """Upload an album's audio from the music library into the game's soundtrack. The library is only ever read."""
