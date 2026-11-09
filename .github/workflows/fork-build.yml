@@ -14,7 +14,7 @@ name: Fork build
 
 on:
   push:
-    branches: [tim]
+    branches: [main]
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: tim
+          ref: main
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -56,7 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: tim
+          ref: main
           fetch-depth: 0
 
       - name: Work out the tags

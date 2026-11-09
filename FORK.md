@@ -5,8 +5,8 @@ It is not a GitHub fork, and nothing from it goes back upstream: no PRs and no i
 
 ## Branches
 
-- `main` mirrors upstream `main` exactly. Nothing is ever committed to it.
-- `tim` is the default branch: upstream plus the fork's own features, kept current by
+- `upstream` mirrors upstream's `main` exactly. Nothing is ever committed to it.
+- `main` is the default branch: upstream plus the fork's own features, kept current by
   merging upstream into it (merging, not rebasing).
 - `legacy-romarrng-main`, `on-upstream`, `soundtracks*` are history from before the
   port onto upstream. They are kept for reference and not built.
@@ -14,9 +14,9 @@ It is not a GitHub fork, and nothing from it goes back upstream: no PRs and no i
 ## Automation
 
 - `.github/workflows/fork-sync.yml` runs at 22:21 and 01:45 UTC. It merges upstream/main
-  into `tim`, runs the test suite, pushes `tim`, keeps upstream's workflows disabled, and
-  mirrors `main`. A conflict or a failing suite stops the run without pushing.
-- `.github/workflows/fork-build.yml` runs on every push to `tim`. It tests, builds
+  into `main`, runs the test suite, pushes `main`, keeps upstream's workflows disabled, and
+  mirrors `upstream`. A conflict or a failing suite stops the run without pushing.
+- `.github/workflows/fork-build.yml` runs on every push to `main`. It tests, builds
   linux/amd64, smoke-boots the image, and publishes `ghcr.io/squeaks72/romarrng:latest`
   and `:v<upstream>-tim.<sha>`.
 - Upstream's `docker.yml`, `windows.yml` and `cartridge-windows-proof.yml` stay disabled.
