@@ -411,6 +411,19 @@ class ProxyResponse(tuple):
         return instance
 
 
+
+def library_refresh_seconds(env) -> int:
+    """How often the library is re-read from the server in the background.
+
+    An hour by default and never under a minute; an unset, empty or unreadable
+    ROMARR_LIBRARY_REFRESH_SECONDS means the default.
+    """
+    try:
+        return max(60, int(env.get("ROMARR_LIBRARY_REFRESH_SECONDS") or 3600))
+    except (TypeError, ValueError):
+        return 3600
+
+
 class ROMarr:
     """The service. Holds config, clients, and the in-flight queue."""
 
@@ -4636,7 +4649,7 @@ class ROMarr:
     # default; ROMARR_LIBRARY_REFRESH_SECONDS changes it (never under a minute).
     # Adding a library, or anything else that sets _refresh_now, still refreshes
     # at once.
-    COUNT_TTL = max(60, int(os.environ.get("ROMARR_LIBRARY_REFRESH_SECONDS", "3600") or 3600))
+    COUNT_TTL = library_refresh_seconds(os.environ)
     # How many rows each backend request fetches during the background walk.
     LIBRARY_PAGE = 1000
     # The ceiling on rows held in memory. A row is a name, a slug and a
