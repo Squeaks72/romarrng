@@ -4630,8 +4630,13 @@ class ROMarr:
             "stream_unreachable": routes.stream_unreachable,
         }
 
-    # How often the count and library are refreshed in the background.
-    COUNT_TTL = 300
+    # How often the count and library are refreshed in the background. Each
+    # refresh reads the whole library from RomM, which on a big library is
+    # tens of megabytes and seconds of the server's time, so it is an hour by
+    # default; ROMARR_LIBRARY_REFRESH_SECONDS changes it (never under a minute).
+    # Adding a library, or anything else that sets _refresh_now, still refreshes
+    # at once.
+    COUNT_TTL = max(60, int(os.environ.get("ROMARR_LIBRARY_REFRESH_SECONDS", "3600") or 3600))
     # How many rows each backend request fetches during the background walk.
     LIBRARY_PAGE = 1000
     # The ceiling on rows held in memory. A row is a name, a slug and a
