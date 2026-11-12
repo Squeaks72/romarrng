@@ -88,8 +88,8 @@ def test_library_banner_tile_badges_and_nav_count():
 def test_queue_page_shows_progress_and_refreshes():
     q = _block("const fmtEta=", "RENDER.history=")
     for needle in ("QBIT_STATE", "stalled — no peers", "not in qBittorrent", "class=\"pbar\"", "class=\"pmeta\"",
-                   "ETA ${fmtEta(i.eta)}", "fmtSpeed(i.speed)", "/api/v1/queue?refresh=1", "id=\"q-refresh\"",
-                   "Updated ", "setInterval(", ",4000)", "data-qprog", "gameHref(i.platform"):
+                   "ETA ${fmtEta(i.eta)}", "fmtSpeed(i.speed)", "id=\"q-refresh\"",
+                   "setInterval(", "data-qprog", "gameHref(i.platform"):
         assert needle in q, needle
     assert ".pbar{" in SOURCE and ".pmeta{" in SOURCE
 

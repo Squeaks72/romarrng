@@ -114,6 +114,20 @@ QBITTORRENT_ADD_CONFIRM_TIMEOUT = 10.0
 QBITTORRENT_ADD_POLL_INTERVAL = 0.25
 QBITTORRENT_FILE_METADATA_TIMEOUT = 120.0
 QBITTORRENT_FILE_METADATA_POLL_INTERVAL = 0.25
+QBITTORRENT_RESUME_CONFIRM_TIMEOUT = 10.0
+QBITTORRENT_RESUME_POLL_INTERVAL = 0.25
+
+_QBITTORRENT_PAUSED_STATES = frozenset({
+    "pausedDL", "pausedUP", "stoppedDL", "stoppedUP",
+})
+_QBITTORRENT_RUNNING_STATES = frozenset({
+    "downloading", "stalledDL", "queuedDL", "forcedDL",
+    "uploading", "stalledUP", "queuedUP", "forcedUP",
+})
+_QBITTORRENT_TRANSITIONAL_STATES = frozenset({
+    "checkingResumeData", "checkingDL", "checkingUP",
+    "allocating", "moving", "metaDL", "forcedMetaDL",
+})
 
 
 def _normalise_torrent_path(value: str) -> str:
@@ -167,12 +181,19 @@ class QBittorrent:
         return bool(self._config.base_url)
 
     def __init__(self, config: QbitConfig, session: requests.Session | None = None):
+        """Initialize a qBittorrent API client with its config and HTTP session."""
         self._config = config
         self._session = session or requests.Session()
         self._authed = False
         self._added = threading.local()
         self._selection_lock = threading.RLock()
         self._selective_hashes = set()
+        self._resumed_at: dict[str, float] = {}
+
+    @staticmethod
+    def _resumed_key(torrent_hash: str) -> str:
+        """Normalize a torrent infohash for resume-grace tracking."""
+        return str(torrent_hash or "").strip().casefold()
 
     @property
     def last_job_id(self) -> str:
@@ -198,7 +219,19 @@ class QBittorrent:
     def _url(self, path: str) -> str:
         return f"{self._config.base_url.rstrip('/')}/api/v2/{path.lstrip('/')}"
 
-    def login(self) -> bool:
+    def _deadline_timeout(self, deadline: float | None,
+                          fallback: float | None = None) -> float:
+        """Return bounded request timeout before `deadline`, raising on expiry."""
+        base = float(self._config.timeout if fallback is None else fallback)
+        if deadline is None:
+            return base
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise requests.Timeout("qBittorrent probe deadline exceeded")
+        return max(0.01, min(base, remaining))
+
+    def login(self, *, _deadline: float | None = None) -> bool:
+        """Authenticate with qBittorrent WebUI, honoring any active probe deadline."""
         # A qBittorrent with WebUI auth disabled for localhost answers every
         # endpoint without a session cookie, so a failed login is not fatal.
         if not self._config.username:
@@ -207,7 +240,7 @@ class QBittorrent:
         response = self._session.post(
             self._url("auth/login"),
             data={"username": self._config.username, "password": self._config.password},
-            timeout=self._config.timeout,
+            timeout=self._deadline_timeout(_deadline),
         )
         self._authed = response.ok and (response.status_code == 204 or response.text.strip() == "Ok.")
         if not self._authed:
@@ -222,23 +255,39 @@ class QBittorrent:
         expired SID turns every health check and import poll into a permanent
         401/403 until ROMarr is restarted.
         """
-        response = self._session.get(self._url(path), **kwargs)
+        deadline = kwargs.pop("_deadline", None)
+        base_timeout = kwargs.get("timeout")
+        req_kwargs = dict(kwargs)
+        if deadline is not None:
+            req_kwargs["timeout"] = self._deadline_timeout(deadline, base_timeout)
+        response = self._session.get(self._url(path), **req_kwargs)
         if response.status_code not in (401, 403) or not self._config.username:
             return response
         self._authed = False
-        if not self.login():
+        logged_in = self.login() if deadline is None else self.login(_deadline=deadline)
+        if not logged_in:
             return response
-        return self._session.get(self._url(path), **kwargs)
+        if deadline is not None:
+            req_kwargs["timeout"] = self._deadline_timeout(deadline, base_timeout)
+        return self._session.get(self._url(path), **req_kwargs)
 
     def _post(self, path: str, **kwargs):
         """POST once more after refreshing an expired WebUI session."""
-        response = self._session.post(self._url(path), **kwargs)
+        deadline = kwargs.pop("_deadline", None)
+        base_timeout = kwargs.get("timeout")
+        req_kwargs = dict(kwargs)
+        if deadline is not None:
+            req_kwargs["timeout"] = self._deadline_timeout(deadline, base_timeout)
+        response = self._session.post(self._url(path), **req_kwargs)
         if response.status_code not in (401, 403) or not self._config.username:
             return response
         self._authed = False
-        if not self.login():
+        logged_in = self.login() if deadline is None else self.login(_deadline=deadline)
+        if not logged_in:
             return response
-        return self._session.post(self._url(path), **kwargs)
+        if deadline is not None:
+            req_kwargs["timeout"] = self._deadline_timeout(deadline, base_timeout)
+        return self._session.post(self._url(path), **req_kwargs)
 
     def add(self, magnet_or_url: str, *, save_path: str | None = None, category: str | None = None) -> bool:
         if not self._authed:
@@ -362,8 +411,7 @@ class QBittorrent:
                     self._added.error = "ambiguous retained collection; review ownership"
                     return False
                 if existing:
-                    with self._selection_lock:
-                        return self._reuse_collection(existing[0], wanted_path, owned_selections or [])
+                    return self._reuse_collection(existing[0], wanted_path, owned_selections or [])
             except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
                 self._added.error = f"retained collection needs review: {exc}"
                 return False
@@ -561,6 +609,15 @@ class QBittorrent:
                 return fail("qBittorrent refused to resume the selected file")
         except requests.RequestException:
             return fail("qBittorrent failed while resuming the selected file")
+        resumed_row, confirmed = self._await_resumed_row(owned_hash, tag=tag)
+        if not confirmed:
+            self._resumed_at[self._resumed_key(owned_hash)] = time.monotonic()
+            log.warning(
+                "qBittorrent accepted resume for %s, but state stayed %r within %.1fs",
+                owned_hash[:12],
+                (resumed_row or {}).get("state", ""),
+                QBITTORRENT_RESUME_CONFIRM_TIMEOUT,
+            )
         self._added.selected_file = {
             "path": str(selected.get("name") or ""), "index": selected_id,
             "size": selected.get("size"), "hash": owned_hash,
@@ -569,17 +626,82 @@ class QBittorrent:
         self._added.error = ""
         return True
 
-    def _collection_owners(self, row, owners):
+    def _recently_resumed(self, torrent_hash: str) -> bool:
+        """Whether ROMarr resumed `torrent_hash` within the confirmation grace window."""
+        key = self._resumed_key(torrent_hash)
+        stamp = self._resumed_at.get(key)
+        if stamp is None:
+            return False
+        if (time.monotonic() - stamp) < QBITTORRENT_RESUME_CONFIRM_TIMEOUT:
+            return True
+        self._resumed_at.pop(key, None)
+        return False
+
+    def _await_resumed_row(self, torrent_hash: str, *, tag: str = "",
+                           timeout: float | None = None) -> tuple[dict | None, bool]:
+        """Poll read-only `torrents/info` until the torrent leaves paused/transitional states."""
+        wait_timeout = QBITTORRENT_RESUME_CONFIRM_TIMEOUT if timeout is None else max(0.0, float(timeout))
+        request_timeout = min(max(int(self._config.timeout), 1), 5)
+        deadline = time.monotonic() + wait_timeout
+        key = self._resumed_key(torrent_hash)
+        last_row: dict | None = None
+        while True:
+            try:
+                if tag:
+                    response = self._get(
+                        "torrents/info",
+                        params={"tag": tag},
+                        timeout=request_timeout,
+                        _deadline=deadline,
+                    )
+                    rows = response.json() if response.ok else []
+                    matched = [
+                        row for row in (rows if isinstance(rows, list) else [])
+                        if isinstance(row, dict)
+                        and _row_has_tag(row, tag)
+                        and self._resumed_key(str(row.get("hash") or "")) == key
+                    ]
+                else:
+                    matched = [
+                        row for row in self.torrents(
+                            timeout=request_timeout, _deadline=deadline
+                        )
+                        if self._resumed_key(str(row.get("hash") or "")) == key
+                    ]
+            except (QbitAuthenticationError, requests.RequestException, ValueError):
+                matched = []
+            if len(matched) == 1:
+                last_row = matched[0]
+                if str(last_row.get("state") or "") in _QBITTORRENT_RUNNING_STATES:
+                    self._resumed_at.pop(key, None)
+                    return last_row, True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return last_row, False
+            time.sleep(min(QBITTORRENT_RESUME_POLL_INTERVAL, remaining))
+
+    def _collection_owners(self, row, owners, *, timeout: float | None = None,
+                           _deadline: float | None = None):
+        """Fetch files and live torrent metadata and validate retained collection ownership."""
         from .retained_collection import validate_owners
         torrent_hash = str(row.get("hash") or "")
-        files = self.torrent_files(torrent_hash)
-        fresh = [r for r in self.torrents() if str(r.get("hash") or "") == torrent_hash]
+        if _deadline is not None:
+            files = self.torrent_files(torrent_hash, timeout=timeout, _deadline=_deadline)
+            torrent_rows = self.torrents(timeout=timeout, _deadline=_deadline)
+        elif timeout is not None:
+            files = self.torrent_files(torrent_hash, timeout=timeout)
+            torrent_rows = self.torrents(timeout=timeout)
+        else:
+            files = self.torrent_files(torrent_hash)
+            torrent_rows = self.torrents()
+        fresh = [r for r in torrent_rows if str(r.get("hash") or "") == torrent_hash]
         if len(fresh) != 1:
             raise ValueError("retained torrent disappeared or became ambiguous")
         validate_owners(fresh[0], files, owners, getattr(self, "romarr_id", ""), self._config.category)
         return files
 
     def _reuse_collection(self, row, wanted, owners):
+        """Select one more file on an existing retained collection torrent without resetting prior selections."""
         fresh = [r for r in self.torrents() if r.get("hash") == row.get("hash")]
         if len(fresh) != 1:
             raise ValueError("retained torrent disappeared")
@@ -588,10 +710,19 @@ class QBittorrent:
         torrent_hash = str(row["hash"])
         self._added.retained_hash = torrent_hash
         state = str(row.get("state") or "")
-        if state in {"pausedDL", "pausedUP", "stoppedDL", "stoppedUP"}:
+        if state in _QBITTORRENT_TRANSITIONAL_STATES or (
+                state in _QBITTORRENT_PAUSED_STATES and self._recently_resumed(torrent_hash)):
+            updated_row, confirmed = self._await_resumed_row(torrent_hash)
+            if updated_row is not None:
+                row = updated_row
+                state = str(row.get("state") or "")
+            if confirmed:
+                files = self._collection_owners(row, owners)
+        if state in _QBITTORRENT_PAUSED_STATES:
+            self._resumed_at.pop(self._resumed_key(torrent_hash), None)
             self._added.error = "Retained collection is stopped. Use Resume retained torrent in Queue, then retry this grab."
             return False
-        if state not in {"downloading", "stalledDL", "queuedDL", "forcedDL", "uploading", "stalledUP", "queuedUP", "forcedUP"}:
+        if state not in _QBITTORRENT_RUNNING_STATES:
             self._added.error = "retained collection is not ready for selection; review its downloader state"
             return False
         matches = [f for f in files if _normalise_torrent_path(f.get("name", "")) == wanted
@@ -637,31 +768,58 @@ class QBittorrent:
         return True
 
     def resume_retained_collection(self, identity, owners):
+        """Resume a stopped retained collection torrent and wait briefly for running state."""
         with self._selection_lock:
             rows = [r for r in self.torrents() if r.get("hash") == identity.get("hash")]
             if len(rows) != 1:
                 raise ValueError("retained collection cannot be identified")
             self._collection_owners(rows[0], owners)
-            return self.resume_torrent(identity["hash"])
+            torrent_hash = str(identity["hash"])
+            if not self.resume_torrent(torrent_hash):
+                return False
+            _, confirmed = self._await_resumed_row(torrent_hash)
+            if not confirmed:
+                self._resumed_at[self._resumed_key(torrent_hash)] = time.monotonic()
+            return True
 
-    def selective_completed(self, owners, *, ownership=None):
+    def selective_completed(self, owners, *, ownership=None,
+                            update_cache: bool = True,
+                            timeout: float | None = None):
         """One completed selected member per independent request, not per torrent."""
         from .retained_collection import owner_records
         records = owner_records(owners)
         matching = [o for o in records if o["client"] == getattr(self, "romarr_id", "")]
         all_known = owner_records(ownership if ownership is not None else owners)
-        self._selective_hashes = {o["selected_file"].get("hash") for o in all_known
-                                  if o["client"] == getattr(self, "romarr_id", "")}
+        selective_hashes = {o["selected_file"].get("hash") for o in all_known
+                            if o["client"] == getattr(self, "romarr_id", "")}
+        if update_cache:
+            self._selective_hashes = selective_hashes
         if not matching:
             return []
-        rows = {str(r.get("hash") or ""): r for r in self.torrents()}
+        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        torrent_rows = self.torrents() if deadline is None else self.torrents(_deadline=deadline)
+        rows = {str(r.get("hash") or ""): r for r in torrent_rows}
         out = []
-        for torrent_hash in self._selective_hashes:
+        for torrent_hash in selective_hashes:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             row = rows.get(torrent_hash)
             if not row:
                 continue
             try:
-                files = self._collection_owners(row, ownership if ownership is not None else matching)
+                files = self._collection_owners(
+                    row,
+                    ownership if ownership is not None else matching,
+                    **({"_deadline": deadline} if deadline is not None else {}),
+                )
+            except requests.Timeout as exc:
+                if deadline is not None:
+                    break
+                for owner in matching:
+                    if owner["selected_file"].get("hash") == torrent_hash:
+                        out.append(dict(row, tags=owner["download_id"][9:], id=owner["download_id"],
+                                        _romarr_selection_error=f"Retained collection needs review: {exc}"))
+                continue
             except (ValueError, KeyError, TypeError, requests.RequestException) as exc:
                 for owner in matching:
                     if owner["selected_file"].get("hash") == torrent_hash:
@@ -678,20 +836,40 @@ class QBittorrent:
                     out.append(dict(row, tags=tag, id=owner["download_id"]))
         return out
 
-    def torrents(self) -> list[dict]:
+    def torrents(self, timeout: float | None = None, *,
+                 _deadline: float | None = None) -> list[dict]:
         """Return the client's torrent list for an explicit collection plan."""
-        if not self._authed and not self.login():
+        logged_in = True
+        if not self._authed:
+            logged_in = self.login() if _deadline is None else self.login(_deadline=_deadline)
+        if not logged_in:
             raise QbitAuthenticationError("qBittorrent authentication failed")
-        response = self._get("torrents/info", timeout=self._config.timeout)
+        get_kwargs = {"timeout": (self._deadline_timeout(_deadline, timeout)
+                                  if _deadline is not None
+                                  else (self._config.timeout if timeout is None else timeout))}
+        if _deadline is not None:
+            get_kwargs["_deadline"] = _deadline
+        response = self._get("torrents/info", **get_kwargs)
         response.raise_for_status()
         return [row for row in response.json() if isinstance(row, dict)]
 
-    def torrent_files(self, torrent_hash: str) -> list[dict]:
-        if not self._authed and not self.login():
+    def torrent_files(self, torrent_hash: str, timeout: float | None = None, *,
+                      _deadline: float | None = None) -> list[dict]:
+        """Return the file entries for one torrent hash."""
+        logged_in = True
+        if not self._authed:
+            logged_in = self.login() if _deadline is None else self.login(_deadline=_deadline)
+        if not logged_in:
             raise QbitAuthenticationError("qBittorrent authentication failed")
-        response = self._get("torrents/files",
-                             params={"hash": torrent_hash},
-                             timeout=self._config.timeout)
+        get_kwargs = {
+            "params": {"hash": torrent_hash},
+            "timeout": (self._deadline_timeout(_deadline, timeout)
+                        if _deadline is not None
+                        else (self._config.timeout if timeout is None else timeout)),
+        }
+        if _deadline is not None:
+            get_kwargs["_deadline"] = _deadline
+        response = self._get("torrents/files", **get_kwargs)
         response.raise_for_status()
         return [row for row in response.json() if isinstance(row, dict)]
 
@@ -721,7 +899,11 @@ class QBittorrent:
             data={"hashes": torrent_hash,
                   "deleteFiles": "true" if delete_files else "false"},
             timeout=self._config.timeout)
-        return bool(response.ok)
+        if not response.ok:
+            return False
+        for part in str(torrent_hash or "").split("|"):
+            self._resumed_at.pop(self._resumed_key(part), None)
+        return True
 
     def remove_download(self, download_id: str, *,
                         delete_files: bool = False) -> bool:
@@ -768,6 +950,7 @@ class QBittorrent:
         return self.torrents()
 
     def pause_torrent(self, torrent_hash: str) -> bool:
+        """Ask qBittorrent to pause or stop a torrent and clear any resume grace."""
         response = self._post("torrents/pause",
                               data={"hashes": torrent_hash},
                               timeout=self._config.timeout)
@@ -775,9 +958,14 @@ class QBittorrent:
             response = self._post("torrents/stop",
                                   data={"hashes": torrent_hash},
                                   timeout=self._config.timeout)
-        return bool(response.ok)
+        if not response.ok:
+            return False
+        for part in str(torrent_hash or "").split("|"):
+            self._resumed_at.pop(self._resumed_key(part), None)
+        return True
 
     def resume_torrent(self, torrent_hash: str) -> bool:
+        """Ask qBittorrent to resume or start a torrent and record the resume timestamp."""
         response = self._post("torrents/resume",
                               data={"hashes": torrent_hash},
                               timeout=self._config.timeout)
@@ -785,7 +973,13 @@ class QBittorrent:
             response = self._post("torrents/start",
                                   data={"hashes": torrent_hash},
                                   timeout=self._config.timeout)
-        return bool(response.ok)
+        if response.ok:
+            for part in str(torrent_hash or "").split("|"):
+                key = self._resumed_key(part)
+                if key:
+                    self._resumed_at[key] = time.monotonic()
+            return True
+        return False
 
     def reachable(self) -> bool:
         """Whether the download client answers at all.
@@ -804,27 +998,36 @@ class QBittorrent:
             log.warning("qbittorrent unreachable: %s", err)
             return False
 
-    def completed(self) -> list[dict]:
+    def completed(self, *, repair=True, timeout: float | None = None) -> list[dict]:
         """Torrents in our category that have finished.
 
         A torrent qBittorrent emptied is repaired and withheld rather than
         offered to the importer: it reports as finished with nothing on disk,
         so passing it on produces an import of a file that was never fetched.
         """
+        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
         if not self._authed:
-            self.login()
-        response = self._get(
-            "torrents/info",
-            params={"category": self._config.category, "filter": "completed"},
-            timeout=self._config.timeout,
-        )
+            if deadline is None:
+                self.login()
+            else:
+                self.login(_deadline=deadline)
+        get_kwargs = {
+            "params": {"category": self._config.category, "filter": "completed"},
+            "timeout": (self._deadline_timeout(deadline)
+                        if deadline is not None
+                        else self._config.timeout),
+        }
+        if deadline is not None:
+            get_kwargs["_deadline"] = deadline
+        response = self._get("torrents/info", **get_kwargs)
         response.raise_for_status()
         done = []
         for row in response.json():
             if _deselected(row):
                 if (row.get("hash") in self._selective_hashes or "romarr-collection-" in str(row.get("tags") or "")):
                     continue
-                self.reselect(row)
+                if repair:
+                    self.reselect(row)
             else:
                 done.append(row)
         return done
@@ -1252,8 +1455,28 @@ class Romm:
     # this off whichever library is attached, so it is part of the protocol.
     BACKGROUND_TIMEOUT = DEFAULT_BACKGROUND_TIMEOUT
 
+    def _fetch_platforms(self) -> list[dict]:
+        """Fetch raw platform records from RomM's `/api/platforms` endpoint."""
+        url = f"{self._config.base_url.rstrip('/')}/api/platforms"
+        response = self._get(url, {}, self.HEALTH_TIMEOUT)
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload if isinstance(payload, list) else payload.get("items", [])
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            out.append({
+                "platform": str(row.get("display_name") or row.get("name")
+                                or row.get("slug") or ""),
+                "slug": str(row.get("slug") or ""),
+                "fs_slug": str(row.get("fs_slug") or ""),
+                "count": int(row.get("rom_count") or 0),
+            })
+        return out
+
     def platforms(self) -> list[dict]:
-        """Every platform and its rom count, in one fast call.
+        """Every populated platform and its rom count, in one fast call.
 
         The shelf's platform chips used to be derived from whatever rows the
         background walk had cached so far, which meant a 166,578-game
@@ -1265,27 +1488,18 @@ class Romm:
         request against an endpoint with no rows in it, and the answer is
         the whole truth rather than a prefix of it.
         """
-        url = f"{self._config.base_url.rstrip('/')}/api/platforms"
-        response = self._get(url, {}, self.HEALTH_TIMEOUT)
-        response.raise_for_status()
-        payload = response.json()
-        rows = payload if isinstance(payload, list) else payload.get("items", [])
-        out = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            count = int(row.get("rom_count") or 0)
-            # Platforms RomM defines but holds nothing for are noise: it
-            # ships 393 of them and this library has content in 84.
-            if count <= 0:
-                continue
-            out.append({
-                "platform": str(row.get("display_name") or row.get("name")
-                                or row.get("slug") or ""),
-                "slug": str(row.get("slug") or ""),
-                "count": count,
-            })
+        # Platforms RomM defines but holds nothing for are noise: it
+        # ships 393 of them and this library has content in 84.
+        out = [row for row in self._fetch_platforms() if row["count"] > 0]
         return sorted(out, key=lambda p: (-p["count"], p["platform"]))
+
+    def platform_bindings(self) -> list[dict]:
+        """Return every RomM platform binding, including empty platforms.
+
+        Used to detect folder-name mismatches against ROMarr's configured
+        `platform_folders` before imports create duplicate platforms in RomM.
+        """
+        return [row for row in self._fetch_platforms() if row["slug"]]
 
     def hashes(self, limit: int = 500, offset: int = 0,
                timeout: int | None = None) -> tuple[list[dict], int]:
@@ -1500,7 +1714,7 @@ class Romm:
             # rescan() folds the rest of the set back in.
             slug = self._deferred_scan.pop()
         try:
-            ok = self.rescan(slug)
+            ok = self.rescan(fs_slug=slug) if slug is not None else self.rescan()
         except Exception as err:  # a timer thread has no caller to raise to
             log.warning("romm deferred rescan failed: %s", err)
             ok = False
@@ -1510,7 +1724,8 @@ class Romm:
             with self._deferred_lock:
                 self._deferred_scan.add(slug)
 
-    def rescan(self, platform_slug: str | None = None) -> bool:
+    def rescan(self, platform_slug: str | None = None, *,
+               fs_slug: str | None = None) -> bool:
         """Ask RomM to pick up newly-imported files.
 
         Optional by design. The import has already put the ROM in the library
@@ -1519,13 +1734,25 @@ class Romm:
         logged and reported, never raised, because a successful import must not
         be reported as a failure over a courtesy call.
 
+        When `fs_slug` is provided (from `platform_folders`), it is sent verbatim
+        as RomM's folder identifier rather than translated via `romm_fs_slug`.
+
         RomM 4.x to 5.3 runs this through its task runner; 5.4 refuses
         `scan_library` there and takes `POST /api/tasks/scan` instead. The
         older /api/scan is gone and returned 404, which looked like a broken
         service rather than a moved endpoint.
         """
-        from .platforms import romm_fs_slug
-        platform_slug = romm_fs_slug(platform_slug) if platform_slug else None
+        if fs_slug is not None:
+            if (not isinstance(fs_slug, str) or not fs_slug
+                    or fs_slug != fs_slug.strip() or fs_slug in (".", "..")
+                    or "/" in fs_slug or "\\" in fs_slug
+                    or any(ord(c) < 32 for c in fs_slug)):
+                log.warning("refusing unsafe romm rescan folder %r", fs_slug)
+                return False
+            platform_slug = fs_slug
+        else:
+            from .platforms import romm_fs_slug
+            platform_slug = romm_fs_slug(platform_slug) if platform_slug else None
         base = self._config.base_url.rstrip("/")
         response = None
         # RomM 5.4 stopped running `scan_library` on demand through the

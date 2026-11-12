@@ -31,8 +31,11 @@ Routes:
 
 from __future__ import annotations
 
+import inspect
 import json
-from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
+from copy import copy, deepcopy
 import logging
 import os
 import pathlib
@@ -64,12 +67,12 @@ from .dat import DatIndex, parse_dat
 from .decompress import run_batch as run_decompress_batch, scan_compressed
 from .titled import TitleDBIndex, build_index as build_titled_index, validate_switch_rom
 from .downloaders import (
-    CLIENT_TYPES, NZBGet, NzbgetConfig, SABnzbd, SabConfig, build_client,
+    Blackhole, CLIENT_TYPES, DebridClient, HubDownloader, NZBGet, NzbgetConfig, SABnzbd, SabConfig, SiteDownloader, build_client,
     hand_off_with_id, match_queue_item, merge_secrets, pick_client, redact,
 )
 from .indexers import INDEXER_TYPES, build_indexer, merge_indexer_secrets, redact_indexer
 from .indexers import Prowlarr, ProwlarrConfig, ProwlarrDownloadError
-from .library import import_rom, map_remote_path, platform_dir
+from .library import _custom_platform_folder, import_rom, map_remote_path, platform_dir
 from .selective_import import selected_import_path
 from .collections import is_translation
 from .auth import DISABLED as AUTH_DISABLED
@@ -95,7 +98,7 @@ from .metadata import discover as metadata_discover
 from .openapi import spec as openapi_spec
 from .ops import (LogRing, RateLimiter, make_backup, read_backup,
                   render_metrics, to_csv)
-from .platforms import PLATFORMS, resolve
+from .platforms import PLATFORMS, by_slug, resolve, romm_fs_slug
 from .sso import ForwardAuth
 from .totp import Totp
 from .playability import (
@@ -119,6 +122,7 @@ from .ui import page as ui_page
 from .ui import link_page as ui_link_page
 from .ui import login_page as ui_login_page
 from .version import compare_key, derive_version, is_unknown
+from .build_info import get_build_info
 
 log = logging.getLogger(__name__)
 
@@ -427,7 +431,10 @@ def library_refresh_seconds(env) -> int:
 class ROMarr:
     """The service. Holds config, clients, and the in-flight queue."""
 
+    QUEUE_PROBE_TIMEOUT = 5.0
+
     def __init__(self, env: dict[str, str] | None = None):
+        """Initialize the service state, download/library clients, and persistent store."""
         e = env if env is not None else os.environ
         # Kept so reload_libraries can seed from the environment on first run
         # without the caller having to hand it back in.
@@ -489,6 +496,8 @@ class ROMarr:
         self._candidates: dict[str, dict] = {}
         self._lock = threading.Lock()
         self._collection_lock = threading.RLock()
+        self._probe_lock = threading.Lock()
+        self._inflight_probes: dict[int, tuple[object, threading.Event, dict[str, object]]] = {}
         # Background sweeps overlap, and client I/O happens before the queue row
         # exists. Reserve a game during that gap, then let the queue row take
         # over after the handoff.
@@ -1246,13 +1255,16 @@ class ROMarr:
         `roms/` level, matching RomM's Structure A and B."""
         if (cfg or {}).get("type") == "retrobat":
             return "flat"
-        return str((cfg or {}).get("layout")
-                   or self.store.settings.get("library_layout") or "flat")
+        store = getattr(self, "store", None)
+        fallback = store.settings.get("library_layout") if store is not None else "flat"
+        return str((cfg or {}).get("layout") or fallback or "flat")
 
     def platform_folders(self, cfg: dict | None = None) -> dict[str, str]:
         """Per-platform folder name overrides, merging global and library settings."""
         merged: dict[str, str] = {}
-        for source in (self.store.settings.get("platform_folders"),
+        store = getattr(self, "store", None)
+        global_folders = store.settings.get("platform_folders") if store is not None else {}
+        for source in (global_folders,
                        RETROBAT_FOLDERS if (cfg or {}).get("type") == "retrobat" else {},
                        (cfg or {}).get("platform_folders")):
             if isinstance(source, dict):
@@ -1267,6 +1279,29 @@ class ROMarr:
                         if k and v:
                             merged[str(k)] = str(v)
         return merged
+
+    def _rescan_library(self, target_lib, target_cfg: dict | None,
+                        platform_slug: str, *,
+                        platform_folders: dict[str, str] | None = None) -> None:
+        """Trigger a library rescan, forwarding custom `platform_folders` when supported."""
+        rescan = getattr(target_lib, "rescan", None)
+        if not callable(rescan):
+            return
+        folders = (platform_folders if platform_folders is not None
+                   else self.platform_folders(target_cfg))
+        custom = _custom_platform_folder(platform_slug, folders)
+        if custom:
+            try:
+                params = inspect.signature(rescan).parameters
+                accepts_fs_slug = ("fs_slug" in params or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in params.values()))
+            except (TypeError, ValueError):
+                accepts_fs_slug = False
+            if accepts_fs_slug:
+                rescan(platform_slug, fs_slug=custom)
+                return
+        rescan(platform_slug)
 
     def path_hint(self, root: Path) -> str:
         """Why a library path is missing, and which fix applies.
@@ -1622,6 +1657,71 @@ class ROMarr:
         return {"ok": bool(ok),
                 "message": "Connected" if ok else "Could not connect or authenticate"}
 
+    def _library_folder_warnings(self, backend, cfg: dict,
+                                 root: Path) -> list[str]:
+        """Warn when RomM folder bindings or disk folders diverge from `platform_folders`."""
+        warnings: list[str] = []
+        seen: set[str] = set()
+
+        def _add(msg: str) -> None:
+            if msg not in seen:
+                seen.add(msg)
+                warnings.append(msg)
+
+        folders = self.platform_folders(cfg)
+        known_romm = {p.slug: p for p in PLATFORMS}
+        known_romm.update({romm_fs_slug(p.slug): p for p in PLATFORMS})
+        lister = (getattr(backend, "platform_bindings", None)
+                  or getattr(backend, "platforms", None))
+        if callable(lister):
+            try:
+                rows = lister() or []
+            except Exception as err:
+                log.debug("romm binding check skipped: %s", err)
+                rows = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                raw_slug = str(row.get("slug") or "").strip()
+                fs_slug = str(row.get("fs_slug") or "").strip()
+                if not raw_slug or not fs_slug:
+                    continue
+                label = str(row.get("platform") or raw_slug)
+                plat = known_romm.get(raw_slug.lower())
+                if plat is None and int(row.get("count") or 0) <= 0:
+                    continue
+                if plat is None:
+                    plat = resolve(raw_slug)
+                canon = plat.slug if plat is not None else raw_slug.lower()
+                custom = _custom_platform_folder(canon, folders)
+                default_slug = romm_fs_slug(canon)
+                if custom:
+                    # Only compare populated rows or canonical slug entries so an empty
+                    # sibling platform in RomM (e.g. `nintendo-dsi`) does not falsely
+                    # flag an `nds` custom folder override.
+                    if fs_slug != custom and (raw_slug.lower() in {canon, default_slug}
+                                              or int(row.get("count") or 0) > 0):
+                        _add(f"RomM binds '{label}' ({raw_slug}) to '{fs_slug}', "
+                             f"while ROMarr's platform_folders uses '{custom}'")
+                elif plat is not None and fs_slug not in {default_slug, canon, raw_slug.lower()}:
+                    _add(f"RomM binds '{label}' ({raw_slug}) to '{fs_slug}', "
+                         f"while ROMarr will write to '{default_slug}' without a "
+                         "platform_folders override")
+
+        checked_canon: set[str] = set()
+        for raw_key in folders:
+            plat = resolve(raw_key) or by_slug(str(raw_key).strip().lower())
+            if plat is None or plat.slug in checked_canon:
+                continue
+            checked_canon.add(plat.slug)
+            custom = _custom_platform_folder(plat.slug, folders)
+            default_slug = romm_fs_slug(plat.slug)
+            if custom and custom != default_slug and (root / default_slug).is_dir():
+                _add(f"Default folder '{default_slug}' exists alongside "
+                     f"platform_folders '{custom}' and may cause duplicate "
+                     "platforms in RomM")
+        return warnings
+
     def test_library(self, cfg: dict) -> dict:
         """Try a library configuration without saving it.
 
@@ -1653,6 +1753,19 @@ class ROMarr:
             return {"ok": False, "path_ok": False,
                     "message": f"Connected, but {root} does not exist here. "
                                "Mount it into ROMarr, or correct the path."}
+        if str(cfg.get("type") or "romm").lower() == "romm":
+            try:
+                warnings = self._library_folder_warnings(backend, cfg, root)
+            except Exception as err:
+                log.debug("library folder warning check failed: %s", err)
+                warnings = []
+            if warnings:
+                summary = "; ".join(warnings[:3])
+                if len(warnings) > 3:
+                    summary += f" (+{len(warnings) - 3} more)"
+                return {"ok": True, "path_ok": True,
+                        "message": f"Connected -- Warning: {summary}",
+                        "warnings": warnings}
         return {"ok": True, "path_ok": True, "message": "Connected"}
 
     # -- operations --------------------------------------------------------
@@ -1865,37 +1978,61 @@ class ROMarr:
         wider net: score() already rejects a release naming a foreign system,
         one in the wrong category, or one too large to be a cartridge.
         """
-        seen: set[tuple[str, str]] = set()
-        merged = []
         # Prowlarr plus every directly-configured indexer. One source failing
         # must never lose another's results -- an indexer that is down, rate
         # limited or mid-login is the normal case across a dozen trackers, not
         # an outage worth abandoning the search for.
-        sources: list[tuple[str, object]] = [("prowlarr", self.prowlarr)]
+        prowlarr = self.prowlarr
+        sources: list[tuple[str, object]] = [("prowlarr", prowlarr)]
         sources += [(getattr(i, "name", "indexer"), i)
                     for i in getattr(self, "indexers", [])]
-        for term in (game, f"{game} {platform.name}"):
-            for label, source in sources:
-                try:
-                    found = source.search(term)
-                except Exception as err:
-                    log.warning("%s search failed for %r: %s", label, term, err)
-                    continue
-                for release in found:
-                    key = (release.title, release.download_url)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    merged.append(release)
+
+        def search_term(term):
+            """Query all captured indexer sources for one search string."""
+            releases = []
+            with ExitStack() as sessions:
+                for label, source in sources:
+                    client = source
+                    try:
+                        if isinstance(source, Prowlarr) or getattr(source, "_owns_session", False):
+                            client = copy(source)
+                        if getattr(source, "_owns_session", False):
+                            client._session = sessions.enter_context(requests.Session())
+                        if isinstance(client, Prowlarr) and source is prowlarr:
+                            client._privacy = privacy
+                        releases.extend(client.search(term))
+                    except Exception as err:
+                        log.warning("%s search failed for %r: %s", label, term, err)
+            return releases
+
         # Enabled ROM Hub plugins are searched alongside the indexers: the
         # same titles, scored by the same rules, grabbable from the same
         # Interactive Search page. One query, not per-term: the Hub's own
         # fan-out already merges every plugin's answer for it.
-        for release in self._hub_releases(game, platform):
-            key = (release.title, release.download_url)
-            if key not in seen:
-                seen.add(key)
-                merged.append(release)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            hub_search = pool.submit(self._hub_releases, game, platform)
+            privacy = {}
+            if isinstance(prowlarr, Prowlarr):
+                try:
+                    privacy = prowlarr._private_ids()
+                except Exception as err:
+                    log.warning("prowlarr privacy lookup failed: %r", err)
+            searches = [pool.submit(search_term, game),
+                        pool.submit(search_term, f"{game} {platform.name}"),
+                        hub_search]
+        seen: set[tuple[str, str]] = set()
+        merged = []
+        for search in searches:
+            try:
+                releases = search.result()
+            except Exception as err:
+                log.warning("release search task failed: %r", err)
+                continue
+            for release in releases:
+                key = (release.title, release.download_url)
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(release)
         return merged
 
     def request(self, game: str, platform_name: str, external_request_id: str = "") -> dict:
@@ -2010,6 +2147,17 @@ class ROMarr:
                 changed = True
         if changed:
             self.store.save()
+
+    def _retained_owners_readonly(self, items: list[QueueItem] | None = None) -> list[dict]:
+        """Return retained-collection ownership records without mutating or saving store state."""
+        from .retained_collection import owner_records
+        ledger = list(self.store.settings.get("retained_collection_owners", []))
+        known = {r.get("download_id") for r in ledger}
+        queue_items = self.queue if items is None else items
+        return ledger + [
+            record for record in owner_records(queue_items)
+            if record["download_id"] not in known
+        ]
 
     def _retained_owners(self):
         self._remember_collection_owners()
@@ -2278,7 +2426,186 @@ class ROMarr:
             "items": items,
         }
 
+    @staticmethod
+    def _accepts_timeout_arg(fn) -> bool:
+        """Return True when `fn` declares an explicit `timeout` parameter."""
+        try:
+            return "timeout" in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return False
+
+    def _call_with_timeout(self, client, fn, timeout: float):
+        """Run a completion probe within a wall-clock wait, capping to one in-flight probe per client."""
+        lock = getattr(self, "_probe_lock", None)
+        inflight = getattr(self, "_inflight_probes", None)
+        if lock is None or inflight is None:
+            lock = threading.Lock()
+            inflight = {}
+            self._probe_lock = lock
+            self._inflight_probes = inflight
+        key = id(client)
+        with lock:
+            existing = inflight.get(key)
+            if existing is not None and existing[0] is client:
+                entry = existing
+                spawn = False
+            else:
+                entry = (client, threading.Event(), {})
+                inflight[key] = entry
+                spawn = True
+        if spawn:
+            def _runner():
+                """Execute the client probe and publish its outcome to its single-flight entry."""
+                _, done_ev, box = entry
+                try:
+                    box["value"] = fn()
+                except BaseException as exc:
+                    box["exc"] = exc
+                finally:
+                    with lock:
+                        done_ev.set()
+                        if inflight.get(key) is entry:
+                            inflight.pop(key, None)
+
+            threading.Thread(target=_runner, daemon=True).start()
+        _, done_ev, box = entry
+        if not done_ev.wait(timeout=max(0.01, float(timeout))):
+            raise TimeoutError("client completed() probe timed out")
+        if "exc" in box:
+            raise box["exc"]  # type: ignore[misc]
+        return box["value"]
+
+    def _completed_queue_downloads(self, items, *, ownership=None, timeout: float | None = None):
+        """Yield `(client, completed_rows)` for queue preview checks without fetch or repair writes."""
+        if ownership is None:
+            with self._lock:
+                ownership = self._retained_owners_readonly(list(self.queue))
+        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        for client in self.clients:
+            if not getattr(client, "configured", True):
+                continue
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            budget_exhausted = remaining is not None and remaining <= 0
+            try:
+                if isinstance(client, QBittorrent):
+                    if budget_exhausted:
+                        continue
+                    raw_timeout = getattr(getattr(client, "_config", None), "timeout", 5) or 5
+                    probe_timeout = min(float(raw_timeout), self.QUEUE_PROBE_TIMEOUT)
+                    if remaining is not None:
+                        probe_timeout = min(probe_timeout, remaining)
+                    bounded = max(0.01, probe_timeout)
+
+                    def _probe_qbit(c=client, pt=bounded):
+                        """Query selective and general qBittorrent completions within `pt`."""
+                        local_deadline = time.monotonic() + pt
+                        selective = c.selective_completed(
+                            items,
+                            ownership=ownership,
+                            update_cache=False,
+                            timeout=pt,
+                        )
+                        if deadline is not None:
+                            left = local_deadline - time.monotonic()
+                            if left <= 0:
+                                return selective
+                            next_timeout = max(0.01, min(pt, left))
+                        else:
+                            next_timeout = pt
+                        try:
+                            return selective + c.completed(repair=False, timeout=next_timeout)
+                        except Exception as exc:
+                            log.warning("%s completed() failed: %s", getattr(c, "name", c), exc)
+                            return selective
+
+                    candidates = (
+                        self._call_with_timeout(client, _probe_qbit, bounded)
+                        if deadline is not None else _probe_qbit()
+                    )
+                elif isinstance(client, DebridClient):
+                    if budget_exhausted:
+                        candidates = client.completed(fetch=False, timeout=0.0)
+                    else:
+                        raw_timeout = getattr(getattr(client, "_config", None), "timeout", 5) or 5
+                        probe_timeout = min(float(raw_timeout), self.QUEUE_PROBE_TIMEOUT)
+                        if remaining is not None:
+                            probe_timeout = min(probe_timeout, remaining)
+                        bounded = max(0.01, probe_timeout)
+                        try:
+                            candidates = (
+                                self._call_with_timeout(
+                                    client,
+                                    lambda c=client, pt=bounded: c.completed(fetch=False, timeout=pt),
+                                    bounded,
+                                )
+                                if deadline is not None
+                                else client.completed(fetch=False, timeout=bounded)
+                            )
+                        except TimeoutError as exc:
+                            log.warning(
+                                "%s completed() timed out; using cached files: %s",
+                                getattr(client, "name", client),
+                                exc,
+                            )
+                            candidates = client.completed(fetch=False, timeout=0.0)
+                elif isinstance(client, (SiteDownloader, HubDownloader)):
+                    candidates = client.completed(fetch=False)
+                elif isinstance(client, Blackhole):
+                    candidates = client.completed()
+                else:
+                    if budget_exhausted:
+                        continue
+                    completed_fn = getattr(client, "completed", None)
+                    if not callable(completed_fn):
+                        continue
+                    raw_timeout = getattr(getattr(client, "_config", None), "timeout", 5) or 5
+                    probe_timeout = min(float(raw_timeout), self.QUEUE_PROBE_TIMEOUT)
+                    if remaining is not None:
+                        probe_timeout = min(probe_timeout, remaining)
+                    bounded = max(0.01, probe_timeout)
+                    probe_call = (
+                        (lambda fn=completed_fn, pt=bounded: fn(timeout=pt))
+                        if self._accepts_timeout_arg(completed_fn)
+                        else completed_fn
+                    )
+                    candidates = (
+                        self._call_with_timeout(client, probe_call, bounded)
+                        if deadline is not None else probe_call()
+                    )
+            except Exception as exc:
+                log.warning("%s completed() failed: %s", getattr(client, "name", client), exc)
+                continue
+            yield client, candidates
+
+    def queue_rows(self) -> list[dict]:
+        """Return queue items annotated with read-only `can_preview_import` flags."""
+        with self._lock:
+            items = list(self.queue)
+            rows = [asdict(item) for item in items]
+            ownership = self._retained_owners_readonly(items)
+        pending = [item for item in items if item.state not in ("imported", "failed")]
+        completed = (
+            [(client, download)
+             for client, downloads in self._completed_queue_downloads(
+                 pending, ownership=ownership, timeout=self.QUEUE_PROBE_TIMEOUT)
+             for download in downloads]
+            if pending else []
+        )
+        for item, row in zip(items, rows):
+            row["can_preview_import"] = row["state"] not in ("imported", "failed") and any(
+                match_queue_item(
+                    items,
+                    download,
+                    client_id=str(getattr(client, "romarr_id", "") or getattr(client, "config_id", "") or ""),
+                    client_protocol=str(getattr(client, "protocol", "") or ""),
+                ) is item
+                and not download.get("_romarr_selection_error")
+                for client, download in completed
+            )
+        return rows
+
     def queue_import_plan(self, index: int, body: dict) -> dict:
+        """Build or confirm an interactive import plan for one queued release."""
         from .import_intent import preview_import, choose_import, queue_identity
         from .romm_bundle import decorate_preview, route_selection
         from .library import MissingArchiveTool
@@ -2286,26 +2613,30 @@ class ROMarr:
         import zipfile
         import subprocess
         with self._lock:
-            if not 0 <= index < len(self.queue):
+            items = list(self.queue)
+            if not 0 <= index < len(items):
                 return {"error": "no such queue item"}
-            item = self.queue[index]
+            item = items[index]
             if item.state == "imported":
                 return {"error": "this item has already imported"}
+            ownership = self._retained_owners_readonly(items)
         platform = resolve(item.platform)
         target = self.library_for(item.platform) if platform else None
         if target is None:
             return {"error": "configure a platform and library first"}
         torrent = None
         source_client = None
-        for client in self.clients:
-            if not getattr(client, "configured", True):
-                continue
-            candidates = (client.selective_completed([item], ownership=self._retained_owners()) if isinstance(client, QBittorrent) else [])
-            for candidate in candidates + client.completed():
-                if match_queue_item([item], candidate) is item:
+        for client, candidates in self._completed_queue_downloads(
+                [item], ownership=ownership, timeout=self.QUEUE_PROBE_TIMEOUT):
+            client_id = str(getattr(client, "romarr_id", "") or getattr(client, "config_id", "") or "")
+            client_protocol = str(getattr(client, "protocol", "") or "")
+            for candidate in candidates:
+                if match_queue_item(items, candidate, client_id=client_id, client_protocol=client_protocol) is item:
                     torrent = candidate
                     source_client = client
                     break
+            if torrent is not None:
+                break
         if torrent is None:
             return {"error": "download is not complete or cannot be found"}
         if torrent.get("_romarr_selection_error"):
@@ -2345,7 +2676,7 @@ class ROMarr:
                     item.import_intent = intent
                     item.state = "grabbed"
                     item.detail = "Import selection saved; source download will be retained"
-                item.import_preview = preview
+                    item.import_preview = preview
                 self.store.save()
             return {"ok": True, "preview": preview}
         except (OSError, ValueError, RuntimeError, TypeError, MissingArchiveTool, RequestException, zipfile.BadZipFile, subprocess.SubprocessError) as exc:
@@ -2519,6 +2850,7 @@ class ROMarr:
             "clients": self.download_clients(),
             "ggrequestz": self.ggrequestz(),
             "version": VERSION,
+            "build": get_build_info(VERSION),
             "prowlarr": bool(self.prowlarr._config.api_key),
             "prowlarr_url": self.store.settings.get("_prowlarr_url", ""),
             "qbittorrent": self.qbit.reachable(),
@@ -2884,7 +3216,8 @@ class ROMarr:
         in `release_id`), and last the release name, because a release added by
         URL has no hash until the client has fetched it.
         """
-        items = [asdict(i) for i in self.queue]
+        # Upstream's rows (with can_preview_import), plus live progress and ETA.
+        items = self.queue_rows()
         cache = getattr(self, "_progress_cache", None)
         if refresh or cache is None or time.time() - cache[0] > 3:
             live: dict[str, dict[str, dict]] = {}
@@ -3408,11 +3741,13 @@ class ROMarr:
         for client in self.clients:
             if not getattr(client, "configured", True):
                 continue
+            client_id = str(getattr(client, "romarr_id", "") or getattr(client, "config_id", "") or "")
+            client_protocol = str(getattr(client, "protocol", "") or "")
             try:
                 completed = getattr(client, "completed", None)
                 if callable(completed):
                     for item in completed():
-                        if match_queue_item([row], item) is not None:
+                        if match_queue_item([row], item, client_id=client_id, client_protocol=client_protocol) is not None:
                             return True
             except Exception:
                 pass
@@ -3421,7 +3756,7 @@ class ROMarr:
                              or getattr(client, "torrents", None))
                 if callable(active_fn):
                     for item in active_fn():
-                        if match_queue_item([row], item) is None:
+                        if match_queue_item([row], item, client_id=client_id, client_protocol=client_protocol) is None:
                             continue
                         progress = float(item.get("progress", 0) or 0)
                         if progress >= 1.0:
@@ -3458,12 +3793,13 @@ class ROMarr:
                 except Exception as err:
                     log.warning("could not remove dead download %r from %s: %s",
                                 row.download_id, getattr(client, "name", client), err)
+            client_protocol = str(getattr(client, "protocol", "") or "")
             deleter = getattr(client, "delete_torrent", None)
             torrents_fn = getattr(client, "torrents", None)
             if callable(deleter) and callable(torrents_fn):
                 try:
                     for item in torrents_fn():
-                        if match_queue_item([row], item) is not None:
+                        if match_queue_item([row], item, client_id=str(client_id), client_protocol=client_protocol) is not None:
                             thash = str(item.get("hash") or "").strip()
                             if thash and deleter(thash):
                                 removed = True
@@ -3638,6 +3974,7 @@ class ROMarr:
                     "reason": "no library configured to import into"}
         target_cfg, target_lib = target
         label = target_cfg.get("name") or getattr(target_lib, "name", "library")
+        target_folders = self.platform_folders(target_cfg)
 
         outcomes = import_rom(source, platform, self.library_root(target_cfg),
                               dats=self.dats,
@@ -3646,7 +3983,7 @@ class ROMarr:
                 prefer_hardlinks=bool(self.store.settings.get("prefer_hardlinks", False)),
                               layout=self.library_layout(target_cfg),
                               translation=is_translation(source.name),
-                              platform_folders=self.platform_folders(target_cfg))
+                              platform_folders=target_folders)
 
         imported, refused = [], []
         for outcome in outcomes:
@@ -3698,7 +4035,8 @@ class ROMarr:
             })
 
         if imported and self.store.settings.get("rescan_after_import", True):
-            target_lib.rescan(platform.slug)
+            self._rescan_library(target_lib, target_cfg, platform.slug,
+                                 platform_folders=target_folders)
         self.store.save()
 
         result = {
@@ -5850,7 +6188,8 @@ class ROMarr:
             return {"error": "no DATs loaded -- set the DAT directory under "
                              "Settings -> Media Management first"}
 
-        root = platform_dir(self.library, platform,
+        library_root = self.library
+        root = platform_dir(library_root, platform,
                             platform_folders=self.platform_folders())
         state = {"status": "running", "platform": platform.slug,
                  "scanned": 0, "verified": 0, "bad": 0, "unknown": 0,
@@ -5891,7 +6230,7 @@ class ROMarr:
                     state["bad"] += 1
                     if len(state["bad_files"]) < 200:
                         state["bad_files"].append({
-                            "file": str(path.relative_to(self.library)),
+                            "file": path.relative_to(library_root).as_posix(),
                             "detail": verdict.detail or ""})
                 else:
                     state["unknown"] += 1
@@ -5903,7 +6242,7 @@ class ROMarr:
                     self.hashes.add(
                         sha, verdict.game or path.stem, platform.slug,
                         verdict.status == VERIFIED,
-                        str(path.relative_to(self.library)))
+                        path.relative_to(library_root).as_posix())
                 # DAT verification strips copier headers on some platforms.
                 # Quarantine candidates must match every physical byte instead.
                 try:
@@ -5914,11 +6253,11 @@ class ROMarr:
                 key = (raw_sha, raw_size)
                 if key in seen:
                     state["duplicates"].append({
-                        "file": str(path.relative_to(self.library)),
+                        "file": path.relative_to(library_root).as_posix(),
                         "same_as": seen[key], "sha1": raw_sha,
                         "size": raw_size})
                 else:
-                    seen[key] = str(path.relative_to(self.library))
+                    seen[key] = path.relative_to(library_root).as_posix()
             self.hashes.save()
             state["status"] = "done"
             state["indexed"] = len(self.hashes)
@@ -5948,7 +6287,8 @@ class ROMarr:
         state = self._audit_state or {}
         if state.get("status") != "done" or state.get("platform") != platform_slug:
             return {"error": "run a completed audit for this platform first"}
-        root = self.library / platform_slug
+        root = platform_dir(self.library, platform_slug,
+                            platform_folders=self.platform_folders())
         if not root.is_dir():
             return {"error": "audited platform directory is unavailable"}
         try:
@@ -5976,6 +6316,17 @@ class ROMarr:
         return (self.library_root(cfg).resolve(), self.library_layout(cfg),
                 str(cfg.get("id") or ""))
 
+    def _library_rename_folders(self, platform_slug: str) -> dict[str, str]:
+        """Return effective `platform_folders` overrides for the routed rename library."""
+        configured = getattr(self, "game_libraries", None) or []
+        if not configured:
+            return self.platform_folders()
+        routed = self.library_for(platform_slug)
+        if routed is None:
+            return self.platform_folders()
+        cfg, _backend = routed
+        return self.platform_folders(cfg)
+
     def _library_rename_roots(self) -> list[Path]:
         roots = [Path(self.library)]
         roots.extend(self.library_root(cfg)
@@ -5997,6 +6348,7 @@ class ROMarr:
                                 scope: str = "", offset: int = 0) -> dict:
         """Build a DAT-verified, read-only preview in a background thread."""
         import threading as _threading
+        from .library_rename import plan, resolve_platform_folder
 
         active = getattr(self, "_library_rename_thread", None)
         if active is not None and active.is_alive():
@@ -6009,10 +6361,13 @@ class ROMarr:
             return {"error": "load DATs under Settings -> Media Management first"}
         try:
             library_root, layout, library_id = self._library_rename_target(platform.slug)
+            folders = self._library_rename_folders(platform.slug)
+            expected_folder = resolve_platform_folder(platform.slug, folders)
         except (OSError, ValueError) as err:
             return {"error": str(err)}
         dats = self.dats
         state = {"status": "running", "platform": platform.slug,
+                 "folder": expected_folder,
                  "library_id": library_id, "layout": layout,
                  "scanned": 0, "entries": []}
         self._library_rename_root = library_root
@@ -6020,9 +6375,10 @@ class ROMarr:
 
         def run():
             try:
-                from .library_rename import plan
+                kwargs = {"platform_folders": folders} if folders else {}
                 state.update(plan(library_root, platform.slug, dats,
-                                   scope=scope, offset=offset, layout=layout))
+                                   scope=scope, offset=offset, layout=layout,
+                                   **kwargs))
             except (OSError, ValueError) as err:
                 state.update(status="failed", error=str(err))
 
@@ -6046,7 +6402,7 @@ class ROMarr:
     def apply_library_renames(self, platform_slug: str,
                               files: list[str]) -> dict:
         import uuid as _uuid
-        from .library_rename import apply, manifest_for
+        from .library_rename import apply, manifest_for, resolve_platform_folder
         state = getattr(self, "_library_rename_state", {}) or {}
         if state.get("status") != "done" or state.get("platform") != platform_slug:
             return {"error": "run a completed preview for this platform first"}
@@ -6056,12 +6412,18 @@ class ROMarr:
         manifest_id = _uuid.uuid4().hex
         try:
             current_root, current_layout, current_id = self._library_rename_target(platform_slug)
+            current_folders = self._library_rename_folders(platform_slug)
+            current_folder = resolve_platform_folder(platform_slug, current_folders)
             if (current_root != Path(preview_root).resolve()
                     or current_layout != state.get("layout", "flat")
-                    or current_id != state.get("library_id", "")):
-                return {"error": "library route or layout changed since preview; run a new preview"}
+                    or current_id != state.get("library_id", "")
+                    or current_folder != state.get("folder", current_folder)):
+                return {"error": "library route, folder, or layout changed since preview; run a new preview"}
+            apply_kwargs = ({"platform_folders": current_folders}
+                            if current_folders else {})
             result = apply(preview_root, platform_slug, files,
-                           state.get("entries") or [], manifest_id=manifest_id)
+                           state.get("entries") or [], manifest_id=manifest_id,
+                           **apply_kwargs)
             self.hashes.move_paths({
                 entry["original"]: entry["target"]
                 for entry in result.get("entries", [])
@@ -6069,6 +6431,7 @@ class ROMarr:
                 root=preview_root)
             self._library_rename_state = {
                 "status": "applied", "platform": platform_slug,
+                "folder": current_folder,
                 "library_id": current_id, "layout": current_layout,
                 "entries": result.get("entries", [])}
             ROMarr._audit_state = {
@@ -6419,6 +6782,7 @@ class ROMarr:
         env = selfupdate.detect()
         return {
             "running_version": VERSION,
+            "build": get_build_info(VERSION),
             "latest_version": self.store.settings.get("_latest_version") or "",
             "update_available": bool(
                 self.store.settings.get("_update_available")),
@@ -7040,8 +7404,21 @@ class ROMarr:
             name = torrent.get("name", "")
             platform = None
             queue_item = None
+            source_client = torrent.get("_romarr_client")
+            client_id = str(
+                getattr(source_client, "romarr_id", "")
+                or getattr(source_client, "config_id", "")
+                or torrent.get("_romarr_client_id")
+                or ""
+            )
+            client_protocol = str(getattr(source_client, "protocol", "") or "")
             with self._lock:
-                match = match_queue_item(self.queue, torrent)
+                match = match_queue_item(
+                    self.queue,
+                    torrent,
+                    client_id=client_id,
+                    client_protocol=client_protocol,
+                )
                 if match is not None:
                     queue_item = match
                     if match.state not in ("imported", "import-failed"):
@@ -7144,6 +7521,7 @@ class ROMarr:
             target_cfg, target_lib = target
             label = target_cfg.get("name") or getattr(target_lib, "name", "library")
 
+            target_folders = self.platform_folders(target_cfg)
             selected_primaries = None
             bundle_routes = None
             if queue_item is not None and path.exists():
@@ -7155,11 +7533,11 @@ class ROMarr:
                 try:
                     preview = preview_import(path, platform, self.library_root(target_cfg),
                                              layout=self.library_layout(target_cfg),
-                                             platform_folders=self.platform_folders(target_cfg),
+                                             platform_folders=target_folders,
                                              queue_identity=queue_identity(queue_item))
                     preview = decorate_preview(preview, platform, self.library_root(target_cfg),
                                                kind=target_cfg.get("type", ""), layout=self.library_layout(target_cfg),
-                                               platform_folders=self.platform_folders(target_cfg), translation=is_translation(name))
+                                               platform_folders=target_folders, translation=is_translation(name))
                 except (OSError, ValueError, RuntimeError, MissingArchiveTool,
                         zipfile.BadZipFile, subprocess.SubprocessError) as exc:
                     # A bad archive belongs to this row, not to every completed
@@ -7197,7 +7575,7 @@ class ROMarr:
                 prefer_hardlinks=bool(self.store.settings.get("prefer_hardlinks", False)),
                 layout=self.library_layout(target_cfg),
                 translation=is_translation(name),
-                platform_folders=self.platform_folders(target_cfg),
+                platform_folders=target_folders,
                 **({"selected_primaries": selected_primaries} if selected_primaries is not None else {}),
                 **({"bundle_routes": bundle_routes} if bundle_routes is not None else {}))
             game_title = (queue_item.game if queue_item and getattr(queue_item, "game", "") else name)
@@ -7257,7 +7635,8 @@ class ROMarr:
                                             queue_item.download_id, err)
             if all_ok:
                 if self.store.settings.get("rescan_after_import", True):
-                    target_lib.rescan(platform.slug)
+                    self._rescan_library(target_lib, target_cfg, platform.slug,
+                                         platform_folders=target_folders)
                 # The absolute destinations this release was imported to.
                 # Cartridge streams them back to the player; external
                 # platforms poll the assets endpoint.
@@ -7352,7 +7731,9 @@ def is_portal_subpath(path: str) -> bool:
 
 
 def make_handler(service: ROMarr):
+    """Build the HTTP request handler class bound to `service`."""
     class Handler(BaseHTTPRequestHandler):
+        """HTTP handler serving the ROMarr UI and REST API endpoints."""
         server_version = "ROMarr"
         _is_portal_subpath = staticmethod(is_portal_subpath)
 
@@ -7703,6 +8084,7 @@ def make_handler(service: ROMarr):
                 return self._json(502, {"error": f"could not reach the source or RomM ({exc.__class__.__name__})"})
 
         def _get(self):
+            """Serve UI HTML pages and JSON API GET endpoints."""
             route = urlparse(self.path)
             query = parse_qs(route.query)
             if route.path in ("/favicon.ico", "/favicon.svg"):
