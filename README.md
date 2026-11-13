@@ -11,6 +11,10 @@ Find games, verify ROMs, and import them into your library.
 
 ![ROMarr interactive search, with scores and reasons beside each result](docs/img/interactive-search-live.png)
 
+Forks and code reuse are welcome; independent projects should use their own branding. [Attribution and branding policy](docs/OFFICIAL-DISTRIBUTION.md#attribution-and-branding).
+
+**Unraid:** install the [official ROMarr listing](https://ca.unraid.net/apps/romarr-04jslct0riva81?q=romarr), using `ghcr.io/blizzhacker/romarr`. **ROMarrNG is a separate fork and is not supported by this project.** [Official builds and support policy](docs/OFFICIAL-DISTRIBUTION.md).
+
 ## What can I use it for?
 
 | I want to… | Start here | What you need |
@@ -94,7 +98,7 @@ The image includes archive tools. **ROM Hub is included on amd64/arm64; it is un
 ## What else is included?
 
 - Wanted lists and scheduled searches, with the reason shown when a release is rejected.
-- Prowlarr, Torznab/Newznab and torrent RSS sources; torrent, Usenet and plugin download clients.
+- Prowlarr, Torznab/Newznab and torrent RSS sources; external or standalone download clients (including built-in NNTP Usenet and companion [Mister Download Manager](https://github.com/anefzaoui/misterdownloadmanager) CLI/Remote BitTorrent—with exact single-file selection on release grabs—& multi-connection HTTP).
 - DAT collection comparison, region/1G1R selection, and staged acquisition from an existing qBittorrent set torrent.
 - Exact duplicate audit, quarantine and restore; a preview comes before any move.
 - Preview-first renaming for DAT-verified single files already in a library, with a saved restore journal.

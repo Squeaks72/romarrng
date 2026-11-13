@@ -75,6 +75,8 @@ FOREIGN_PLATFORM_MARKERS = {
     # GameCube request for Paper Mario accepted the Switch remake's update patch,
     # and a PSP request for Lumines accepted a Vita release.
     "nsw", "psv",
+    # A Switch dump container, so "Super Mario World (NUP)" is not a SNES ROM.
+    "nup",
 }
 
 # Generic brand alias ("nintendo") only exists for resolve("nintendo") -> nes;
@@ -293,6 +295,11 @@ _CREDITED_TO_A_GROUP = re.compile(r"\bby\s+\S")
 _TRANSLATION_PENALTY = 150
 _CREDIT_PENALTY = 80
 _GOOD_DUMP_BONUS = 50
+# A .nup is a decrypted dump in one file: RomM reads it, but Tinfoil and the
+# console cannot install it. 45 beats the 40-point seeder cap, so an otherwise
+# equal .nsp/.xci always wins; `judge` stops it at 1 point, so a lone .nup is
+# still taken when nothing else exists.
+_NUP_PENALTY = 45
 
 # GoodTools "verified good dump": the strongest quality signal a ROM title
 # carries, and worth more than any region preference.
@@ -965,6 +972,9 @@ def judge(release: Release, wanted: str,
         scoring_aliases = [a for a in platform.aliases
                            if a.lower() not in _NON_SCORING_ALIASES]
         has_ext = _has_extension(lowered, platform.extensions)
+        if platform.slug in ("switch", "switch-2") and any(
+                _mentions(lowered, marker) for marker in ("nsp", "xci", "nsz", "xcz")):
+            has_ext = True
         names_plat = _mentions(lowered, platform.slug.lower()) or any(
             _mentions(lowered, alias) for alias in scoring_aliases
         )
@@ -1050,6 +1060,14 @@ def judge(release: Release, wanted: str,
     if profile:
         for delta, text in profile.adjustments(lowered, platform.slug if platform else ""):
             add(delta, text)
+
+    # Last, and never below 1: it ranks a NUP under an equal installable
+    # release, but is not on its own the reason a lone NUP is refused. A title
+    # tagged "(NUP)" without the extension has no +60 for it to come out of.
+    if platform is not None and platform.slug in ("switch", "switch-2") and points > 1 and (
+            _has_extension(lowered, (".nup",)) or _mentions(lowered, "nup")):
+        add(-min(_NUP_PENALTY, points - 1),
+            "NUP container: installable formats are preferred")
 
     return Judgement(points, tuple(reasons))
 
@@ -1246,9 +1264,27 @@ def _digital_set(filenames: list[str]) -> RomSet | None:
     """
     if not filenames:
         return None
-    exes = [f for f in filenames if f.lower().endswith(".exe")]
-    primary = next((f for f in exes if "setup" in f.lower()),
-                   exes[0] if exes else filenames[0])
+    exes = [f for f in filenames if _basename(f).lower().endswith(".exe")]
+    # Game installers outrank redistributables regardless of path depth.
+    # Recognized numbered/architecture-suffixed setup names are candidates too.
+    exact = [f for f in exes if _basename(f).casefold() == "setup.exe"]
+    variants = [f for f in exes if f not in exact and re.search(
+        r"(?<![a-z0-9])setup(?:[0-9]+|x(?:86|64))?(?![a-z0-9])",
+        _stem(f).casefold())]
+    candidates = exact + variants
+
+    def setup_rank(candidate: str) -> tuple[bool, bool, int, str, str]:
+        """Prefer game installers, exact setup names, then shallower paths."""
+        path = candidate.replace("\\", "/")
+        parents = path.split("/")[:-1]
+        redistributable = any(part.casefold() in {
+            "_commonredist", "redist", "redistributables", "vcredist", "directx",
+        } for part in parents)
+        variant = _basename(candidate).casefold() != "setup.exe"
+        return redistributable, variant, len(parents), path.casefold(), path
+
+    primary = (min(candidates, key=setup_rank) if candidates
+               else exes[0] if exes else filenames[0])
     return RomSet(primary, tuple(filenames))
 
 

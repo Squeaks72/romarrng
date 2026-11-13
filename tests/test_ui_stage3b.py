@@ -108,7 +108,7 @@ def test_profiles_page_has_video_standard_and_formats_editor():
 def test_general_media_and_hub_additions():
     gen = _block("RENDER.general=", "\nRENDER.")
     assert 'data-k="romm_public_url"' in gen and "RomM address for links" in gen
-    assert "<b>Unpacking.</b>" in SOURCE and "nested up to two levels" in SOURCE
+    assert "<b>Unpacking.</b>" in SOURCE and "ZIPs nested inside a ZIP" in SOURCE
     assert "hs.isolation==='uid'" in SOURCE and "This host has no Landlock" in SOURCE
 
 

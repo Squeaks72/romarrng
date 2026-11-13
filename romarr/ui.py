@@ -914,6 +914,7 @@ NAV = [
     ]),
     ('Hub', [
         ('hub', 'Plugins', None),
+        ('emulators', 'Emulators', None),
         ('portal', 'Library Shell', None),
         ('peers', 'Friends', None),
         ('ecosystem', 'Ecosystem', None),
@@ -1304,6 +1305,7 @@ function sidebarBindNav(){
 // The arguments are decoded into ROUTE_ARGS for the renderer.
 let ROUTE_ARGS=[], ROUTE_SPEC='', routeEpoch=0;
 let activePage=null, pageVersion=0, metadataLookup=null;
+let exoJobSeq=0;
 // Keep the last successful Identify result only for the current browser page.
 let metadataFilename='Chrono.Trigger.USA.v1.1.smc';
 let metadataCachedFilename='', metadataCachedResult=null;
@@ -1340,7 +1342,7 @@ function go(pageSpec){
     calendar:'Release Calendar',manualimport:'Manual Import',
     collections:'Collections — full sets and 1G1R',
     getstarted:'Get Started',setup:'Setup Guide',
-    hub:'ROM Hub — Plugins',portal:'Library Shell & Device Fleet'};
+    hub:'ROM Hub — Plugins',emulators:'Emulator Hub',portal:'Library Shell & Device Fleet'};
   $('#top h1').textContent=titles[page]||'ROMarr';
   // The Filter box filters the games grid and nothing else.
   $('#search').classList.toggle('hide', page!=='library');
@@ -1386,6 +1388,24 @@ RENDER.hub=async()=>{
         +'data-slug="'+esc(pl.slug)+'">'+(pl.enabled?'Disable':'Enable')+'</button>'
       : '<button class="mini accent" data-act="install" data-slug="'+esc(pl.slug)+'">Install'
         +(pl.key_required?' · key needed':'')+'</button>';
+    const ia=hs.archive_org_auth||{};
+    const authForm=(pl.slug==='archive-org'&&pl.installed)
+      ?'<div style="margin-top:12px"><b>Archive.org login</b>'
+        +'<p class="help">'+(ia.external
+          ?'Managed by external credentials (read-only here).'
+          :ia.configured?'Account credentials saved. Enter both fields to replace them.'
+          :'Optional account for restricted ZIP listings and downloads.')
+        +'</p>'
+        +(ia.error?'<p class="help">'+esc(ia.error)+'</p>':'')
+        +(ia.external?'':'<form id="ia-auth-form" autocomplete="off">'
+          +'<div class="row"><input id="ia-email" type="email" placeholder="Archive.org email" '
+          +'autocomplete="off" required maxlength="320">'
+          +'<input id="ia-password" type="password" placeholder="Password" '
+          +'autocomplete="new-password" required maxlength="4096"></div>'
+          +'<div class="row"><button class="mini accent" type="submit">Save login</button>'
+          +(ia.configured?'<button class="mini" id="ia-auth-clear" type="button">Clear login</button>':'')
+          +'</div></form>')
+        +'</div>' : '';
     return '<div class="pcard'+(pl.installed?' installed':'')+'">'
       +'<h4>'+esc(pl.name)+(pl.author?'<span class="by">by '+esc(pl.author)+'</span>':'')+'</h4>'
       +'<div class="desc">'+esc(pl.description||'No description supplied.')+'</div>'
@@ -1394,7 +1414,8 @@ RENDER.hub=async()=>{
         ?'<a href="'+esc(pl.repository)+'" target="_blank" rel="noopener">Instructions and source</a>':'')
       +(pl.key_required?'<div class="help">Requires an account or key. Check the instructions before installing.</div>':'')
       +'<div class="foot">'+action
-      +(net?'<span class="net">reaches '+esc(net)+'</span>':'')+'</div></div>';
+      +(net?'<span class="net">reaches '+esc(net)+'</span>':'')+'</div>'
+      +authForm+'</div>';
   };
 
   const render=d=>{
@@ -1470,6 +1491,25 @@ RENDER.hub=async()=>{
       +'<a class="btn ghost" href="https://github.com/emmercm/igir/releases/tag/v5.8.0" target="_blank" rel="noopener">Igir v5.8.0 Docs</a>'
       +'</div>'
       +'<div id="igir-msg"></div></div>'
+
+      +'<div class="card"><h3>eXo2romm — eXoDOS to RomM Standalone Repackager</h3>'
+      +'<p class="help">Repackage eXoDOS game <code>.zip</code> archives so each game launches standalone inside RomM. '
+      +'Credits <a href="https://github.com/derkommutator/eXo2romm" target="_blank" rel="noopener">derkommutator/eXo2romm</a> (Unlicense) '
+      +'&mdash; this plugin was inspired to assist with more users having this.</p>'
+      +'<div class="panels" style="margin-top:8px">'
+      +'<div class="field"><label for="exo-in">Input Zip(s) or Folder</label><input id="exo-in" placeholder="/data/eXoDOS/roms or /data/eXoDOS/Abaron (1995).zip"></div>'
+      +'<div class="field"><label for="exo-dos">eXoDOS !dos Template Directory (DOS_DIR)</label><input id="exo-dos" value="/data/eXoDOS/Content/eXo/eXoDOS/!dos"></div>'
+      +'<div class="field"><label for="exo-out">RomM DOS Output Directory (OUTPUT_DIR)</label><input id="exo-out" value="/var/lib/romm/library/roms/dos"></div>'
+      +'<div class="field"><label for="exo-log">Error Log (optional override)</label><input id="exo-log" placeholder="Default: <OUTPUT_DIR>/eXo2romm-errors.log"></div>'
+      +'</div>'
+      +'<label class="check" for="exo-overwrite" style="margin-top:4px"><input type="checkbox" id="exo-overwrite"><span>Overwrite existing output zips (unchecked preserves resume-safe skipping)</span></label>'
+      +'<div class="row" style="margin-top:8px">'
+      +'<button class="btn" id="exo-dry">Preview / Dry-Run (check dosbox.conf)</button>'
+      +'<button class="btn ghost" id="exo-run">Repackage eXoDOS ZIPs</button>'
+      +'<a class="btn ghost" href="https://github.com/derkommutator/eXo2romm" target="_blank" rel="noopener">Upstream: derkommutator/eXo2romm</a>'
+      +'<a class="btn ghost" href="https://github.com/BlizzHacker/rom-hub-exo2romm" target="_blank" rel="noopener">ROM Hub Plugin Repo</a>'
+      +'</div>'
+      +'<div id="exo-msg"></div></div>'
       +'<div class="panels">'
       +'<div class="card"><h3>Add your own</h3>'
       +'<p class="help">Install a plugin straight from its repository — yours, '
@@ -1526,6 +1566,53 @@ RENDER.hub=async()=>{
     };
     if($('#igir-dry')) $('#igir-dry').onclick=()=>runIgirJob(true);
     if($('#igir-run')) $('#igir-run').onclick=()=>runIgirJob(false);
+    const runExoJob=async(dry)=>{
+      const box=$('#exo-msg');
+      if(!box) return;
+      const runVer=typeof pageVersion==='number'?pageVersion:0;
+      const seq=++exoJobSeq;
+      const inputs=($('#exo-in').value||'').split(/[\r\n]+/).map(s=>s.trim()).filter(Boolean);
+      if(!inputs.length){
+        box.innerHTML='<div class="panel-note panel-warn">Enter at least one eXoDOS .zip path or folder above.</div>';
+        return;
+      }
+      box.innerHTML='<div class="panel-note">Running eXo2romm '+(dry?'preview':'repackaging')+'…</div>';
+      const payload={
+        input_paths:inputs,
+        dos_dir:($('#exo-dos').value||'').trim(),
+        output_dir:($('#exo-out').value||'').trim(),
+        error_log:($('#exo-log').value||'').trim(),
+        dry_run:dry,
+        overwrite:Boolean($('#exo-overwrite')&&$('#exo-overwrite').checked)
+      };
+      try{
+        const r=await fetch('/api/v1/hub/exo2romm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        const res=await r.json();
+        if((typeof activePage!=='undefined'&&activePage!=='hub')||(typeof pageVersion==='number'&&pageVersion!==runVer)||seq!==exoJobSeq) return;
+        const targetBox=$('#exo-msg');
+        if(!targetBox) return;
+        const rows=(res.results||[]).slice(0,25).map(item=>
+          '<div style="margin-top:4px;font-size:12px"><code>'+esc(item.status||'')+'</code> '+esc(item.detail||'')
+          +(item.preview_conf?'<pre style="margin:6px 0 0;padding:8px;background:var(--bg);border:1px solid var(--line);overflow:auto">'+esc(item.preview_conf)+'</pre>':'')
+          +'</div>'
+        ).join('');
+        const extra=(res.results||[]).length>25?'<div class="help" style="margin-top:6px">Showing first 25 of '+res.results.length+' archive(s).</div>':'';
+        if(!r.ok||!res.ok){
+          targetBox.innerHTML='<div class="panel-note panel-warn"><b>'+esc(res.error||res.summary||'eXo2romm failed.')+'</b>'+rows+extra+'</div>';
+          return;
+        }
+        targetBox.innerHTML='<div class="panel-note'+(res.clean===false?' panel-warn':'')+'"><b>'+esc(res.summary||'Done')+'</b>'
+          +(res.credit?'<br><span class="help" style="margin:0">'+esc(res.credit)+'</span>':'')
+          +(res.error_log?'<br><span class="help" style="margin:0">Error log: <code>'+esc(res.error_log)+'</code></span>':'')
+          +rows+extra+'</div>';
+      }catch(e){
+        if((typeof activePage!=='undefined'&&activePage!=='hub')||(typeof pageVersion==='number'&&pageVersion!==runVer)||seq!==exoJobSeq) return;
+        const targetBox=$('#exo-msg');
+        if(targetBox) targetBox.innerHTML='<div class="panel-note panel-warn">Could not reach /api/v1/hub/exo2romm</div>';
+      }
+    };
+    if($('#exo-dry')) $('#exo-dry').onclick=()=>runExoJob(true);
+    if($('#exo-run')) $('#exo-run').onclick=()=>runExoJob(false);
     const qi=$('#pq');
     let t=null;
     qi.oninput=()=>{clearTimeout(t);t=setTimeout(async()=>{
@@ -1539,6 +1626,47 @@ RENDER.hub=async()=>{
       cap = cap===c.dataset.cap ? '' : c.dataset.cap; render(await load());});
     p.querySelectorAll('.chip[data-inst]').forEach(c=>c.onclick=async()=>{
       inst = inst===c.dataset.inst ? '' : c.dataset.inst; render(await load());});
+
+    const iaForm=$('#ia-auth-form');
+    const iaClear=$('#ia-auth-clear');
+    const iaBtn=iaForm?iaForm.querySelector('button[type="submit"]'):null;
+    const setIaBusy=busy=>{if(iaBtn)iaBtn.disabled=busy;if(iaClear)iaClear.disabled=busy;};
+    const isCurrentHub=ver=>(typeof activePage==='undefined'||activePage==='hub')&&(typeof pageVersion!=='number'||pageVersion===ver);
+    const submitIaAuth=async(payload,fallbackError,okToast)=>{
+      const opVer=typeof pageVersion==='number'?pageVersion:0;
+      setIaBusy(true);
+      try{
+        try{
+          const response=await fetch('/api/v1/hub/archive-org/auth',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify(payload)});
+          const result=await response.json();
+          if(!isCurrentHub(opVer)) return;
+          actionError=result.ok?'':(result.error||fallbackError);
+          if(result.ok)toast(okToast);
+        }catch(e){
+          if(!isCurrentHub(opVer)) return;
+          actionError=fallbackError;
+        }
+        const nextHs=await j('/api/v1/hub/status').catch(()=>hs);
+        if(!isCurrentHub(opVer)) return;
+        hs=nextHs;
+        const nextData=await load();
+        if(!isCurrentHub(opVer)) return;
+        render(nextData);
+      }finally{
+        if(isCurrentHub(opVer)) setIaBusy(false);
+      }
+    };
+    if(iaForm) iaForm.onsubmit=async e=>{
+      e.preventDefault();
+      const email=$('#ia-email').value.trim(), password=$('#ia-password').value;
+      if(!email||!password)return;
+      await submitIaAuth({email,password},'Could not save Archive.org login','Archive.org credentials saved');
+    };
+    if(iaClear) iaClear.onclick=async()=>{
+      await submitIaAuth({clear:true},'Could not clear Archive.org login','Archive.org credentials cleared');
+    };
 
     p.querySelectorAll('button[data-act]').forEach(b=>b.onclick=async()=>{
       const slug=b.dataset.slug, action=b.dataset.act;
@@ -4442,7 +4570,7 @@ RENDER.media=()=>settingsPage('Media Management',
   'Where imported ROMs are filed. This must be the same path your library server scans.',
   fld('library_path','ROM library root',SETTINGS.library_path)
   +fld('dat_path','DAT directory',SETTINGS.dat_path||'')
-  +`<div class="help" style="margin:-6px 0 14px"><b>Unpacking.</b> ROMarr unpacks finished downloads itself, with no Unpackerr or other tool: zip, 7z, rar and tar archives (including .tar.gz, .tgz, .tar.xz and .tar.bz2), and archives nested up to two levels deep, are opened and only the ROM files are copied into the library, then the work files are removed. An archive is kept as downloaded only on platforms where it <i>is</i> the ROM (arcade, MAME, FBNeo, DOSBox), because those emulators need the zip intact. Compressed disc and cartridge formats such as CHD, RVZ, CSO, NSZ and Z3DS are not archives and are imported as they are.</div>`
+  +`<div class="help" style="margin:-6px 0 14px"><b>Unpacking.</b> ROMarr unpacks finished downloads itself, with no Unpackerr or other tool: zip, 7z, rar and tar archives (including .tar.gz, .tgz, .tar.xz and .tar.bz2), and ZIPs nested inside a ZIP, are opened and only the ROM files are copied into the library, then the work files are removed. An archive is kept as downloaded only on platforms where it <i>is</i> the ROM (arcade, MAME, FBNeo, DOSBox), because those emulators need the zip intact. Compressed disc and cartridge formats such as CHD, RVZ, CSO, NSZ and Z3DS are not archives and are imported as they are.</div>`
   +`<div class="field"><label>Remote path mappings</label>
      <textarea data-k="remote_path_mappings" data-mappings="1" rows="3"
        style="width:100%;resize:vertical;font:12px/1.5 ui-monospace,Menlo,monospace"
@@ -4469,6 +4597,15 @@ RENDER.media=()=>settingsPage('Media Management',
   +chk('retain_downloads_after_import','Keep completed downloads for seeding after import',SETTINGS.retain_downloads_after_import)
   +chk('overwrite_existing','Overwrite an existing file',SETTINGS.overwrite_existing)
   +chk('rescan_after_import','Tell your library server to rescan after an import',SETTINGS.rescan_after_import)
+  +chk('reconcile_after_import','Reconcile Wanted aliases against verified library files after an import',SETTINGS.reconcile_after_import!==false)
+  +chk('scanner_defender_enabled','Scan imports with Microsoft Defender on this Windows host',SETTINGS.scanner_defender_enabled)
+  +chk('scanner_mwm_enabled','Require an antivirus result from MoveWeight Manager',SETTINGS.scanner_mwm_enabled)
+  +fld('scanner_mwm_url','MoveWeight Manager URL',SETTINGS.scanner_mwm_url||'','text',
+       'placeholder="https://mwm.example.com"')
+  +chk('scanner_vt_enabled','Require a known VirusTotal hash report before importing',SETTINGS.scanner_vt_enabled)
+  +`<p class="help">MWM needs ROMARR_MWM_TOKEN on this host and access to the same file paths.
+      VirusTotal needs ROMARR_VIRUSTOTAL_API_KEY. It receives file hashes only.
+      Enabled scanners must finish before a manual or completed download import can proceed.</p>`
   +chk('clamav_enabled','Scan downloads with ClamAV before importing them',SETTINGS.clamav_enabled)
   +fld('clamav_address','ClamAV address',SETTINGS.clamav_address||'','text',
      'placeholder="tcp://clamav:3310 or /run/clamav/clamd.sock"')
@@ -4848,17 +4985,33 @@ RENDER.profiles=async()=>{
 };
 
 RENDER.clients=async()=>{
-  const d=await j('/api/v1/downloadclient');
-  // Reported separately because "not installed" is a legitimate state here,
-  // not a fault: an install that only fetches plain URLs is finished. Without
-  // this line a site plugin needing a click fails with nothing on screen
-  // saying the browser lane was never set up.
-  const br=await j('/api/v1/downloadclient/browser').catch(()=>null);
+  const opVer=pageVersion;
+  const isCurrentClients=()=>activePage==='clients'&&pageVersion===opVer;
+  const [d,br,mdm]=await Promise.all([
+    j('/api/v1/downloadclient'),
+    j('/api/v1/downloadclient/browser').catch(()=>null),
+    j('/api/v1/downloadclient/mdm').catch(()=>null),
+  ]);
+  if(!isCurrentClients()) return;
   const state=c=>!c.configured?'<span class="dot"></span>not configured'
     :c.ok?'<span class="dot up"></span>connected'
     :'<span class="dot down"></span>unreachable';
   const gaps=['torrent','usenet'].filter(p=>
     !d.items.some(c=>c.protocol===p&&c.configured));
+  const mdmNote=mdm?`<div class="panel-note" style="margin:8px 0 12px">
+    <b>Standalone engines (no external *arr client needed):</b>
+    <b>Standalone Usenet (NNTP)</b> runs built-in over TLS/NNTP.
+    <b>Standalone BitTorrent &amp; Multi-Connection HTTP</b> integrate with
+    <a href="https://github.com/anefzaoui/misterdownloadmanager" target="_blank" rel="noopener">Mister Download Manager</a>
+    (<code>anefzaoui/misterdownloadmanager</code>):
+    ${mdm.available
+      ?`<span style="color:var(--ok)">ready (${esc(mdm.version||mdm.cli_path||'installed')}).</span>`
+      :mdm.installable
+        ?`<span style="color:var(--warn)">${esc(mdm.reason)}</span>
+           <div style="margin-top:6px"><button class="btn ghost" id="mdm-install">Install MDM (${esc(mdm.release_tag||'v0.5.2')})</button>
+           <span class="help" id="mdm-install-msg" style="margin-left:8px"></span></div>`
+        :`<span style="color:var(--warn)">${esc(mdm.reason)}</span>`}
+  </div>`:'';
   $('#page').innerHTML=`<div class="card">
     <div class="row" style="margin-bottom:12px">
       <h3 style="margin:0">Download Clients</h3>
@@ -4870,6 +5023,7 @@ RENDER.clients=async()=>{
     ${gaps.length?`<p class="help" style="color:var(--warn)">
       No client configured for: <b>${gaps.join(', ')}</b>.
       Those results will be found and then refused.</p>`:''}
+    ${mdmNote}
     ${br?`<p class="help">ROM sites are fetched over plain HTTP by the
       <b>Direct HTTP</b> client. A handful put the file behind a form the
       site's own page submits &mdash; those need the <b>Headless Browser</b>
@@ -4894,6 +5048,32 @@ RENDER.clients=async()=>{
     :'<div class="empty">No download clients yet. Add one to start grabbing.</div>'}
   </div>`;
   $('#c-add').onclick=()=>addItem('downloadclient');
+  const installBtn=$('#mdm-install');
+  if(installBtn){
+    let mdmBusy=false;
+    installBtn.onclick=async()=>{
+      if(mdmBusy) return;
+      mdmBusy=true;
+      installBtn.disabled=true;
+      const msg=$('#mdm-install-msg');
+      if(msg) msg.textContent='Downloading and verifying SHA-256…';
+      try{
+        const res=await j('/api/v1/downloadclient/mdm/install',{
+          method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+        if(!isCurrentClients()) return;
+        if(res.ok){
+          toast('Installed '+ (res.version||'MDM'));
+          RENDER.clients();
+          return;
+        }
+        if(msg) msg.textContent=res.error||'Install failed';
+      }catch(e){
+        if(isCurrentClients()&&msg) msg.textContent=e.message||'Install failed';
+      }
+      mdmBusy=false;
+      if(isCurrentClients()) installBtn.disabled=false;
+    };
+  }
   document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=async()=>{
     const row=d.items[Number(b.dataset.edit)];
     // The table is a status view; the editor needs the stored configuration.
@@ -5000,14 +5180,35 @@ RENDER.indexers=async()=>{
     editItem('indexer', d.items[Number(b.dataset.iedit)]));
 };
 
-RENDER.general=()=>settingsPage('General',
-  'Connections to the rest of the stack. Download-client and indexer credentials '
-  +'live in the environment file; the OIDC client secret below is the one '
-  +'secret this page stores, write-only — it is never read back.',
+RENDER.general=async()=>{
+  const opVer=pageVersion;
+  $('#page').innerHTML='<div class="empty">Loading settings…</div>';
+  let fresh;
+  try {
+    const response=await fetch('/api/v1/config');
+    if(!response.ok) throw new Error('Settings request failed');
+    fresh=await response.json();
+  } catch (_) {
+    if(activePage==='general'&&pageVersion===opVer)
+      $('#page').innerHTML='<div class="empty">Could not load settings. Reopen General to retry.</div>';
+    return;
+  }
+  // A slow response must not overwrite a later page's content or form state.
+  if(activePage!=='general'||pageVersion!==opVer) return;
+  SETTINGS=fresh;
+  settingsPage('General',
+  'Connections to the rest of the stack. Edit download clients and indexers '
+  +'on their dedicated Settings pages. The OIDC client secret below is '
+  +'write-only — it is never read back.',
   `<div class="field"><label>Prowlarr</label>
      <input type="text" value="${esc(SETTINGS._prowlarr_url||'')}" disabled></div>
    <div class="field"><label>qBittorrent</label>
-     <input type="text" value="${esc(SETTINGS._qbit_url||'')}" disabled></div>
+     ${Array.isArray(SETTINGS._qbit_urls)&&SETTINGS._qbit_urls.length
+       ? SETTINGS._qbit_urls.map((url,i)=>
+           `<input type="text" aria-label="qBittorrent address ${i+1}"
+              value="${esc(url)}" disabled>`).join('')
+       : '<input type="text" value="" placeholder="No enabled qBittorrent client" disabled>'}
+     <div class="help">Manage connections in <a href="#clients">Download Clients</a>.</div></div>
    <div class="field"><label>RomM</label>
      <input type="text" value="${esc(SETTINGS._romm_url||'')}" disabled></div>
    <div class="field"><label>RomM address for links</label>
@@ -5125,6 +5326,7 @@ RENDER.general=()=>settingsPage('General',
       $('#g-totpout').style.display='none';
     };
   });
+};
 
 /* ---------------- system ---------------- */
 RENDER.status=async()=>{
@@ -5564,6 +5766,142 @@ RENDER.connections=async()=>{
       ? res.map(x=>x.name+': '+(x.ok?'delivered':'failed')).join(' · ')
       : 'No connections configured.';
   };
+};
+
+RENDER.emulators=async()=>{
+  const version=pageVersion;
+  const current=()=>version===pageVersion && activePage==='emulators';
+  let offset=0, query='', mode='projects', request=0, inspection=0;
+  $('#page').innerHTML=`<div class="card"><h3>Emulator Hub</h3>
+    <p>Find an emulator, check its setup guide, then add your games. Install buttons install on the
+    <b>ROMarr host</b>. Use the upstream downloads on a different gaming device.</p>
+    <p class="help">Free and noncommercial projects are included. Each project keeps its own terms.
+    Experimental projects and forks can have limited compatibility. A catalog entry is not a gameplay test.</p>
+    <div class="row"><select id="emu-mode" aria-label="Catalog"><option value="projects">Emulators and tools</option>
+    <option value="cores">RetroArch cores</option><option value="resources">Sources and references</option></select>
+    <input id="emu-search" type="search" placeholder="Search name, system, license or source" aria-label="Search emulators">
+    <button class="btn" id="emu-find">Search</button></div>
+    <p><a href="https://emulation.gametechwiki.com/index.php/Main_Page" target="_blank" rel="noopener">Emulation General Wiki</a>
+    · <a href="https://docs.libretro.com/" target="_blank" rel="noopener">RetroArch setup and core guides</a>
+    · <a href="#hub">ROM Hub plugins for Minerva, Internet Archive and other sources</a></p>
+    <div id="emu-count" role="status"></div><div class="row"><button class="btn ghost" id="emu-prev">Previous</button>
+    <button class="btn ghost" id="emu-next">Next</button><button class="btn ghost" id="core-config">Prepare RetroArch folders</button></div>
+    <pre id="core-config-result" role="status"></pre></div>
+    <div id="emu-cards" class="pgrid"></div>
+    <div class="card"><h3>Inspect a file with your security lab</h3>
+      <p class="help">Enter a file path visible to ROMarr and MWM. Arkana copies the selected
+      file to your configured analysis lab. Follow its job in MWM.</p>
+      <div class="row"><input id="lab-path" placeholder="Full path to the file">
+      <button class="btn ghost" data-inspect="mwm">Inspect with MWM</button>
+      <button class="btn ghost" data-inspect="arkana">Send to Arkana</button></div>
+      <pre id="lab-result" role="status"></pre></div>`;
+  const load=async()=>{
+    const serial=++request;
+    $('#emu-count').textContent='Loading catalog…';
+    try{
+      const d=await j('/api/v1/emulators'+(mode==='cores'?'/cores':mode==='resources'?'/resources':'')+'?q='+encodeURIComponent(query)+'&offset='+offset);
+      if(!current()||serial!==request)return;
+      if(d.error)throw new Error(d.error);
+      $('#emu-count').textContent=d.total+' matches · '+d.available+' catalog entries · showing '+(d.total?offset+1:0)+'–'+Math.min(offset+d.items.length,d.total)+' · snapshot '+d.verified_date;
+      $('#emu-prev').disabled=offset===0;$('#emu-next').disabled=offset+d.items.length>=d.total;
+      $('#emu-cards').innerHTML=d.items.map(item=>mode==='resources'?`<div class="card">
+        <h3>${esc(item.name)}</h3><p class="help">${esc(item.category)}</p><p>${esc(item.description||'')}</p>
+        <div class="row">${item.url?'<a class="btn ghost" href="'+esc(item.url)+'" target="_blank" rel="noopener">Open resource</a>':'<span class="help">Link not verified yet.</span>'}
+        ${item.category==='source'?'<a class="btn ghost" href="#hub">Find ROM Hub plugins</a>':''}</div>
+        <p class="help">External resource. Availability, access and terms are set by its operator.</p></div>`:mode==='cores'?`<div class="card">
+        <h3>${esc(item.name)}</h3><p>${esc(item.systems)}</p><p class="help">${esc(item.description)}</p>
+        <p>${esc(item.license)} · ${item.installed?'Installed':'Not installed'}</p>
+        <p class="help">${item.firmware.length+' firmware entries. Required files are checked before setup; game compatibility still depends on the core.'}</p>
+        <div class="row"><button class="btn" data-core="${esc(item.id)}">Install host core</button>
+        <button class="btn ghost" data-ready="${esc(item.id)}">Check firmware</button>
+        <a class="btn ghost" href="${esc(item.source)}" target="_blank" rel="noopener">Core details</a></div>
+        <pre data-assets="${esc(item.id)}" role="status"></pre></div>`:`<div class="card">
+        <h3>${esc(item.name)}</h3><p>${esc(item.systems)}</p><p class="help">${esc(item.description||'')}</p>
+        <p class="help">${esc(item.license||'See upstream terms')} · ${esc(item.provider||'website')}${item.fork?' · fork':''}</p>
+        <p class="help">${item.installed.length?'Installed '+esc(item.installed.join(', ')):'Open the setup guide or check a host release.'}</p>
+        <div class="row"><a class="btn ghost" href="${esc(item.website)}" target="_blank" rel="noopener">Source / downloads</a>
+        <a class="btn ghost" href="${esc(item.guide)}" target="_blank" rel="noopener">Setup guide</a>
+        ${item.managed_releases?`<button class="btn" data-release="${esc(item.id)}">Check release</button><button class="btn ghost" data-forks="${esc(item.id)}">Browse forks</button>`:''}</div>
+        ${item.flatpak?'<p><a href="'+esc(item.flatpak)+'" target="_blank" rel="noopener">Flatpak for Linux / SteamOS</a></p>':''}
+        <div data-assets="${esc(item.id)}" role="status"></div><div data-fork-list="${esc(item.id)}"></div></div>`).join('');
+      document.querySelectorAll('[data-release]').forEach(button=>button.onclick=async()=>{
+        button.disabled=true;
+        const id=button.dataset.release, output=document.querySelector('[data-assets="'+id+'"]');
+        output.textContent='Checking the project release…';
+        try{
+          const release=await j('/api/v1/emulators/release?id='+encodeURIComponent(id));
+          if(!current()||serial!==request)return;
+          if(release.error)throw new Error(release.error);
+          const assets=(release.assets||[]).filter(a=>a.installable);
+          output.innerHTML='<p>'+esc((release.tag||'')+(release.note?' · '+release.note:''))+'</p>'
+            +(assets.length?assets.map((a,i)=>'<p><button class="mini" data-install="'+i+'">Install '+esc(a.name)+'</button> · '+Math.ceil(a.bytes/1048576)+' MB</p>').join('')
+              :'<p class="help">No publisher-SHA-256 portable build matches this host. Open Source / downloads for other packages.</p>');
+          output.querySelectorAll('[data-install]').forEach(install=>install.onclick=async()=>{
+            const a=assets[Number(install.dataset.install)];
+            install.disabled=true;
+            const status=document.createElement('p');status.role='status';status.textContent='Downloading, verifying and scanning…';output.append(status);
+            try{
+              const result=await j('/api/v1/emulators/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,asset:a.name,sha256:a.sha256})});
+              if(!current()||serial!==request)return;
+              if(result.error)throw new Error(result.error);
+              status.textContent='Installed in '+result.path+'. Open the setup guide and add your game folders.';
+            }catch(error){if(current()&&serial===request)status.textContent=error.message;}
+            finally{if(current())install.disabled=false;}
+          });
+        }catch(error){if(current()&&serial===request)output.textContent=error.message;}
+        finally{if(current())button.disabled=false;}
+      });
+      document.querySelectorAll('[data-forks]').forEach(button=>{
+        let next=1;
+        button.onclick=async()=>{
+          button.disabled=true;
+          const output=document.querySelector('[data-fork-list="'+button.dataset.forks+'"]');
+          try{
+            const result=await j('/api/v1/emulators/forks?id='+encodeURIComponent(button.dataset.forks)+'&page='+next);
+            if(!current()||serial!==request)return;
+            if(result.error)throw new Error(result.error);
+            output.insertAdjacentHTML('beforeend','<p>'+result.items.map(x=>'<a href="'+esc(x.website)+'" target="_blank" rel="noopener">'+esc(x.repo)+'</a>').join('<br>')+'</p>');
+            next++;button.textContent=result.has_next?'More forks':'All returned forks shown';
+            button.disabled=!result.has_next;
+          }catch(error){if(current()&&serial===request){output.textContent=error.message;button.disabled=false;}}
+          if(current()&&button.textContent==='More forks')button.disabled=false;
+        };
+      });
+      document.querySelectorAll('[data-core],[data-ready]').forEach(button=>button.onclick=async()=>{
+        button.disabled=true;
+        const id=button.dataset.core||button.dataset.ready, output=document.querySelector('[data-assets="'+id+'"]');
+        output.textContent=button.dataset.core?'Downloading and checking the official buildbot core…':'Checking firmware files…';
+        try{
+          const result=await j('/api/v1/emulators/cores/'+(button.dataset.core?'install':'readiness')+(button.dataset.core?'':'?id='+encodeURIComponent(id)),
+            button.dataset.core?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})}:undefined);
+          if(!current()||serial!==request)return;
+          output.textContent=JSON.stringify(result,null,2);
+        }catch(error){if(current()&&serial===request)output.textContent=error.message;}
+        finally{if(current())button.disabled=false;}
+      });
+    }catch(error){if(current()&&serial===request)$('#emu-count').textContent=error.message;}
+  };
+  const search=()=>{query=$('#emu-search').value;offset=0;load();};
+  $('#emu-find').onclick=search;
+  $('#emu-search').onkeydown=e=>{if(e.key==='Enter')search();};
+  $('#emu-mode').onchange=()=>{mode=$('#emu-mode').value;search();};
+  $('#emu-prev').onclick=()=>{offset=Math.max(0,offset-60);load();};
+  $('#emu-next').onclick=()=>{offset+=60;load();};
+  $('#core-config').onclick=async()=>{
+    const result=await j('/api/v1/emulators/cores/configure',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    if(current())$('#core-config-result').textContent=JSON.stringify(result,null,2);
+  };
+  document.querySelectorAll('[data-inspect]').forEach(button=>button.onclick=async()=>{
+    const inspectVersion=++inspection;
+    button.disabled=true;
+    const output=$('#lab-result');output.textContent='Contacting your lab…';
+    try{
+      const result=await j('/api/v1/security/inspect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:$('#lab-path').value,engine:button.dataset.inspect})});
+      if(current()&&inspectVersion===inspection)output.textContent=JSON.stringify(result,null,2);
+    }catch(error){if(current()&&inspectVersion===inspection)output.textContent=error.message;}
+    finally{if(current())button.disabled=false;}
+  });
+  await load();
 };
 
 // --- Metadata --------------------------------------------------------------
@@ -6369,6 +6707,14 @@ RENDER.manualimport=async()=>{
       ? '<span class="pill" style="background:var(--bad);color:#2a0b0b">bad dump</span>'
       : '<span class="pill" title="Not in your DAT. Often perfectly fine.">unknown</span>';
 
+  // The bytes' opinion when it contradicts the platform. A warning, never a
+  // refusal: shown on the scan row and again on the import result, because
+  // the operator may have picked the other platform after the scan.
+  const headerPill=x=>x.header_says
+    ? '<br><span class="pill" style="background:var(--warn);color:#2a1c05" title="'
+      +esc(x.header_detail||'')+'">header says '+esc(x.header_says)+'</span>'
+    : '';
+
   async function adopt(row, force){
     const btn=row.querySelector('.mi-go');
     const st=row.querySelector('.mi-st');
@@ -6381,9 +6727,9 @@ RENDER.manualimport=async()=>{
 
     if(d.ok){
       const one=d.imported[0]||{};
-      st.innerHTML=one.forced
+      st.innerHTML=(one.forced
         ? '<span style="color:var(--warn)">imported (forced)</span>'
-        : '<span style="color:var(--ok)">imported</span>';
+        : '<span style="color:var(--ok)">imported</span>')+headerPill(d);
       btn.remove();
       row.querySelector('.mi-pf').disabled=true;
       return;
@@ -6422,7 +6768,7 @@ RENDER.manualimport=async()=>{
            +'<td>'+esc(x.filename)+'</td>'
            +'<td><select class="mi-pf">'+opts(x.platform)+'</select></td>'
            +'<td class="help" style="margin:0">'+esc(x.reason)+'</td>'
-           +'<td>'+(x.hollow?'<span class="pill" style="background:var(--bad);color:#2a0b0b" title="'+esc(x.hollow)+'">EMPTY FILE</span><br>':'')+verdict(x.verdict)+(x.header_says?'<br><span class="pill" style="background:var(--warn);color:#2a1c05" title="'+esc(x.header_detail||'')+'">header says '+esc(x.header_says)+'</span>':'')+'</td>'
+           +'<td>'+(x.hollow?'<span class="pill" style="background:var(--bad);color:#2a0b0b" title="'+esc(x.hollow)+'">EMPTY FILE</span><br>':'')+verdict(x.verdict)+headerPill(x)+'</td>'
            +'<td><button class="btn mi-go">Import</button></td>'
            +'<td class="mi-st help" style="margin:0"></td></tr>').join('')
          +'</tbody></table>'

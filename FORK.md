@@ -30,7 +30,7 @@ Ported from the original romarrng onto upstream (Nov 2026):
   `/api/v1/soundtracks/*` API, and the Soundtracks page and game-page card
 - Switch Updates & DLC report: gap map and badge, ignore-DLC setting, update and DLC
   files attached into the game folder, TitleDB loaded on first use
-- Unpacking for tar-family archives and for archives nested up to two levels deep
+- Unpacking for tar-family archives (nested archives now use upstream's nested-ZIP support)
 - Monitoring and wishlist store; lookup, add, monitor and game-detail endpoints; IGDB
   catalogue search
 - UI: Add New merged with Interactive Search, the game page, a search palette (Ctrl K),
