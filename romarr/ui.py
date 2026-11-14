@@ -1321,6 +1321,7 @@ function go(pageSpec){
   if(!Object.prototype.hasOwnProperty.call(RENDER,page)){ page='library'; pageSpec='library'; ROUTE_ARGS=[]; }
   ROUTE_SPEC=pageSpec;
   if(typeof RENDER!=='undefined'&&RENDER._queueTimer){clearInterval(RENDER._queueTimer);RENDER._queueTimer=null;}
+  if(RENDER._libraryTimer){clearTimeout(RENDER._libraryTimer);RENDER._libraryTimer=null;}
   activePage=page;
   ++pageVersion;
   metadataLookup?.abort();
@@ -1811,9 +1812,37 @@ const SOURCE_LABEL={
   flashpoint:'Flashpoint (streams)',
   cloud:'Catalogued, source unknown'};
 const num=n=>(n===null||n===undefined)?'—':Number(n).toLocaleString();
-let libraryRequest=0;
-RENDER.library=async(renderEpoch=routeEpoch)=>{
-  const request=++libraryRequest;
+/** Explain an in-progress library read without treating a partial shelf as empty. */
+function libraryScanHelp(d){
+  const scan=d.scan||{};
+  if(!d.loading&&!d.partial&&!scan.running&&scan.stage!=='error')return '';
+  const running=scan.running===true;
+  const stage=scan.stage==='error'?'Library scan needs attention'
+    :d.partial&&!running?'Library scan incomplete'
+    :({counting:'Preparing the library scan',reading:'Reading the library',
+       complete:'Library scan complete'}[scan.stage]||'Library scan status');
+  const fallback=running?'ROMarr is reading the configured library. Loaded games remain available while the scan runs.'
+    :d.partial?'The scan did not load the complete library. Review its status or error before retrying.'
+    :'Waiting for the library status.';
+  const read=Number.isFinite(Number(scan.read))?Math.max(0,Number(scan.read)):null;
+  const elapsed=Number.isFinite(Number(scan.elapsed_seconds))?Math.max(0,Number(scan.elapsed_seconds)):null;
+  const progress=[read===null?'':num(read)+' games read',elapsed===null?'':num(elapsed)+' s elapsed'].filter(Boolean).join(' · ');
+  return `<div class="panel-note" role="status"><b>${esc(stage)}</b>
+    ${scan.library?`<span> · ${esc(scan.library)}</span>`:''}
+    <p>${esc(d.scan_message||d.message||fallback)}</p>
+    ${progress?`<p class="help">${esc(progress)}</p>`:''}
+    <p class="help">Large folders and network shares can take time. This view may contain only the games read so far.
+    For mounts, permissions and scan errors, see the
+    <a href="https://github.com/BlizzHacker/romarr/blob/main/docs/NAS-LIBRARIES.md" target="_blank" rel="noopener">NAS library guide</a>.</p></div>`;
+}
+
+RENDER.library=async()=>{
+  const version=typeof pageVersion==='number'?pageVersion:null;
+  const request=(RENDER._libraryRequest||0)+1;
+  RENDER._libraryRequest=request;
+  if(RENDER._libraryTimer){clearTimeout(RENDER._libraryTimer);RENDER._libraryTimer=null;}
+  const current=()=>request===RENDER._libraryRequest
+    &&(version===null||(pageVersion===version&&activePage==='library'));
   const p=$('#page');
   if(!p.querySelector('#lib-grid')) p.innerHTML='<div class="empty">Loading library…</div>';
   const q=($('#search').value||'').trim();
@@ -1826,18 +1855,22 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
     +`&source=${encodeURIComponent(LIB.source)}`
     +`&sort=${encodeURIComponent(LIB.sort)}`)
     .catch(()=>({items:[],error:'unreachable'}));
-  // A newer render (another filter, another page) has taken over.
-  if(renderEpoch!==routeEpoch||request!==libraryRequest) return;
+  if(!current())return;
+  if((d.scan&&d.scan.running)||(d.loading&&!d.error&&!(d.scan&&d.scan.stage==='error'))){
+    RENDER._libraryTimer=setTimeout(()=>{
+      RENDER._libraryTimer=null;
+      if(current())return RENDER.library();
+    },5000);
+  }
 
   if(d.loading){
-    // The first fetch has not landed yet. Say so, rather than showing an
-    // empty grid that reads as "your library is empty".
-    p.innerHTML=`<div class="card"><h3>Reading the library</h3>
-      <p class="help">${esc(d.message||'Fetching from RomM…')}
-      ${d.error?` Last attempt: <b>${esc(d.error)}</b>. Retrying with backoff.`:''}</p></div>`;
+    // A partial network-library read is progress, not an empty collection.
+    p.innerHTML=libraryScanHelp(d)
+      +(d.error?'<p class="help" style="color:var(--warn)">Last attempt: '+esc(d.error)+'</p>':'');
     return;
   }
 
+  const scanRunning=!!(d.scan&&d.scan.running);
   const items=d.items||[];
   const T=d.totals||{};
   // Every platform the library server holds, from the first second --
@@ -1872,9 +1905,9 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
   // would have to be fetched or streamed before anybody could play it.
   const srcRows=(f.sources||[]).filter(x=>x.value!=='local');
   const readNote=T.counted_from==='cached rows'
-    ?`Counted from the ${num(d.cached_total)} rows read so far — this library server does not report the split itself${d.partial?', and the read is still running':''}.`
+    ?`Counted from the ${num(d.cached_total)} rows read so far — this library server does not report the split itself${scanRunning?', and the read is still running':d.partial?', with an incomplete scan':''}.`
     :((T.total!==null&&T.total!==undefined&&d.cached_total<T.total)
-      ?`${num(d.cached_total)} of those are loaded and browsable here${d.partial?' — still reading':''}.`:'');
+      ?`${num(d.cached_total)} of those are loaded and browsable here${scanRunning?' — still reading':d.partial?' — scan incomplete':''}.`:'');
   const banner=`<div class="libstats">
       <div><b>${num(T.on_disk)}</b><span>On disk here</span></div>
       <div><b>${num(T.catalogued)}</b><span>Catalogued, streams</span></div>
@@ -1886,7 +1919,7 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
         Source is read from the filename each indexer writes, so anything ROMarr cannot place
         stays “source unknown” rather than being filed under a guess.</p></details>`:''}
     </div>`;
-  const head=banner+`<div class="lfrow">
+  const head=libraryScanHelp(d)+banner+`<div class="lfrow">
       ${pickerHtml('lib-plat',platItems,LIB.platform,'Platform')}
       ${sel('genre','Any genre',f.genres)}
       ${sel('region','Any region',f.regions)}
@@ -1911,7 +1944,7 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
       Showing ${d.total?LIB.offset+1:0}–${Math.min(LIB.offset+items.length,d.total)}
       of ${d.total}${LIB.platform?` on ${esc(LIB.platform)}`:''}${q?` matching “${esc(q)}”`:''}
       · ${d.grand_total} cached across ${(d.platforms||[]).length} platforms
-      ${d.partial?' · <b>still loading from the library server…</b>':''}
+      ${scanRunning?' · <b>still loading from the library server…</b>':d.partial?' · <b>scan incomplete — see the scan status above</b>':''}
       ${d.error?` · <span style="color:var(--warn)">last refresh: ${esc(d.error)}</span>`:''}</p>`;
 
   if(!items.length){
@@ -1924,7 +1957,7 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
   // Cache-only on the server, so this never waits on a Switch scan.
   const gapMap=await j('/api/v1/switch/gaps').catch(()=>({ready:false,games:{}}));
   const meta=await j('/api/v1/game/meta').catch(()=>({items:[]}));
-  if(renderEpoch!==routeEpoch||request!==libraryRequest) return;
+  if(!current()) return;
   const shelf={};
   (meta.items||[]).forEach(x=>{
     shelf[`${x.platform}/${(x.game||'').toLowerCase()}`]=x; });
@@ -2024,7 +2057,7 @@ function shelfEditor(g, meta){
 async function renderReleases(out,game,platform){
   const mb=n=>n>=1048576?(n/1048576).toFixed(1)+' MB'
     :n>0?(n/1024).toFixed(0)+' KB':'—';
-  out.innerHTML='<div class="empty">Searching every indexer…</div>';
+  out.innerHTML='<div class="empty">Searching enabled sources…</div>';
   const d=await j(`/api/v1/release?game=${encodeURIComponent(game)}`
     +`&platform=${encodeURIComponent(platform||'')}`).catch(()=>({error:'Search failed'}));
   if(d.error){
@@ -2032,9 +2065,16 @@ async function renderReleases(out,game,platform){
     return;
   }
   if(!d.items.length){
-    out.innerHTML='<div class="empty">Nothing found. A search where '
-      +'every indexer fails looks exactly like one that found nothing &mdash; '
-      +'check Indexers if this is unexpected.</div>';
+    out.innerHTML='<div class="panel-note"><b>No releases returned.</b>'
+      +'<p>No download was started. Check the search source first:</p>'
+      +'<ol><li>Open <a href="#indexers">Indexers</a>, enable your source and use its <b>Test</b> button. '
+      +'For Prowlarr, check the indexer there too.</li>'
+      +'<li>Try the title on the source itself, then try a shorter title and the correct platform here. '
+      +'Check the source’s game categories and API access. A working connection does not guarantee that game is listed.</li>'
+      +'<li>For Usenet, add a <b>Newznab indexer</b> as well as your provider and download client. '
+      +'A provider login alone does not supply search results.</li></ol>'
+      +'<p>You can also browse <a href="#hub">ROM Hub sources</a> or <a href="#manualimport">import existing files</a>. '
+      +'After you grab a result, download or import failures appear in <a href="#queue">Queue</a> and <a href="#history">History</a>.</p></div>';
     return;
   }
   out.innerHTML=`
@@ -5146,14 +5186,23 @@ RENDER.libraries=async()=>{
 };
 
 RENDER.indexers=async()=>{
+  const version=typeof pageVersion==='number'?pageVersion:null;
   const d=await j('/api/v1/indexer');
+  if(version!==null&&(version!==pageVersion||activePage!=='indexers'))return;
   $('#page').innerHTML=`<div class="card">
     <div class="row" style="margin-bottom:12px">
       <h3 style="margin:0">Indexers</h3>
       <button class="btn" id="i-add" style="margin-left:auto">Add</button>
     </div>
-    <p class="help">Add a Newznab or Torznab indexer directly, or point at
-      Prowlarr and use everything it already has configured.</p>
+    <p class="help">Use <b>Newznab for Usenet</b> or <b>Torznab for torrents</b>, or connect
+      Prowlarr to use the indexers configured there. Prowlarr manages your sources; it does not provide their content.</p>
+    <details class="help"><summary>Usenet setup: provider, indexer and client</summary>
+      <p>Your <b>Usenet provider</b> supplies an NNTP server and login. A <b>Newznab indexer</b>
+      searches release listings and returns NZBs; its URL and API key belong here.
+      A <a href="#clients">download client</a> uses the provider to fetch those NZBs.</p>
+      <p>You can use Usenet without a torrent indexer. Game coverage varies between sources:
+      test the indexer and try a title it actually lists. A successful Test checks connectivity, not game availability.
+      For other supported search sources, browse <a href="#hub">ROM Hub plugins</a>.</p></details>
     ${d.items.length?`<table><thead><tr><th>Name</th><th>Type</th><th>URL</th>
       <th>Enabled</th><th></th></tr></thead><tbody>
       ${d.items.map((it,i)=>`<tr><td>${esc(it.name||'—')}</td>
@@ -6198,7 +6247,10 @@ async function requestGame(g){
 // The optional guide uses the same editors and connection checks as Settings.
 const SETUP={step:0,mode:'organize',initialized:false};
 RENDER.setup=async()=>{
+  const version=typeof pageVersion==='number'?pageVersion:null;
+  const current=()=>version===null||(version===pageVersion&&activePage==='setup');
   const state=await j('/api/v1/setup/status').catch(()=>null);
+  if(!current())return;
   if(!state||state.error){
     $('#page').innerHTML='<div class="card"><h3>Setup Guide</h3><p class="help">We could not read your setup. Refresh this page to try again.</p></div>';
     return;
@@ -6223,14 +6275,22 @@ RENDER.setup=async()=>{
       +'<p class="help">Choose the path ROMarr can see, such as <code>/roms</code>. If you use Docker, mount your ROM folder into the container first. Use <b>Test</b> in the form to check the path before saving.</p>'
       +'<p class="help">You can preview files in <a href="#manualimport">Manual Import</a> before copying them into your library. Review the platform and destination first. DAT-verified single files can use the canonical name; multi-file disc sets keep their referenced filenames.</p>';
   }else if(active===2){
-    content='<h3>Choose what downloads your files</h3><p class="help">Use qBittorrent for torrents, or SABnzbd/NZBGet for Usenet. ROMarr hands your chosen release to that app, then imports it when the download finishes.</p>'
-      +added(state.download_clients)+action('setup-client','Add a download client')
-      +'<p class="help">Enter the address ROMarr can reach. In separate Docker containers, <code>localhost</code> points back to ROMarr; use your download client’s container name or server address. Press <b>Test</b> before saving.</p>'
-      +'<p class="help">Your finished-download folder must also be readable by ROMarr. Different paths on the two apps can be connected later under <a href="#media">Media Management → Remote path mappings</a>.</p>';
+    content='<h3>Choose what downloads your files</h3><p class="help">Download on the ROMarr host, or connect an app you already run. Choose the protocol your source provides.</p>'
+      +added(state.download_clients)+'<div class="row">'
+      +action('setup-usenet','Built-in Usenet')+action('setup-torrent','Standalone torrents')
+      +action('setup-direct','Direct HTTP')+action('setup-hub-client','ROM Hub')
+      +action('setup-client','Connect an existing client')+'</div>'
+      +'<p class="help"><b>Usenet:</b> enter your provider’s NNTP server and login in Built-in Usenet. If you use SABnzbd or NZBGet, configure the provider in that app, then connect it here. Add your Newznab search source in the next step.</p>'
+      +'<p class="help"><b>Standalone torrents and Direct HTTP</b> use MDM. Install that engine from <a href="#clients">Download Clients</a> first if needed. The ROM Hub client works with supported plugins from <a href="#hub">Plugins</a>.</p>'
+      +'<p class="help">Press <b>Test</b> before saving. For an external client, enter the address ROMarr can reach; <code>localhost</code> in a separate Docker container points back to ROMarr.</p>'
+      +'<p class="help">Choose a writable finished-download folder visible to ROMarr. External clients with different paths can use <a href="#media">Media Management → Remote path mappings</a>.</p>';
   }else if(active===3){
-    content='<h3>Where should ROMarr search?</h3><p class="help">An indexer lists available releases. Connect an existing Prowlarr instance, or add a Torznab/Newznab source directly. A download client alone does not provide search results.</p>'
-      +added(state.indexers)+'<div class="row">'+action('setup-prowlarr','Connect Prowlarr')+action('setup-indexer','Add another indexer')+'</div>'
-      +'<p class="help">Use the source’s address and API key, then press <b>Test</b>. ROM Hub plugins are another optional way to add supported sources; you can explore those next.</p>';
+    content='<h3>Where should ROMarr search?</h3><p class="help">For Usenet, a <b>Newznab indexer</b> finds NZB release listings. Your provider supplies the files, and your download client retrieves them. A provider login alone does not add search results.</p>'
+      +added(state.indexers)+'<div class="row">'+action('setup-newznab','Add a Usenet indexer')
+      +action('setup-prowlarr','Connect Prowlarr')+action('setup-indexer','Other indexers')+'</div>'
+      +'<p class="help">Use the indexer’s URL and API key, then press <b>Test</b>. Prowlarr is optional if you want to manage several indexers. Torrent sources use Torznab; you can use Usenet without a torrent indexer.</p>'
+      +'<p class="help">Game coverage varies. In <a href="#search">Interactive Search</a>, try one title your source lists before adding a large Wanted list. No results and a failed download need different checks.</p>'
+      +'<p class="help"><a href="#hub">ROM Hub plugins</a> offer other supported sources, including direct downloads. Configure a ROM Hub client and an enabled searchable plugin. Availability and access requirements depend on the source.</p>';
   }else if(active===4){
     content='<h3>Add confidence and more sources</h3><p class="help">Both of these are optional. You can start with your existing files and return later.</p>'
       +'<h4>Verify with DATs</h4><p class="help">A No-Intro or Redump DAT is a checklist of known file hashes. It lets ROMarr verify a dump and compare your collection with a complete set.</p>'
@@ -6272,10 +6332,15 @@ RENDER.setup=async()=>{
   document.querySelectorAll('[data-setup-mode]').forEach(btn=>btn.onclick=()=>{
     SETUP.mode=btn.dataset.setupMode;RENDER.setup();});
   const bind=(id,fn)=>{const button=$('#'+id);if(button)button.onclick=fn;};
-  const saved=()=>RENDER.setup();
+  const saved=()=>{if(current())RENDER.setup();};
   bind('setup-folder',()=>editItem('library',{type:'folder',name:'My ROMs',path:state.library_path,is_default:true},saved));
   bind('setup-library',()=>addItem('library',saved));
   bind('setup-client',()=>addItem('downloadclient',saved));
+  bind('setup-usenet',()=>editItem('downloadclient',{type:'builtin_nzb'},saved));
+  bind('setup-torrent',()=>editItem('downloadclient',{type:'mdm_torrent'},saved));
+  bind('setup-direct',()=>editItem('downloadclient',{type:'mdm_http'},saved));
+  bind('setup-hub-client',()=>editItem('downloadclient',{type:'hub'},saved));
+  bind('setup-newznab',()=>editItem('indexer',{type:'newznab'},saved));
   bind('setup-prowlarr',()=>editItem('indexer',{type:'prowlarr'},saved));
   bind('setup-indexer',()=>addItem('indexer',saved));
   bind('setup-dats',async()=>{
@@ -6360,8 +6425,8 @@ RENDER.getstarted=async()=>{
        'Prowlarr, or Torznab/Newznab indexers added directly under '
        +'<a href="#indexers">Indexers</a>. This is where releases are found.')
     +step(2,'A download client',clientOk,
-       'qBittorrent for torrents, SABnzbd or NZBGet for usenet. Set under '
-       +'<a href="#clients">Download Clients</a>.')
+       'Built-in Usenet, standalone MDM torrents/direct HTTP, ROM Hub, or an external '
+       +'qBittorrent/SABnzbd/NZBGet client. Choose under <a href="#clients">Download Clients</a>.')
     +step(3,'A library',libOk,
        'Where ROMs are filed and what serves them. RomM, Gaseous, Retrom, or '
        +'a plain folder that Batocera, ES-DE, EmuDeck or LaunchBox reads. '
