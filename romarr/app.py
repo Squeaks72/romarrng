@@ -74,7 +74,7 @@ from .downloaders import (
     Blackhole, CLIENT_TYPES, DebridClient, HubDownloader, NZBGet, NzbgetConfig, SABnzbd, SabConfig, SiteDownloader, build_client,
     hand_off_with_id, match_queue_item, merge_secrets, pick_client, redact,
 )
-from .indexers import INDEXER_TYPES, build_indexer, merge_indexer_secrets, redact_indexer
+from .indexers import INDEXER_TYPES, build_indexer, indexer_timeout, merge_indexer_secrets, redact_indexer
 from .indexers import Prowlarr, ProwlarrConfig, ProwlarrDownloadError
 from .library import _custom_platform_folder, import_rom, map_remote_path, platform_dir
 from .selective_import import selected_import_path
@@ -122,10 +122,12 @@ from .selection import (Release, best_release, infer_platform, judge, score,
 from .store import Event, QueueItem, SeerrRequest, Store, now_iso
 from .switch_report import report as switch_report_build
 from .ui import favicon_svg as ui_favicon_svg
+from .ui import web_manifest, service_worker, app_icon
 from .ui import page as ui_page
 from .ui import link_page as ui_link_page
 from .ui import login_page as ui_login_page
 from .version import compare_key, derive_version, is_unknown
+from .sidecars import read_nfo
 from .build_info import get_build_info
 
 log = logging.getLogger(__name__)
@@ -525,6 +527,13 @@ class ROMarr:
         self._lock = threading.Lock()
         # A manual check and the daily sweep must never overlap or auto-apply twice.
         self._update_check_lock = threading.Lock()
+        # Git HEAD can move without restarting this service. Pin the source
+        # actually running at service construction, not a later checkout HEAD.
+        from . import nightly, selfupdate
+        startup_install = selfupdate.detect()
+        self._nightly_git_start_revision = (
+            nightly.git_checkout_revision(startup_install)
+            if startup_install.kind == "git" else "")
         self._collection_lock = threading.RLock()
         self._probe_lock = threading.Lock()
         self._inflight_probes: dict[int, tuple[object, threading.Event, dict[str, object]]] = {}
@@ -1367,6 +1376,22 @@ class ROMarr:
                 return candidate, backend
         return None
 
+    def game_nfo(self, game_id: str, source: str = "") -> dict:
+        """Read an NFO only for a cached game from a configured folder backend."""
+        from .libraries import FolderLibrary
+        games, _, _ = self._library_cache
+        candidates = [g for g in (games or []) if str(g.id) == game_id and g.source == source
+                      and (g.origin or "local") == "local"]
+        if len(candidates) != 1:
+            return {"available": False}
+        for cfg, backend in self.game_libraries:
+            if isinstance(backend, FolderLibrary):
+                # The path must be inside this backend's actual scanned root.
+                result = read_nfo(backend._root, str(candidates[0].id))
+                if result.get("available") or result.get("reason"):
+                    return result
+        return {"available": False}
+
     def library_root(self, cfg: dict) -> Path:
         """Where ROMs are filed for one library, falling back to the default."""
         return Path(cfg.get("path") or self.library)
@@ -1544,8 +1569,14 @@ class ROMarr:
             # The first enabled Prowlarr entry drives search.
             for cfg in self.store.list_items("indexers"):
                 if cfg.get("type") == "prowlarr" and cfg.get("enable", True):
+                    try:
+                        timeout = indexer_timeout(cfg)
+                    except ValueError:
+                        log.warning("Skipping stored Prowlarr entry with invalid timeout")
+                        continue
                     self.prowlarr = Prowlarr(ProwlarrConfig(
-                        base_url=cfg.get("url", ""), api_key=cfg.get("api_key", "")))
+                        base_url=cfg.get("url", ""), api_key=cfg.get("api_key", ""),
+                        timeout=timeout))
                     self.store.settings["_prowlarr_url"] = cfg.get("url", "")
                     break
 
@@ -1556,7 +1587,11 @@ class ROMarr:
             for cfg in self.store.list_items("indexers"):
                 if not cfg.get("enable", True):
                     continue
-                indexer = build_indexer(cfg)
+                try:
+                    indexer = build_indexer(cfg)
+                except ValueError:
+                    log.warning("Skipping stored indexer with invalid configuration")
+                    continue
                 if indexer is not None:
                     direct.append(indexer)
             self.indexers = direct
@@ -1639,6 +1674,15 @@ class ROMarr:
                     and any(t in key.lower() for t in _SECRET_KEY_WORDS)):
                 patch[key] = self.store.settings.get(key, "")
         return patch
+
+    def report_manager(self):
+        """Create the bounded local report service lazily for authenticated requests."""
+        from .file_reports import FileReports
+        with self._lock:
+            if not hasattr(self, "_reports_manager"):
+                self._reports_manager = FileReports(lambda: self.library, self.store.path.parent,
+                    lambda: dict(self.store.settings), self._env, version=VERSION)
+            return self._reports_manager
 
     def setup_status(self) -> dict:
         """A quick setup checklist, without probing services or returning secrets."""
@@ -1794,7 +1838,8 @@ class ROMarr:
                                "placeholder -- type the real key"}
         try:
             if kind == "prowlarr":
-                probe = Prowlarr(ProwlarrConfig(base_url=url, api_key=key))
+                probe = Prowlarr(ProwlarrConfig(
+                    base_url=url, api_key=key, timeout=indexer_timeout(cfg)))
                 indexers = probe.indexers()
                 private = sum(1 for i in indexers if i.get("privacy") == "private")
                 return {"ok": True,
@@ -3147,11 +3192,16 @@ class ROMarr:
             if preserve_on_empty:
                 return {"loaded": 0, "path": ""}
             self.store.settings["dat_path"] = ""
+            self.store.settings["dat_catalog_platforms"] = {}
             self.dats = DatIndex()
             return {"loaded": 0, "path": ""}
         root = Path(directory)
         if not root.is_dir():
             if not preserve_on_empty:
+                # An unavailable mounted directory is not a new selection:
+                # preserve the operator's mapping until the mount returns.
+                if str(directory) != str(self.store.settings.get("dat_path") or ""):
+                    self.store.settings["dat_catalog_platforms"] = {}
                 self.store.settings["dat_path"] = str(directory)
                 self.dats = DatIndex()
             log.warning("DAT_PATH %s is not a directory", root)
@@ -3206,6 +3256,10 @@ class ROMarr:
         # an empty/unreadable selection without exposing it to import readers.
         if preserve_on_empty and not index.dats:
             return result
+        # A new DAT directory has different provenance. Never carry an old
+        # catalog/platform assertion into an unrelated source selection.
+        if str(directory) != str(self.store.settings.get("dat_path") or ""):
+            self.store.settings["dat_catalog_platforms"] = {}
         self.store.settings["dat_path"] = str(directory)
         self.dats = index
         log.info("loaded %d DAT(s) from %s", len(index.dats), root)
@@ -6578,11 +6632,23 @@ class ROMarr:
                 return
             for path in files:
                 try:
-                    digest = hash_file(path)
+                    before = path.stat()
+                    if path.suffix.lower() == ".zip" and not platform.archive_is_the_rom:
+                        from .audit_archive import audit_zip
+                        verdict = audit_zip(path, platform, self.dats)
+                        # Hash-index entries identify the physical file at this
+                        # path, which remains the ZIP container.
+                        digest = hash_file(path)
+                    else:
+                        digest = hash_file(path)
+                        verdict = self.dats.lookup(**digest)
+                    after = path.stat()
                 except OSError:
                     continue
+                if (before.st_size, before.st_mtime_ns, before.st_ino) != (
+                        after.st_size, after.st_mtime_ns, after.st_ino):
+                    continue
                 state["scanned"] += 1
-                verdict = self.dats.lookup(**digest)
                 if verdict.status == VERIFIED:
                     state["verified"] += 1
                 elif verdict.status == BAD_DUMP:
@@ -6593,7 +6659,7 @@ class ROMarr:
                             "detail": verdict.detail or ""})
                 else:
                     state["unknown"] += 1
-                sha = digest.get("sha1", "")
+                sha = (digest or {}).get("sha1", "")
                 # Keep the hash. Netplay is decided on bytes, and this walk
                 # is the only place ROMarr ever computes them; discarding
                 # them here is what left an offer with nothing to carry.
@@ -7002,8 +7068,9 @@ class ROMarr:
         return f"{base}/oidc/callback" if base else "/oidc/callback"
 
     def _record_update_check(self, state: str, reason: str, *,
-                             checked_channel: str,
-                             latest: str = "", error: str = "") -> None:
+                             checked_channel: str, latest: str = "",
+                             error: str = "", checked_revision: str = "",
+                             latest_revision: str = "") -> None:
         """Persist one completed check without erasing the last good comparison.
 
         The legacy Boolean is cleared for unknown/error outcomes, rather than
@@ -7018,6 +7085,10 @@ class ROMarr:
             settings["_update_error"] = error
             settings["_update_checked_version"] = VERSION
             settings["_update_checked_channel"] = checked_channel
+            settings["_update_checked_revision"] = (
+                checked_revision if checked_channel == "nightly" else "")
+            if latest_revision and state in ("available", "current"):
+                settings["_update_latest_revision"] = latest_revision
             settings["_update_available"] = state == "available"
             if latest:
                 settings["_latest_version"] = latest
@@ -7032,17 +7103,27 @@ class ROMarr:
         channel = str(settings.get("update_channel") or "stable").lower()
         state = str(settings.get("_update_state") or "never_checked")
         reason = str(settings.get("_update_reason") or "not_checked")
+        running_revision = ""
+        if channel == "nightly":
+            from . import nightly, selfupdate
+            running_revision = nightly.running_main_revision(
+                get_build_info(VERSION), selfupdate.detect(),
+                startup_git_revision=self._nightly_git_start_revision)
         if state not in ("never_checked", "available", "current", "unknown", "error"):
             state, reason = "unknown", "invalid_saved_status"
-        elif state in ("available", "current") and not _comparable_version(VERSION):
-            state, reason = "unknown", "running_version_unknown"
-        elif state in ("available", "current") and (
-                get_build_info(VERSION).get("type") == "development"):
-            state, reason = "unknown", "development_build"
         elif state != "never_checked" and (
                 settings.get("_update_checked_version") != VERSION
                 or settings.get("_update_checked_channel") != channel):
             state, reason = "unknown", "build_or_channel_changed"
+        elif state in ("available", "current") and channel == "nightly" and (
+                not running_revision
+                or settings.get("_update_checked_revision") != running_revision):
+            state, reason = "unknown", "nightly_build_changed"
+        elif state in ("available", "current") and not _comparable_version(VERSION) and channel != "nightly":
+            state, reason = "unknown", "running_version_unknown"
+        elif state in ("available", "current") and channel != "nightly" and (
+                get_build_info(VERSION).get("type") == "development"):
+            state, reason = "unknown", "development_build"
         return {
             "state": state,
             "reason": reason,
@@ -7052,15 +7133,19 @@ class ROMarr:
             "last_error": (settings.get("_update_error") or ""
                            if state == "error" else ""),
             "latest_version": settings.get("_latest_version") or "",
+            "running_revision": running_revision,
+            "latest_revision": (
+                settings.get("_update_latest_revision") or ""
+                if channel == "nightly" and state in ("current", "available") else ""),
             "update_available": state == "available",
             "in_progress": self._update_check_lock.locked(),
         }
 
     def check_update(self, *, manual: bool = False) -> dict:
-        """Check the stable release without concurrent requests or stale writes.
+        """Check release tags or verified Nightly ancestry without stale writes.
 
-        The explicit command is check-only; the daily scheduler may notify or
-        apply under the existing opt-in. Nightly revision discovery is separate.
+        A Nightly check is always informational, including scheduled checks.
+        Only the existing stable scheduled path may notify or apply.
         """
         import requests as _requests
 
@@ -7074,19 +7159,57 @@ class ROMarr:
             with self._lock:
                 channel = str(self.store.settings.get("update_channel")
                               or "stable").lower()
-            if channel != "stable":
-                # A stable release endpoint cannot answer whether the Git
-                # source revision on the nightly channel has advanced.
-                reason = ("nightly_revision_not_checked" if channel == "nightly"
-                          else "unsupported_update_channel")
-                self._record_update_check("unknown", reason,
-                                          checked_channel=channel)
-                message = ("nightly revision checking is not yet supported; "
-                           "no stable-release request was made" if channel == "nightly"
-                           else f"unknown update channel {channel!r}; no check was made")
-                return {"ok": True, "state": "unknown", "latest": "",
-                        "indeterminate": True, "update_available": False,
+            if channel == "nightly":
+                from . import nightly, selfupdate
+                running = nightly.running_main_revision(
+                    get_build_info(VERSION), selfupdate.detect(),
+                    startup_git_revision=self._nightly_git_start_revision)
+                if not running:
+                    self._record_update_check(
+                        "unknown", "nightly_build_unverified",
+                        checked_channel=channel)
+                    return {"ok": True, "state": "unknown",
+                            "reason": "nightly_build_unverified",
+                            "indeterminate": True, "update_available": False,
+                            "message": "cannot verify this build as official main; no release or Nightly check was applied"}
+                headers = {"Accept": "application/vnd.github+json"}
+                token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                verdict = nightly.compare_main_revision(running, _requests.get, headers)
+                with self._lock:
+                    active = str(self.store.settings.get("update_channel")
+                                 or "stable").lower()
+                if (active != channel or running != nightly.running_main_revision(
+                        get_build_info(VERSION), selfupdate.detect(),
+                        startup_git_revision=self._nightly_git_start_revision)):
+                    self._record_update_check(
+                        "unknown", "channel_or_build_changed_during_check",
+                        checked_channel=channel, checked_revision=running)
+                    return {"ok": True, "state": "unknown",
+                            "reason": "channel_or_build_changed_during_check",
+                            "indeterminate": True, "update_available": False,
+                            "message": "build or channel changed during the Nightly check; no action taken"}
+                state, reason = verdict["state"], verdict["reason"]
+                self._record_update_check(
+                    state, reason, checked_channel=channel,
+                    checked_revision=running,
+                    latest_revision=verdict.get("latest_revision", ""),
+                    error=verdict.get("error", ""))
+                message = ("new Nightly available" if state == "available" else
+                           "Nightly is up to date" if state == "current" else
+                           verdict.get("error") or "could not verify Nightly update availability")
+                return {"ok": state != "error", "state": state, "reason": reason,
+                        "indeterminate": state not in ("available", "current"),
+                        "latest_revision": verdict.get("latest_revision", ""),
+                        "update_available": state == "available",
                         "message": message}
+            if channel != "stable":
+                self._record_update_check("unknown", "unsupported_update_channel",
+                                          checked_channel=channel)
+                return {"ok": True, "state": "unknown", "indeterminate": True,
+                        "update_available": False,
+                        "message": f"unknown update channel {channel!r}; no check was made"}
 
             def failed(reason: str, message: str) -> dict:
                 """Record a failed attempt while retaining the last good release."""
@@ -8625,7 +8748,8 @@ def make_handler(service: ROMarr):
                     self.end_headers()
                     return self.wfile.write(body)
             if (path in self.OPEN_PATHS
-                    or path in ("/favicon.ico", "/favicon.svg")
+                    or path in ("/favicon.ico", "/favicon.svg", "/manifest.webmanifest",
+                                "/service-worker.js", "/app-icon-192.png", "/app-icon-512.png")
                     or is_portal_asset(path)
                     or self._authorised()):
                 return self._guard(handler)
@@ -8679,6 +8803,13 @@ def make_handler(service: ROMarr):
             if route.path in ("/favicon.ico", "/favicon.svg"):
                 return self._send(200, ui_favicon_svg().encode("utf-8"),
                                   "image/svg+xml")
+            if route.path == "/manifest.webmanifest":
+                return self._send(200, web_manifest().encode(), "application/manifest+json")
+            if route.path == "/service-worker.js":
+                return self._send(200, service_worker().encode(), "application/javascript")
+            if route.path in ("/app-icon-192.png", "/app-icon-512.png"):
+                size = 192 if route.path == "/app-icon-192.png" else 512
+                return self._send(200, app_icon(size), "image/png")
             if route.path == "/link":
                 # Served before the sign-in check on purpose, and without
                 # consulting anything: the visitor is a stranger holding a
@@ -8831,7 +8962,8 @@ def make_handler(service: ROMarr):
                 try:
                     result = EmulatorHub(service.store.path.parent).catalog(
                         (query.get("q") or [""])[0], int((query.get("offset") or ["0"])[0]),
-                        int((query.get("limit") or ["60"])[0]))
+                        int((query.get("limit") or ["60"])[0]),
+                        host_platform=(query.get("host_platform") or [""])[0])
                     return self._json(200, result)
                 except (ValueError, OSError):
                     return self._json(400, {"error": "Could not load this catalog page"})
@@ -9086,6 +9218,8 @@ def make_handler(service: ROMarr):
                     redact_library(lib) for lib in service.store.list_items("libraries")]})
             if route.path == "/api/v1/library/schema":
                 return self._json(200, {"types": LIBRARY_TYPES})
+            if route.path == "/api/v1/file-reports":
+                return self._json(200, service.report_manager().list())
             if route.path == "/api/v1/setup/status":
                 return self._json(200, service.setup_status())
             if route.path == "/api/v1/config":
@@ -9184,6 +9318,10 @@ def make_handler(service: ROMarr):
                 if pick is None:
                     return self._json(404, {"error": f"nothing on the shelf as {raw}"})
                 return self._json(200, pick)
+            if route.path == "/api/v1/game/nfo":
+                return self._json(200, service.game_nfo(
+                    (query.get("id") or [""])[0],
+                    (query.get("source") or [""])[0]))
             if route.path == "/api/v1/game/meta":
                 platform = (query.get("platform") or [""])[0]
                 game = (query.get("game") or [""])[0]
@@ -9964,6 +10102,26 @@ def make_handler(service: ROMarr):
                                 "platform": platform.slug if platform else "",
                                 "unresolved": platform is None})
                 return self._json(200, {"items": out, "total": len(entries)})
+            if route.path in ("/api/v1/file-reports/submit", "/api/v1/file-reports/quarantine",
+                              "/api/v1/file-reports/restore", "/api/v1/support/github"):
+                if not isinstance(body, dict):
+                    return self._json(400, {"error": "Use a JSON object"})
+                reports = service.report_manager()
+                try:
+                    if route.path == "/api/v1/file-reports/submit":
+                        result = reports.submit(body.get("file"), body.get("category"), body.get("notes", ""))
+                    elif route.path == "/api/v1/file-reports/quarantine":
+                        result = reports.quarantine(body.get("id"))
+                    elif route.path == "/api/v1/file-reports/restore":
+                        result = reports.restore(body.get("id"))
+                    else:
+                        result = reports.github(body.get("title"), body.get("body"),
+                            confirm=body.get("confirm") is True, report_id=body.get("report_id", ""))
+                    return self._json(200, result)
+                except ValueError as exc:
+                    return self._json(400, {"error": str(exc)})
+                except OSError:
+                    return self._json(400, {"error": "File unavailable or operation not permitted; no existing destination was overwritten"})
             if route.path == "/api/v1/setup/complete":
                 return self._json(200, service.finish_setup_guide(
                     str(body.get("mode") or "organize")))
@@ -10185,6 +10343,11 @@ def make_handler(service: ROMarr):
                     merged = (merge_indexer_secrets(dict(body), existing)
                               if is_indexer
                               else merge_secrets(dict(body), existing))
+                    if is_indexer:
+                        try:
+                            merged["timeout"] = indexer_timeout(merged)
+                        except ValueError as err:
+                            return self._json(400, {"error": str(err)})
                     saved = service.store.put_item(key, merged)
                     service.reload_clients()
                 return self._json(200, redact_indexer(saved) if is_indexer
@@ -10406,8 +10569,11 @@ def make_handler(service: ROMarr):
                     body.pop("_oidc_client_secret")
                 body = service.restore_masked_items(dict(body))
                 # Serialize public settings writes with the updater launch.
-                with service._lock:
-                    updated = service.store.update_settings(body)
+                try:
+                    with service._lock:
+                        updated = service.store.update_settings(body)
+                except ValueError as exc:
+                    return self._json(400, {"error": str(exc)})
                 if any(str(k).startswith("oidc") or k == "_oidc_client_secret"
                        for k in body):
                     # An SSO change takes effect at the next login attempt,

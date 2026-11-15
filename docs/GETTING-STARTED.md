@@ -1,5 +1,7 @@
 # Getting started
 
+Returning to games after a long break? Start with [your first game](FIRST-GAME.md), including what each app does and where to configure controls. No AI or coding experience needed.
+
 The first useful result is one imported ROM in the folder you expected. Start there before adding a large collection or scheduling downloads.
 
 After installing, open ROMarr, set a password and choose **Settings → Setup Guide** (`/#setup`). Choose **I already have ROMs** or **Find and download games**. The existing-ROM path skips download and indexer setup; both paths offer optional DAT/ROM Hub steps. Each step can be skipped, and you can return later.
@@ -107,6 +109,8 @@ Example: if qBittorrent and ROMarr share host `/srv/downloads`, mount `/srv/down
 | Library is reachable but import fails | ROMarr can write to its filesystem path; PUID/PGID match your folder permissions |
 | Import succeeded but library server has no game | The server scans the same directory and its rescan completed |
 | Environment edit had no effect | Connection settings saved after first run are changed in the UI |
+
+For a suspicious file, a bug or an idea, open **Activity → Reports & Help**. You can record a local file report or prepare a GitHub issue without uploading a game. [How reports, scanner evidence and quarantine work](REPORTING.md).
 
 The [install troubleshooting guide](INSTALL.md#troubleshooting) covers startup and permission errors. Include your version, install method, error and relevant log when reporting a problem; remove credentials first.
 

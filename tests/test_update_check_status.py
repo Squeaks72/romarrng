@@ -125,6 +125,9 @@ def test_nightly_channel_requires_separate_revision_check(tmp_path, monkeypatch)
     svc = _svc(tmp_path)
     monkeypatch.setattr("romarr.app.VERSION", "1.8.1")
     svc.store.settings.update({"update_channel": "nightly", "auto_update": True})
+    monkeypatch.setattr("romarr.app.get_build_info", lambda version: {"type": "unknown"})
+    monkeypatch.setattr(selfupdate, "detect", lambda root=None:
+                        selfupdate.Environment(kind="docker", detail="image"))
     monkeypatch.setattr(requests, "get", lambda *a, **kw: (_ for _ in ()).throw(
         AssertionError("nightly checks must not query stable releases")))
     monkeypatch.setattr(svc, "apply_update", lambda: (_ for _ in ()).throw(
@@ -132,7 +135,7 @@ def test_nightly_channel_requires_separate_revision_check(tmp_path, monkeypatch)
     out = svc.check_update()
     assert out["indeterminate"]
     st = svc.update_status()
-    assert st["check_status"]["reason"] == "nightly_revision_not_checked"
+    assert st["check_status"]["reason"] == "nightly_build_unverified"
     assert st["settings"]["auto_update"] is True
     assert st["settings"]["auto_update_effective"] is False
 
@@ -346,6 +349,7 @@ def test_scheduled_check_waits_for_manual_check_and_applies_once(
     fetched, release, lock_attempted, finished = (
         threading.Event(), threading.Event(), threading.Event(), threading.Event())
     requests_seen, applied, errors, answers = [], [], [], []
+    observed_threads = set()
 
     real_lock = svc._update_check_lock
 
@@ -370,6 +374,8 @@ def test_scheduled_check_waits_for_manual_check_and_applies_once(
 
     def controlled_get(*args, **kwargs):
         """Hold only the first (manual) GitHub request during overlap."""
+        if threading.current_thread() not in observed_threads:
+            return Release()
         requests_seen.append(True)
         if len(requests_seen) == 1:
             fetched.set()
@@ -399,9 +405,15 @@ def test_scheduled_check_waits_for_manual_check_and_applies_once(
                         or {"ok": True, "message": "started"})
     first = threading.Thread(target=manual)
     second = threading.Thread(target=scheduled)
+    observed_threads.update((first, second))
     first.start()
     try:
         assert fetched.wait(5)
+        # Other service workers may still be alive from earlier integration
+        # cases. Their requests must not count as this service's checks.
+        foreign = threading.Thread(target=lambda: requests.get("https://example.test/background"))
+        foreign.start(); foreign.join(2)
+        assert not foreign.is_alive()
         second.start()
         assert lock_attempted.wait(5), "scheduled check never reached the mutex"
         assert not finished.is_set(), "scheduled check bypassed the held mutex"

@@ -90,6 +90,9 @@ def detect(root: Path | None = None) -> Environment:
     # into that hits PEP 668 ("externally-managed-environment") and fails --
     # so a real update adding a dependency would restart into broken code.
     # Proved on a live install: the log showed the venv was bypassed.
+    if os.environ.get("ROMARR_ANDROID") == "1" or sys.platform == "android":
+        return Environment(kind="none", python=sys.executable or "",
+                           detail="Android app bundle; update through your app distributor or install a newer APK")
     python = sys.executable or shutil.which("python3") or "python3"
     if _container_marker():
         return Environment(kind="docker", python=python,
@@ -200,17 +203,25 @@ def read_log(env: Environment, tail_lines: int = 40) -> str:
 
 
 def docker_guidance(image: str = "ghcr.io/blizzhacker/romarr:latest") -> dict:
-    """What a container install CAN do: nothing from inside, everything from
-    the host. The commands are the answer, so the answer is the commands."""
+    """Explain host-owned image updates without guessing deployment commands."""
     return {
         "ok": False,
         "error": "ROMarr runs from a container image; the code is a read-only "
                  "layer and cannot update itself from inside.",
         "guidance": [
-            f"docker pull {image}",
-            "docker stop romarr && docker rm romarr",
-            "# recreate with the SAME volumes/env (compose users: "
-            "`docker compose up -d --pull always`)",
+            "Identify the actual Docker host and deployment method (Compose, "
+            "container manager, or docker run).",
+            "Record the existing image digest, volumes, environment, port "
+            "bindings, restart policy and recoverable configuration.",
+            f"Select and verify the intended image (for example {image}); "
+            "back up the existing deployment before changing it.",
+            "For Compose, use the existing validated project and service "
+            "definition to pull and recreate that service; for other methods "
+            "follow the original deployment's update procedure.",
+            "Verify health and the running build after recreation; retain the "
+            "previous image and configuration for rollback.",
+            "Do not stop, remove or recreate a container based only on "
+            "generic instructions from this page.",
         ],
         "message": "container install: re-pull the image on the host",
     }
