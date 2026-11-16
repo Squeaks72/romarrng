@@ -2475,6 +2475,183 @@ function soundtrackCard(d,epoch){
   };
   load();
 }
+// ---- Extras: DLC, updates, manuals and the other folders RomM reads inside a game ----------
+// One card per folder. Files go into RomM through its upload API, the same way soundtracks do.
+const EX_LABEL={dlc:'DLC',update:'Update',manual:'Manual',patch:'Patch',hack:'Hack',mod:'Mod',demo:'Demo',translation:'Translation',prototype:'Prototype'};
+const EX_PLURAL={dlc:'DLC',update:'Updates',manual:'Manuals',patch:'Patches',hack:'Hacks',mod:'Mods',demo:'Demos',translation:'Translations',prototype:'Prototypes'};
+const EX_HELP={dlc:'Downloadable content packs for this game.',update:'Title updates released for the game, such as a later version.',
+  manual:'The instruction booklet, as a PDF (or a text/Markdown file).',patch:'Fan or unofficial patches (bug fixes, widescreen).',
+  hack:'Modified versions of the game.',mod:'Mods for the game.',demo:'Demo and trial versions.',translation:'Fan translations.',prototype:'Prototype and beta builds.'};
+const exWord=k=>k==='dlc'?'DLC':EX_LABEL[k].toLowerCase();
+const EX_MORE=['patch','hack','mod','demo','translation','prototype'];
+function extrasCards(d,epoch){
+  const box=$('#g-extras'); if(!box) return;
+  box.innerHTML=['dlc','update','manual'].map(k=>`<div id="g-ex-${k}"></div>`).join('')+'<div id="g-ex-more"></div>';
+  ['dlc','update','manual'].forEach(k=>extraCard($('#g-ex-'+k),d,epoch,[k]));
+  extraCard($('#g-ex-more'),d,epoch,EX_MORE);
+}
+function extraCard(host,d,epoch,kinds){
+  if(!host) return;
+  let kind=kinds[0], timer=null;
+  const id=encodeURIComponent(d.rom_id);
+  const more=kinds.length>1;
+  host.innerHTML=`<div class="card ${more?'ex-more':''}"><h3>${more?'More extras':EX_PLURAL[kind]}</h3>
+    ${more?`<div class="field"><label for="ex-pick">Kind of extra</label><select id="ex-pick">${kinds.map(k=>`<option value="${k}">${esc(EX_PLURAL[k])}</option>`).join('')}</select></div>`:''}
+    <div class="ex-body"></div></div>`;
+  const body=host.querySelector('.ex-body');
+  const gone=()=>epoch!==routeEpoch||!body.isConnected;
+  const render=()=>{
+    if(timer){clearTimeout(timer);timer=null;}
+    const K=kind, p='ex-'+K+'-';
+    body.innerHTML=`<p class="help">${esc(EX_HELP[K])}</p>
+      <div id="${p}status" role="status" aria-live="polite" class="help">Asking RomM what it has…</div>
+      <div id="${p}prog"></div>
+      <div class="gh-act" id="${p}act" style="margin-top:10px"></div>
+      <div class="field" style="margin-top:10px"><label for="${p}q">Search terms</label>
+        <input type="search" id="${p}q" value="${esc(d.title+' '+(K==='hack'?'rom hack':K))}" autocomplete="off"></div>
+      <div id="${p}res" style="margin-top:12px"></div>
+      <input type="file" id="${p}file" hidden>`;
+    const stat=$('#'+p+'status'), prog=$('#'+p+'prog'), act=$('#'+p+'act'), res=$('#'+p+'res');
+    const bar=job=>`<label class="help" for="${p}bar">${esc(job.step||'Working…')}${job.made?` (${fmt(job.made)} added)`:''}</label>
+      <progress id="${p}bar" style="width:100%" max="100" ${job.pct==null?'':`value="${Math.round(job.pct*100)}"`}></progress>`;
+    const watch=jobId=>{
+      timer=setTimeout(async()=>{
+        const r=await j('/api/v1/extras/jobs').catch(()=>({items:[]}));
+        if(gone()||kind!==K) return;
+        const job=(r.items||[]).find(x=>x.id===jobId);
+        if(!job||(job.state!=='running'&&job.finished)){ load(); return; }
+        prog.innerHTML=bar(job); watch(jobId);
+      },1500);
+    };
+    const load=async()=>{
+      if(timer){clearTimeout(timer);timer=null;}
+      const s=await j('/api/v1/extras/game?id='+id+'&kind='+K).catch(()=>SND_DOWN);
+      if(gone()||kind!==K) return;
+      if(!s.kind){ stat.textContent=s.error||'Extras are not available for this game.'; act.innerHTML=''; return; }
+      const job=s.job, running=!!job&&job.state==='running', wt=s.watch;
+      const names=(s.files||[]).map(f=>`<li>${esc(f.name)} <span class="help">${esc(sndBytes(f.size))}</span></li>`).join('');
+      stat.innerHTML=esc(s.count==null?(s.error||'RomM did not answer.'):
+        (s.count?`RomM has ${fmt(s.count)} ${exWord(K)} file${s.count===1?'':'s'} for this game.`:`No ${exWord(K)} files stored for this game yet.`)
+        +(s.undoable?` ROMarr added ${fmt(s.undoable)} of them.`:'')
+        +(s.scraped_manual&&!s.count?' RomM already has a manual from its metadata sources; this adds one to the game folder.':'')
+        +((job&&job.state==='error')?` Last attempt failed: ${job.message}`:'')
+        +((job&&job.state==='done'&&job.message)?` ${job.message}.`:''))
+        +(names?`<details style="margin-top:6px"><summary>Files in RomM</summary><ul>${names}</ul></details>`:'');
+      prog.innerHTML=running?bar(job):'';
+      if(wt&&!['added','cancelled'].includes(wt.state)){
+        const active=['downloading','importing'].includes(wt.state);
+        stat.append(document.createTextNode(` Torrent “${wt.release}”: ${wt.message}.`+(active?' It will be added to RomM automatically when it finishes.':'')));
+        if(active&&!running) timer=setTimeout(load,10000);
+      }
+      act.innerHTML=`<button class="btn" id="${p}tor" ${running?'disabled':''}>Search torrents</button>
+        ${s.docs?`<button class="btn ghost" id="${p}arc" ${running?'disabled':''}>Search the Internet Archive</button>`:''}
+        <button class="btn ghost" id="${p}link" ${running?'disabled':''}>Add from a link</button>
+        <button class="btn ghost" id="${p}up" ${running?'disabled':''}>Upload a file</button>
+        ${(wt&&['downloading','importing'].includes(wt.state))?`<button class="btn ghost" id="${p}wc">Stop watching torrent</button>`:''}
+        ${s.undoable?`<button class="btn danger" id="${p}undo" ${running?'disabled':''}>Undo (remove ${fmt(s.undoable)} added)</button>`:''}`;
+      $('#'+p+'tor').onclick=()=>torrents(s);
+      const arc=$('#'+p+'arc'); if(arc) arc.onclick=()=>archive(s);
+      $('#'+p+'link').onclick=()=>link();
+      $('#'+p+'up').onclick=()=>$('#'+p+'file').click();
+      const wc=$('#'+p+'wc'); if(wc) wc.onclick=async()=>{ await sndPost('/api/v1/extras/torrents/cancel',{id:d.rom_id,kind:K}).catch(()=>SND_DOWN); load(); };
+      const u=$('#'+p+'undo'); if(u) u.onclick=undo;
+      res.dataset.links=JSON.stringify(s.links||[]);
+      if(running&&job.id) watch(job.id);
+    };
+    const undo=async()=>{
+      if(!confirm(`Remove the ${exWord(K)} files ROMarr added to this game from RomM? Files you added yourself are not touched.`)) return;
+      $('#'+p+'undo').disabled=true;
+      const r=await sndPost('/api/v1/extras/undo',{id:d.rom_id,kind:K}).catch(()=>SND_DOWN);
+      toast(r.error||`Removed ${fmt(r.removed)} file${r.removed===1?'':'s'}`);
+      load();
+    };
+    const started=r=>{ if(r.error){ toast(r.error); return false; } toast('Adding to RomM'); load(); return true; };
+    const links=()=>{ let l=[]; try{ l=JSON.parse(res.dataset.links||'[]'); }catch(e){}
+      return l.length?`<p class="help" style="margin-top:10px">Search by hand: ${l.map(x=>`<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.name)}</a>`).join(' · ')}</p>`:''; };
+    // Browser upload: the file is the raw request body, so nothing is held in memory here or on the server.
+    $('#'+p+'file').onchange=async e=>{
+      const f=e.target.files[0]; e.target.value=''; if(!f) return;
+      stat.textContent=`Sending ${f.name} to ROMarr…`;
+      const r=await fetch('/api/v1/extras/upload?id='+id+'&kind='+K+'&name='+encodeURIComponent(f.name),
+        {method:'POST',headers:{'content-type':'application/octet-stream'},body:f}).then(x=>x.json()).catch(()=>SND_DOWN);
+      if(!started(r)) load();
+    };
+    const link=()=>{
+      const m=document.createElement('div'); m.className='modal';
+      m.innerHTML=`<div class="box" role="dialog" aria-modal="true" aria-label="Add ${esc(EX_LABEL[K])} from a link">
+        <h3>Add ${esc(exWord(K))} from a link</h3>
+        <div class="sub">Paste the direct link to the file. ROMarr downloads it and adds it to ${esc(d.title)} in RomM. Only public sites work; ${K==='manual'?'PDF, Markdown and text files':'programs and installers (.exe, .msi, scripts) are refused'}.</div>
+        <div class="field"><label for="ex-url">Link</label><input type="url" id="ex-url" placeholder="https://" autocomplete="off"></div>
+        <div id="ex-err" class="help" role="alert"></div>
+        <div class="foot"><button class="btn ghost" data-close>Cancel</button><button class="btn sp" id="ex-go">Add</button></div></div>`;
+      document.body.append(m);
+      m.onclick=e=>{ if(e.target===m||e.target.dataset.close!==undefined) closeModal(); };
+      const u=m.querySelector('#ex-url'); u.focus();
+      const go=async()=>{
+        const v=u.value.trim(); if(!v) return;
+        m.querySelector('#ex-go').disabled=true;
+        const r=await sndPost('/api/v1/extras/link',{id:d.rom_id,kind:K,url:v}).catch(()=>SND_DOWN);
+        if(r.error){ m.querySelector('#ex-err').textContent=r.error; m.querySelector('#ex-go').disabled=false; return; }
+        closeModal(); started(r);
+      };
+      m.querySelector('#ex-go').onclick=go;
+      u.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); go(); } };
+    };
+    const torrents=async s=>{
+      const b=$('#'+p+'tor'); b.disabled=true; b.textContent='Searching…'; res.innerHTML='';
+      const r=await j('/api/v1/extras/torrents?id='+id+'&kind='+K+'&q='+encodeURIComponent($('#'+p+'q').value)).catch(()=>SND_DOWN);
+      if(gone()||kind!==K||!res.isConnected) return;
+      b.disabled=false; b.textContent='Search torrents';
+      if(r.error){ res.innerHTML=`<p class="help" role="alert">${esc(r.error)}</p>`+links(); return; }
+      const it=r.items||[];
+      res.innerHTML=(it.length?`<p class="help">Torrents for “${esc(r.term)}”. Grab sends the torrent to qBittorrent; when it finishes ROMarr adds the files that fit the ${esc(exWord(K))} folder to this game in RomM (you can undo it). Check the title and size first: a whole-game release would also be filed.</p>
+        <div class="tablewrap"><table><caption class="sr-only">Torrent results</caption>
+        <thead><tr><th scope="col">Release</th><th scope="col">Size</th><th scope="col">Seeders</th><th scope="col">Indexer</th><th scope="col"><span class="sr-only">Grab</span></th></tr></thead><tbody>
+        ${it.map((x,i)=>`<tr><td>${esc(x.title)}${x.info_url?` <a href="${esc(x.info_url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>`:''}</td>
+          <td style="white-space:nowrap">${esc(sndBytes(x.size))}</td><td>${fmt(x.seeders)}</td><td>${esc(x.indexer||'—')}</td>
+          <td>${x.grabbable?`<button class="btn ghost ex-grab" data-i="${i}">Grab</button>`:'<span class="help">no link</span>'}</td></tr>`).join('')}
+        </tbody></table></div>`:'<p class="help">No torrents found. Try different terms.</p>')+links();
+      res.querySelectorAll('.ex-grab').forEach(btn=>btn.onclick=async()=>{
+        btn.disabled=true; btn.textContent='Grabbing…';
+        const g=await sndPost('/api/v1/extras/torrents/grab',{id:d.rom_id,kind:K,release:it[+btn.dataset.i].id}).catch(()=>SND_DOWN);
+        btn.textContent=g.ok?'Sent':'Grab'; if(!g.ok) btn.disabled=false; else load();
+        toast(g.ok?`Sent to ${g.client}; ROMarr will add it when it finishes`:(g.error||'Could not grab that release'));
+      });
+    };
+    // Manuals only: Internet Archive items first, then the PDFs inside the one picked.
+    const archive=async s=>{
+      const b=$('#'+p+'arc'); b.disabled=true; b.textContent='Searching…'; res.innerHTML='';
+      const r=await j('/api/v1/extras/archive/search?id='+id+'&kind='+K+'&q='+encodeURIComponent($('#'+p+'q').value.replace(/\s+manual$/i,''))).catch(()=>SND_DOWN);
+      if(gone()||kind!==K||!res.isConnected) return;
+      b.disabled=false; b.textContent='Search the Internet Archive';
+      if(r.error){ res.innerHTML=`<p class="help" role="alert">${esc(r.error)}</p>`+links(); return; }
+      const it=r.items||[];
+      res.innerHTML=(it.length?`<div class="tablewrap"><table><caption class="sr-only">Internet Archive items</caption>
+        <thead><tr><th scope="col">Item</th><th scope="col">Match</th><th scope="col"><span class="sr-only">Show files</span></th></tr></thead><tbody>
+        ${it.map((x,i)=>`<tr><td>${esc(x.title)} <a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">Open ↗</a></td><td>${Math.round((x.score||0)*100)}%</td>
+          <td><button class="btn ghost ex-items" data-i="${i}">Show files</button></td></tr>`).join('')}</tbody></table></div><div id="${p}files"></div>`
+        :'<p class="help">Nothing found on the Internet Archive.</p>')+links();
+      res.querySelectorAll('.ex-items').forEach(btn=>btn.onclick=async()=>{
+        const out=$('#'+p+'files'); out.innerHTML='<p class="help">Loading…</p>';
+        const f=await j('/api/v1/extras/archive/files?id='+id+'&kind='+K+'&item='+encodeURIComponent(it[+btn.dataset.i].id)).catch(()=>SND_DOWN);
+        if(f.error){ out.innerHTML=`<p class="help" role="alert">${esc(f.error)}</p>`; return; }
+        const fs=f.files||[];
+        out.innerHTML=fs.length?`<div class="tablewrap"><table><caption class="sr-only">Files in the item</caption><tbody>
+          ${fs.map((x,n)=>`<tr><td>${esc(x.name)}</td><td style="white-space:nowrap">${esc(sndBytes(x.size))}</td><td><button class="btn ex-add" data-n="${n}">Add</button></td></tr>`).join('')}</tbody></table></div>`
+          :'<p class="help">That item has no PDF or text file.</p>';
+        out.querySelectorAll('.ex-add').forEach(a=>a.onclick=async()=>{
+          out.querySelectorAll('.ex-add').forEach(o=>o.disabled=true);
+          const r2=await sndPost('/api/v1/extras/archive/add',{id:d.rom_id,kind:K,item:it[+btn.dataset.i].id,name:fs[+a.dataset.n].name}).catch(()=>SND_DOWN);
+          if(!started(r2)) out.querySelectorAll('.ex-add').forEach(o=>o.disabled=false);
+        });
+      });
+    };
+    $('#'+p+'q').onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); const b=$('#'+p+(K==='manual'?'arc':'tor')); if(b) b.click(); } };
+    load();
+  };
+  const pick=host.querySelector('#ex-pick'); if(pick) pick.onchange=()=>{ kind=pick.value; render(); };
+  render();
+}
 // Duplicates: games whose stored soundtracks are byte-for-byte identical. The scan
 // and the merge both run on the server; this lists, asks, and shows progress.
 RENDER.soundtracks=async(renderEpoch=routeEpoch)=>{
@@ -2564,7 +2741,7 @@ RENDER.game=async(renderEpoch=routeEpoch)=>{
     ['Genres',(it.genres||[]).join(', ')],['Franchise',(it.franchises||[]).join(', ')],
     ['Developer / publisher',(it.companies||[]).join(', ')],['Modes',(it.modes||[]).join(', ')],
     ['Players',it.players],['In RomM since',it.added]].filter(x=>x[1]);
-  // #g-alert, #g-swu and #g-snd are filled by the Switch and Soundtrack cards.
+  // #g-alert, #g-swu, #g-snd and #g-extras are filled by the Switch, Soundtrack and Extras cards.
   page.innerHTML=`<div id="g-alert"></div><div class="card gh">
       <div class="gh-art" style="background-image:url('${esc(it.cover||'')}')"></div>
       <div class="gh-main">
@@ -2584,7 +2761,7 @@ RENDER.game=async(renderEpoch=routeEpoch)=>{
           ${esc(d.meta.notes||'')}</p>`:''}
       </div></div>
     <div id="g-swu"></div>
-    ${(d.in_library&&d.rom_id)?'<div id="g-snd"></div>':''}
+    ${(d.in_library&&d.rom_id)?'<div id="g-snd"></div><div id="g-extras"></div>':''}
     <div class="card" id="g-rel" ${flag==='search'?'':'hidden'}><h3>Interactive search</h3><div id="g-relout"></div></div>
     ${q.length?`<div class="card"><h3>Downloads</h3><div class="tablewrap"><table><thead><tr><th>Release</th><th>State</th><th>Detail</th></tr></thead><tbody>
       ${q.map(x=>`<tr><td>${esc(x.release||'—')}</td><td>${esc(x.state)}</td><td style="color:var(--dim)">${esc(x.detail||'')}</td></tr>`).join('')}</tbody></table></div></div>`:''}
@@ -2593,6 +2770,7 @@ RENDER.game=async(renderEpoch=routeEpoch)=>{
     ${(!d.in_library&&w&&w.last_error)?`<p class="help">Last search: ${esc(w.last_error)} (${fmt(w.attempts)} attempt${w.attempts===1?'':'s'})</p>`:''}`;
   const relBox=$('#g-rel'), relOut=$('#g-relout');
   if(d.in_library&&d.rom_id) soundtrackCard(d,renderEpoch);
+  if(d.in_library&&d.rom_id) extrasCards(d,renderEpoch);
   if(d.in_library&&(d.platform==='switch'||d.platform==='switch-2')) switchCard(d,renderEpoch,relBox,relOut);
   const openRel=()=>{ relBox.hidden=false; renderReleases(relOut,d.title,d.platform); relBox.scrollIntoView({behavior:'smooth',block:'start'}); };
   if(flag==='search') renderReleases(relOut,d.title,d.platform);

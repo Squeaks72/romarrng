@@ -28,6 +28,9 @@ Ported from the original romarrng onto upstream (Nov 2026):
 
 - Soundtracks: soundtrack sources, a music library root, a RomM write token, the
   `/api/v1/soundtracks/*` API, and the Soundtracks page and game-page card
+- Extras: DLC, update, manual (and patch/hack/mod/demo/translation/prototype) cards on the game page,
+  filled from indexer torrents, the Internet Archive, a pasted link or an uploaded file, through RomM's
+  upload API; see docs/EXTRAS.md
 - Switch Updates & DLC report: gap map and badge, ignore-DLC setting, update and DLC
   files attached into the game folder, TitleDB loaded on first use
 - Unpacking for tar-family archives and for archives nested up to two levels deep

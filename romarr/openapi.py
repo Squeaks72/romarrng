@@ -86,6 +86,17 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "/api/v1/soundtracks/dups/unmerge": ("POST", "Re-upload the kept files to a merged game after verifying them."),
     "/api/v1/soundtracks/library/search": ("GET", "Search the read-only music library (`q`) for albums to use as a soundtrack."),
     "/api/v1/soundtracks/library/add": ("POST", "Upload an album from the music library into a game's soundtrack through RomM."),
+    "/api/v1/extras/game": ("GET", "What RomM holds in a game's dlc/update/manual/... folder (`id` = RomM game id, `kind`) and what ROMarr added."),
+    "/api/v1/extras/torrents": ("GET", "Indexer search for a game's DLC, update, manual or other extra with hand-typed terms; results are unscored."),
+    "/api/v1/extras/torrents/grab": ("POST", "Send a picked extras torrent to the download client; ROMarr adds its files to RomM when it finishes."),
+    "/api/v1/extras/torrents/cancel": ("POST", "Stop watching a game's extras torrent; the torrent stays in the download client."),
+    "/api/v1/extras/archive/search": ("GET", "Search the Internet Archive for a game's manual."),
+    "/api/v1/extras/archive/files": ("GET", "The PDF/text files of one Internet Archive item (`item`)."),
+    "/api/v1/extras/archive/add": ("POST", "Fetch one Internet Archive file and upload it into the game's folder through RomM."),
+    "/api/v1/extras/link": ("POST", "Fetch a public link (`url`) and upload the file into the game's folder through RomM."),
+    "/api/v1/extras/upload": ("POST", "Upload a file sent as the raw request body (`id`, `kind`, `name` in the query) through RomM."),
+    "/api/v1/extras/jobs": ("GET", "Extras jobs, newest first, with progress."),
+    "/api/v1/extras/undo": ("POST", "Remove exactly the files ROMarr added to a game's folder of this kind."),
     "/api/v1/wanted/missing": ("GET", "Games wanted but not yet found. DELETE "
                                       "the same path with game and platform "
                                       "-- as query parameters or a JSON body "

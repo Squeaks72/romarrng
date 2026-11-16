@@ -60,6 +60,7 @@ from .clients import QBittorrent, QbitConfig, QbitAuthenticationError, Romm, Rom
 from . import hub  # ROM Hub bridge -- the Cartridge plugin layer
 from . import clamav
 from . import soundtracks as soundtracks_mod
+from . import extras as extras_mod
 from .dat import DatIndex, parse_dat
 from .decompress import run_batch as run_decompress_batch, scan_compressed
 from .titled import TitleDBIndex, build_index as build_titled_index, validate_switch_rom
@@ -842,6 +843,10 @@ class ROMarr:
             "SoundtrackTorrents", "Add finished soundtrack torrents to RomM",
             lambda: 30 if self._soundtracks_watching() else 0,
             self.soundtrack_watch_tick)
+        self.scheduler.add(
+            "ExtrasTorrents", "Add finished DLC, update and manual torrents to RomM",
+            lambda: 30 if self._extras_watching() else 0,
+            self.extras_watch_tick)
         self.scheduler.start()
 
         # The scheduler does not fire a daily job until a day has passed, so
@@ -3020,13 +3025,8 @@ class ROMarr:
             self._soundtracks = st
         return st
 
-    def _soundtrack_target(self, game_id: str) -> tuple[dict, "soundtracks_mod.RommApi"]:
-        """The library game with this RomM id, and an API client for the RomM it lives in.
-
-        Soundtracks are a RomM feature (its Jukebox), so a game from any other
-        kind of library has no target. The login is the library entry's own:
-        nothing about RomM is configured here a second time.
-        """
+    def _romm_game(self, game_id: str, what: str = "soundtracks") -> tuple[dict, dict, "Romm"]:
+        """The library game with this RomM id, plus the config and backend of the RomM it lives in."""
         game_id = str(game_id or "").strip()
         if not game_id.isdigit():
             raise ValueError("id must be a RomM game id")
@@ -3039,10 +3039,20 @@ class ROMarr:
             romms = [(c, b) for c, b in romms
                      if (c.get("name") or getattr(b, "name", "library")) == row.source] or romms
         if not romms:
-            raise RuntimeError("soundtracks need a RomM library, and none is configured")
+            raise RuntimeError(f"{what} need a RomM library, and none is configured")
         cfg, backend = romms[0]
         game = {"id": game_id, "name": row.name, "platform_slug": self._slug_of(row),
                 "platform_name": str(getattr(row, "platform", "") or "")}
+        return game, cfg, backend
+
+    def _soundtrack_target(self, game_id: str) -> tuple[dict, "soundtracks_mod.RommApi"]:
+        """The library game with this RomM id, and an API client for the RomM it lives in.
+
+        Soundtracks are a RomM feature (its Jukebox), so a game from any other
+        kind of library has no target. The login is the library entry's own:
+        nothing about RomM is configured here a second time.
+        """
+        game, cfg, backend = self._romm_game(game_id, "soundtracks")
         return game, soundtracks_mod.RommApi(cfg.get("url") or "", backend.write_token)
 
     def soundtrack_sources(self) -> tuple[str, ...]:
@@ -3087,14 +3097,17 @@ class ROMarr:
         self.soundtrack_store().cancel_watch(str(game_id))
         return {"ok": True}
 
-    def soundtrack_torrents(self, game_id: str, term: str = "") -> dict:
-        """Indexer search with a hand-typed term. Results are unscored and never ROM-judged."""
-        game, _api = self._soundtrack_target(game_id)
-        term = (term or "").strip()[:200] or f"{game['name']} soundtrack"
+    def _indexer_search(self, bucket: str, held_key: str, label: str, default_term: str, term: str) -> dict:
+        """Indexer search with a hand-typed term. Results are unscored and never ROM-judged.
+
+        The releases are held (by an opaque id) under `held_key` in `bucket`, so a later grab can name
+        one without the browser being able to ask for an arbitrary URL.
+        """
+        term = (term or "").strip()[:200] or default_term
         try:
             releases = self.prowlarr.search(term)
         except Exception as err:  # noqa: BLE001
-            log.warning("soundtrack torrent search failed for %r: %s", term, err)
+            log.warning("%s torrent search failed for %r: %s", label, term, err)
             return {"error": f"search failed: {type(err).__name__}", "term": term, "items": []}
         releases = sorted(releases, key=lambda r: -(getattr(r, "seeders", 0) or 0))[:50]
         held, items = {}, []
@@ -3105,16 +3118,17 @@ class ROMarr:
                           "indexer": r.indexer, "protocol": r.protocol,
                           "info_url": getattr(r, "info_url", ""), "grabbable": bool(r.download_url)})
         with self._lock:
-            snd = self.__dict__.setdefault("_snd_torrents", {})
-            snd[str(game_id)] = held
+            snd = self.__dict__.setdefault(bucket, {})
+            snd[held_key] = held
             while len(snd) > 8:
                 snd.pop(next(iter(snd)))
         return {"term": term, "items": items}
 
-    def soundtrack_torrent_grab(self, game_id: str, release_id: str) -> dict:
-        """Hand a picked torrent to the download client. It is NOT queued for ROM import."""
+    def _indexer_grab(self, bucket: str, held_key: str, release_id: str, category: str, label: str,
+                      on_added: Callable[[str, str], None]) -> dict:
+        """Hand a picked torrent to qBittorrent under `category`. It is NOT queued for ROM import."""
         with self._lock:
-            pick = (self.__dict__.get("_snd_torrents", {}).get(str(game_id)) or {}).get(release_id)
+            pick = (self.__dict__.get(bucket, {}).get(held_key) or {}).get(release_id)
         if pick is None:
             return {"ok": False, "error": "that search has expired -- run it again"}
         if not pick.download_url:
@@ -3123,25 +3137,126 @@ class ROMarr:
         if client is None:
             return {"ok": False, "error": f"no download client configured for {pick.protocol}"}
         if not isinstance(client, QBittorrent):
-            return {"ok": False, "error": "soundtrack torrents are tracked through qBittorrent only"}
+            return {"ok": False, "error": f"{label} torrents are tracked through qBittorrent only"}
         url = pick.download_url
         local_fetch = getattr(self.prowlarr, "is_prowlarr_download_url", None)
-        cat = self.SOUNDTRACK_CATEGORY
         try:
             if callable(local_fetch) and local_fetch(url):
                 torrent = self.prowlarr.fetch_torrent(url)
-                ok = (client.add(torrent, category=cat) if isinstance(torrent, str)
-                      else client.add_torrent_file(torrent, category=cat))
+                ok = (client.add(torrent, category=category) if isinstance(torrent, str)
+                      else client.add_torrent_file(torrent, category=category))
             else:
-                ok = client.add(url, category=cat)
+                ok = client.add(url, category=category)
         except ProwlarrDownloadError as err:
             return {"ok": False, "error": str(err)}
         if not ok:
             return {"ok": False, "error": client.last_error or f"{client.name} rejected the release"}
         tag = client.last_job_id.removeprefix("qbit-tag:")
         if tag:
-            self.soundtrack_store().add_watch(str(game_id), tag, pick.title)
+            on_added(tag, pick.title)
         return {"ok": True, "release": pick.title, "client": client.name}
+
+    def soundtrack_torrents(self, game_id: str, term: str = "") -> dict:
+        """Indexer search with a hand-typed term. Results are unscored and never ROM-judged."""
+        game, _api = self._soundtrack_target(game_id)
+        return self._indexer_search("_snd_torrents", str(game_id), "soundtrack", f"{game['name']} soundtrack", term)
+
+    def soundtrack_torrent_grab(self, game_id: str, release_id: str) -> dict:
+        """Hand a picked torrent to the download client. It is NOT queued for ROM import."""
+        return self._indexer_grab("_snd_torrents", str(game_id), release_id, self.SOUNDTRACK_CATEGORY, "soundtrack",
+                                  lambda tag, release: self.soundtrack_store().add_watch(str(game_id), tag, release))
+
+    # ----------------------------------------------------------------- extras --
+
+    EXTRAS_CATEGORY = "romarr-extras"
+
+    def extras_store(self) -> "extras_mod.Extras":
+        """The extras service, created on first use like the soundtrack one."""
+        ex = getattr(self, "_extras", None)
+        if ex is None:
+            ex = extras_mod.Extras(extras_mod.db_path_for(self._env.get("ROMARR_DATA", "/opt/romarr/romarr.json")))
+            self._extras = ex
+        return ex
+
+    def _extras_target(self, game_id: str, kind: str) -> tuple[dict, "extras_mod.ExtrasApi"]:
+        if kind not in extras_mod.KINDS:
+            raise ValueError("unknown kind of extra")
+        game, cfg, backend = self._romm_game(game_id, "extras")
+        return game, extras_mod.ExtrasApi(cfg.get("url") or "", backend.write_token)
+
+    def _extras_watching(self) -> bool:
+        """Cheap gate for the scheduler: only open the extras db once it exists."""
+        ex = getattr(self, "_extras", None)
+        if ex is None:
+            if not extras_mod.db_path_for(self._env.get("ROMARR_DATA", "/opt/romarr/romarr.json")).exists():
+                return False
+            ex = self.extras_store()
+        return bool(ex.active_watches())
+
+    def extras_watch_tick(self) -> str:
+        """Check watched extras torrents; upload the files of finished ones to RomM. Never touches the torrent."""
+        store = self.extras_store()
+        if not store.active_watches():
+            return "nothing to watch"
+        client = next((c for c in self.clients if isinstance(c, QBittorrent) and getattr(c, "configured", True)), None)
+        if client is None:
+            return "no qBittorrent client"
+        rows = [r for r in client.torrents() if r.get("category") == self.EXTRAS_CATEGORY]
+        maps = self.store.settings.get("remote_path_mappings")
+        notes = store.process_watches(rows, lambda k: self._extras_target(k, "dlc"),
+                                      lambda p: str(map_remote_path(p, maps)))
+        return "; ".join(notes) or "watching"
+
+    def extras_game(self, game_id: str, kind: str) -> dict:
+        game, api = self._extras_target(game_id, kind)
+        return self.extras_store().status(game, kind, api)
+
+    def extras_torrents(self, game_id: str, kind: str, term: str = "") -> dict:
+        game, _api = self._extras_target(game_id, kind)
+        return self._indexer_search("_extras_torrents", f"{game_id}:{kind}", "extras",
+                                    f"{game['name']} {extras_mod.KINDS[kind]['term']}", term)
+
+    def extras_torrent_grab(self, game_id: str, kind: str, release_id: str) -> dict:
+        self._extras_target(game_id, kind)
+        return self._indexer_grab("_extras_torrents", f"{game_id}:{kind}", release_id, self.EXTRAS_CATEGORY, "extras",
+                                  lambda tag, release: self.extras_store().add_watch(str(game_id), kind, tag, release))
+
+    def extras_watch_cancel(self, game_id: str, kind: str) -> dict:
+        self._extras_target(game_id, kind)
+        self.extras_store().cancel_watch(str(game_id), kind)
+        return {"ok": True}
+
+    def extras_archive_search(self, game_id: str, kind: str, term: str = "") -> dict:
+        game, _api = self._extras_target(game_id, kind)
+        if not extras_mod.KINDS[kind]["docs"]:
+            raise ValueError("the Internet Archive search is for manuals")
+        title = (term or "").strip()[:200] or game["name"]
+        try:
+            items = extras_mod.archive_manual_search(title, game.get("platform_name", ""))
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            return {"id": str(game_id), "title": title, "items": [], "error": f"the Internet Archive did not answer ({exc.__class__.__name__})"}
+        return {"id": str(game_id), "title": title, "items": items}
+
+    def extras_archive_files(self, game_id: str, kind: str, item: str) -> dict:
+        self._extras_target(game_id, kind)
+        return {"item": item, "files": extras_mod.archive_item_files(item, kind)}
+
+    def extras_archive_add(self, game_id: str, kind: str, item: str, name: str) -> dict:
+        game, api = self._extras_target(game_id, kind)
+        return self.extras_store().start_archive(game, kind, api, item, name)
+
+    def extras_link(self, game_id: str, kind: str, url: str) -> dict:
+        game, api = self._extras_target(game_id, kind)
+        return self.extras_store().start_link(game, kind, api, url)
+
+    def extras_add_staged(self, game_id: str, kind: str, name: str, path: str, size: int) -> dict:
+        """Upload a file the browser sent (already saved at `path`); the file is deleted afterwards."""
+        game, api = self._extras_target(game_id, kind)
+        return self.extras_store().start_files(game, kind, api, [(extras_mod.clean_name(name), path, size)], "upload")
+
+    def extras_undo(self, game_id: str, kind: str) -> dict:
+        game, api = self._extras_target(game_id, kind)
+        return self.extras_store().undo(game, kind, api)
 
     def soundtrack_download(self, game_id: str, candidate: dict, fmt: str, force: bool = False) -> dict:
         game, api = self._soundtrack_target(game_id)
@@ -7679,6 +7794,58 @@ def make_handler(service: ROMarr):
         def do_DELETE(self):
             return self._gate(self._delete)
 
+        def _extras_upload(self, query, length: int):
+            """A file sent from the browser as the raw request body, saved to a temp file and uploaded to RomM.
+
+            The size is checked from the header before anything is read, and the body is written to disk a
+            megabyte at a time, so a declared gigabyte never becomes a gigabyte of memory.
+            """
+            gid, kind = (query.get("id") or [""])[0], (query.get("kind") or [""])[0]
+            name = (query.get("name") or [""])[0]
+            if length <= 0 or length > extras_mod.MAX_FILE_BYTES:
+                self._discard(length)
+                return self._json(413 if length > 0 else 400, {"error": "send one file (up to 8 GB) as the request body"})
+            try:
+                service._extras_target(gid, kind)
+                if not extras_mod.allowed_file(kind, extras_mod.clean_name(name)):
+                    raise ValueError("that file is not a type that goes in this folder")
+            except Exception as exc:  # noqa: BLE001 - same replies as every other extras route
+                self._discard(length)
+
+                def refuse(exc=exc):
+                    raise exc
+                return self._soundtrack_reply(refuse)
+            path = service.extras_store().stage_path()
+            try:
+                left = length
+                with open(path, "wb") as out:
+                    while left > 0:
+                        chunk = self.rfile.read(min(1 << 20, left))
+                        if not chunk:
+                            raise ValueError("the upload ended early")
+                        out.write(chunk)
+                        left -= len(chunk)
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+                def failed(exc=exc):
+                    raise exc if isinstance(exc, ValueError) else ValueError("the upload failed")
+                return self._soundtrack_reply(failed)
+
+            def start():
+                try:
+                    return service.extras_add_staged(gid, kind, name, path, length)
+                except BaseException:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+                    raise
+            return self._soundtrack_reply(start)
+
         def _soundtrack_reply(self, fn):
             """Run a soundtrack call and turn its failures into plain JSON replies.
 
@@ -7794,6 +7961,20 @@ def make_handler(service: ROMarr):
                     (query.get("path") or [""])[0]))
             if route.path == "/api/v1/soundtracks/jobs":
                 return self._json(200, {"items": service.soundtrack_store().jobs()})
+            if route.path == "/api/v1/extras/game":
+                return self._soundtrack_reply(lambda: service.extras_game(
+                    (query.get("id") or [""])[0], (query.get("kind") or [""])[0]))
+            if route.path == "/api/v1/extras/torrents":
+                return self._soundtrack_reply(lambda: service.extras_torrents(
+                    (query.get("id") or [""])[0], (query.get("kind") or [""])[0], (query.get("q") or [""])[0]))
+            if route.path == "/api/v1/extras/archive/search":
+                return self._soundtrack_reply(lambda: service.extras_archive_search(
+                    (query.get("id") or [""])[0], (query.get("kind") or [""])[0], (query.get("q") or [""])[0]))
+            if route.path == "/api/v1/extras/archive/files":
+                return self._soundtrack_reply(lambda: service.extras_archive_files(
+                    (query.get("id") or [""])[0], (query.get("kind") or [""])[0], (query.get("item") or [""])[0]))
+            if route.path == "/api/v1/extras/jobs":
+                return self._json(200, {"items": service.extras_store().jobs()})
             if route.path == "/api/v1/game/detail":
                 return self._json(200, service.game_detail(
                     (query.get("platform") or [""])[0],
@@ -8430,6 +8611,8 @@ def make_handler(service: ROMarr):
                 self.send_header("Content-Length", str(len(refusal)))
                 self.end_headers()
                 return self.wfile.write(refusal)
+            if route.path == "/api/v1/extras/upload":
+                return self._extras_upload(query, length)
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
             except json.JSONDecodeError:
@@ -8857,6 +9040,23 @@ def make_handler(service: ROMarr):
                 if not isinstance(body, dict):
                     return self._json(400, {"error": "expected a JSON object"})
                 return self._soundtrack_reply(lambda: service.soundtrack_undo(str(body.get("id") or "")))
+            if route.path.startswith("/api/v1/extras/"):
+                if not isinstance(body, dict):
+                    return self._json(400, {"error": "expected a JSON object"})
+                gid, kind = str(body.get("id") or ""), str(body.get("kind") or "")
+                if route.path == "/api/v1/extras/torrents/grab":
+                    if not body.get("release"):
+                        return self._json(400, {"error": "id, kind and release are required"})
+                    return self._soundtrack_reply(lambda: service.extras_torrent_grab(gid, kind, str(body["release"])))
+                if route.path == "/api/v1/extras/torrents/cancel":
+                    return self._soundtrack_reply(lambda: service.extras_watch_cancel(gid, kind))
+                if route.path == "/api/v1/extras/archive/add":
+                    return self._soundtrack_reply(lambda: service.extras_archive_add(
+                        gid, kind, str(body.get("item") or ""), str(body.get("name") or "")))
+                if route.path == "/api/v1/extras/link":
+                    return self._soundtrack_reply(lambda: service.extras_link(gid, kind, str(body.get("url") or "")))
+                if route.path == "/api/v1/extras/undo":
+                    return self._soundtrack_reply(lambda: service.extras_undo(gid, kind))
             if route.path == "/api/v1/game/meta":
                 platform = str(body.get("platform") or "")
                 game = str(body.get("game") or "")
