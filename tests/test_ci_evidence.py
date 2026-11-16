@@ -166,3 +166,27 @@ def test_tokens_are_absent_from_actual_pytest_process(args, monkeypatch):
     assert ci.read(args.private / "run.json")["test"] == "PASS"
     counts, cases = ci.collect(args.private / "junit.xml")
     assert counts["passed"] == 1 and cases == [{"id": 1, "outcome": "passed"}]
+
+
+def test_windows_desktop_workflow_sanitizes_native_proof_artifact():
+    """Verify .github/workflows/windows.yml uploads only explicit proof artifacts and never browser-profile data (GHSA-8x4v-r6j4-f3j6)."""
+    workflow_path = Path(__file__).resolve().parents[1] / ".github/workflows/windows.yml"
+    text = workflow_path.read_text(encoding="utf-8")
+    assert "romarr-desktop-proof/**" not in text, "Recursive wildcard uploads browser-data profile"
+    assert "${{ runner.temp }}/romarr-desktop-proof/smoke-proof.json" in text
+    assert "${{ runner.temp }}/romarr-desktop-proof/smoke-ui.png" in text
+    assert "${{ runner.temp }}/romarr-desktop-proof/smoke-error.txt" in text
+    assert "${{ runner.temp }}/romarr-desktop-proof/config/desktop.log" in text
+    upload = text.split("- name: Upload native proof and logs", 1)[1].split("\n      - name:", 1)[0]
+    paths = upload.split("path: |", 1)[1].split("if-no-files-found:", 1)[0]
+    actual = {line.strip() for line in paths.splitlines() if line.strip()}
+    assert actual == {
+        "${{ runner.temp }}/romarr-desktop-proof/smoke-proof.json",
+        "${{ runner.temp }}/romarr-desktop-proof/smoke-ui.png",
+        "${{ runner.temp }}/romarr-desktop-proof/smoke-error.txt",
+        "${{ runner.temp }}/romarr-desktop-proof/config/desktop.log",
+        "${{ runner.temp }}/romarr-desktop-package/ROMarr-*/BUILD-INFO.json",
+    }, "Native evidence uploads must match the complete approved file list"
+    assert "Get-Content -LiteralPath $evidence\n" not in text, "Raw smoke-proof JSON should not be dumped to workflow logs"
+    assert "Get-ChildItem -LiteralPath $proof -Filter '*error*'" not in text, "Raw error/traceback dumps should not be spewed to workflow logs"
+

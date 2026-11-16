@@ -1,5 +1,7 @@
 # ROM Hub plugins
 
+![ROM Hub showing 29 enabled confined plugins](img/hub-plugins.png)
+
 **ROM Hub** is the plugin host. A **plugin** adds a source or capability: for example, searching a homebrew catalogue or looking up metadata. Installing ROMarr and installing a plugin are separate steps.
 
 ## Is ROM Hub already installed?
@@ -48,6 +50,21 @@ These entries and their tagged source repositories were checked on **2026-10-24*
 
 The [full catalogue](https://github.com/BlizzHacker/rom-hub/blob/master/catalog/plugins.json) also includes Archive.org, Demozoo, IF Archive and other sources. Read the individual plugin's limits: for example, the itch.io entry is explicitly **play in browser, no import**. A catalogue listing does not promise downloadable copies of every game on that site.
 
+### gamesgamesgamesgamesgames Video Game Standard (`rom-hub-gamesgames`)
+
+The `gamesgames` ROM Hub plugin ([`BlizzHacker/rom-hub-gamesgames`](https://github.com/BlizzHacker/rom-hub-gamesgames)) packages [gamesgamesgamesgamesgames](https://github.com/gamesgamesgamesgamesgames)' decentralized video game data architecture as an opt-in metadata plugin (`[capabilities] metadata`) rather than baking ATProto into ROMarr core:
+
+- **Video Game Lexicons ([gamesgamesgamesgamesgames/lexicon](https://github.com/gamesgamesgamesgamesgames/lexicon))**:
+  - `games.gamesgamesgamesgames.game`: Unified open standard for video games with IGDB, Wikidata, and ROMarr/RomM links.
+  - `games.gamesgamesgamesgames.release`: Platform editions, dump formats, and cryptographic DAT verification checksums (SHA-256, CRC32, MD5).
+  - `games.gamesgamesgamesgames.playState`: Decentralized player progression (`playing`, `completed`, `backlog`, `dropped`, `wishlist`), play time, and ratings synced across your screens.
+  - `games.gamesgamesgamesgames.achievement`: Cross-game trophies and achievements recorded on your personal game shelf.
+  - `dev.cartridge.verificationRequest`: Verification requests stored in your DID that carry a SHA-256 or CRC32 checksum for a No-Intro or Redump candidate. The plugin does not compare the checksum with DAT data or sign the request.
+- **Embedded Gaming AppView ([gamesgamesgamesgamesgames/happyview](https://github.com/gamesgamesgamesgamesgames/happyview))**:
+  - In `v0.1.0`, the plugin manifest registers a metadata provider (`enrich`); standalone HTTP XRPC endpoints (`games.gamesgamesgamesgames.getGame`, `listGames`, `getPlayState`) and background Jetstream event indexing are helper classes inside `gamesgames.lexicons` and are not exposed as host HTTP routes unless wired separately.
+- **Sovereign Gaming Studio ([gamesgamesgamesgamesgames/cartridge](https://github.com/gamesgamesgamesgamesgames/cartridge))**:
+  - Portable, player-owned game libraries and shelf records that travel with your gaming handle across devices.
+
 ## Add ROM Hub to a source or LXC installation
 
 Install Git using your operating system's package manager. Then install the host into **ROMarr's own virtual environment**. This example uses the same pinned Hub revision as the Docker image:
@@ -89,7 +106,7 @@ ROMarr's **Hub → Library Shell** (`/#portal`), **Hub → Plugins** (`/#hub`), 
 - **Supportive Library Shell (Iframe Portal)**: Embed **RomM**, **Retrom**, **Gaseous**, **Gameyfin**, or **GG Requestz** directly inside ROMarr with one-click API rescans, Igir v5.8.0 1G1R verification, Netplay SHA-1 hash seeding, and reverse-proxy CSP header guidance.
 - **Multi-Device & Network Fleet Manager (`/api/v1/hub/fleet`)**: Synchronize verified 1G1R sets and `gamelist.xml` / Playnite / LaunchBox manifests across local LAN/SMB/NFS shares, SSH/Tailscale handhelds, and cloud WebDAV targets — supporting **ES-DE**, **Raspberry Pi / RetroPie / ArcadePunks / Batocera**, **Argosy Launcher**, **Grout** (muOS/NextUI), **DeckRommSync** (Steam Deck), **SwitchRomM / Tinfoil**, **pkgj / pkgi / fpkgi**, **Kekatsu**, and **RetroArch Cloud Sync**.
 - **Igir v5.8.0 1G1R Front-End (`/api/v1/hub/igir`)**: Full GUI and API wrapper for Igir v5.8.0 with native `{romm}`, `{es}`, and `{batocera}` output folder tokens.
-- **Open-Eyes & ROMarr MCP Bridge (`/api/v1/mcp`)**: Ready-to-copy `mcpServers` configuration pairing [BlizzHacker/open-eyes](https://github.com/BlizzHacker/open-eyes) desktop control with ROMarr's API tools.
+- **ROMarr MCP (`/api/v1/mcp`)**: Connect Claude, Codex, Hermes or Antigravity directly to your own server. Streamable HTTP and a portable stdio bridge support API-key authentication. Read-only tools are enabled by default; [setup and permissions](MCP.md). Open-Eyes is a separate optional desktop-control tool.
 
 ### Platform-specific searches
 

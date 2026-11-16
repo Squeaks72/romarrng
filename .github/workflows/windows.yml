@@ -156,6 +156,9 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
+      - name: Check desktop version and release-tag validation
+        shell: pwsh
+        run: .\scripts\check-desktop-version.ps1
       - name: Check native server address validation
         shell: pwsh
         run: dotnet run --project desktop/tests/ServerAddressChecks/ServerAddressChecks.csproj
@@ -170,10 +173,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           [xml]$project = Get-Content -LiteralPath .\desktop\windows\ROMarr.Desktop.csproj
-          $version = [string]$project.Project.PropertyGroup.Version
-          if ($env:EVENT_NAME -eq 'release' -and $env:RELEASE_TAG -ne "v$version") {
-            throw 'Release tag and desktop project version must match before packages are published.'
-          }
+          . .\scripts\desktop-version.ps1
+          $projectVersion = [string]$project.Project.PropertyGroup.Version
+          $version = Resolve-ROMarrDesktopReleaseVersion -ProjectVersion $projectVersion -EventName $env:EVENT_NAME -ReleaseTag $env:RELEASE_TAG
           $output = Join-Path $env:RUNNER_TEMP 'romarr-desktop-package'
           $options = @{ OutputDirectory = $output; Version = $version; PythonPath = (Get-Command python).Source }
           if ($env:STORE_IDENTITY_NAME) { $options.StoreIdentityName = $env:STORE_IDENTITY_NAME }
@@ -203,15 +205,13 @@ jobs:
             if ($process.ExitCode -ne 0) { throw "The native EXE failed with exit code $($process.ExitCode)." }
             $evidence = Join-Path $proof 'smoke-proof.json'
             if (-not (Test-Path -LiteralPath $evidence)) { throw 'The real EXE did not produce smoke proof.' }
-            Get-Content -LiteralPath $evidence
             $result = Get-Content -LiteralPath $evidence -Raw | ConvertFrom-Json
-            foreach ($property in @('nativeWindow','embeddedInterface','bundledPython','bundledHub','pluginInstall','setupGuide','authentication','persistence','remoteView','remoteDisconnectKeepsServer','versionIdentity','remoteSignInPolicy')) {
+            foreach ($property in @('nativeWindow','shellLayout','embeddedInterface','bundledPython','bundledHub','pluginInstall','setupGuide','authentication','persistence','remoteView','remoteDisconnectKeepsServer','versionIdentity','remoteSignInPolicy')) {
               if ($result.$property -ne $true) { throw "Native proof is missing: $property" }
             }
           } finally {
             $env:PATH = $previousPath
             if ($process -and -not $process.HasExited) { $process.Kill($true) }
-            Get-ChildItem -LiteralPath $proof -Filter '*error*' -File -Recurse | ForEach-Object { Get-Content -LiteralPath $_.FullName }
           }
       - name: Upload native proof and logs
         if: always()
@@ -219,7 +219,10 @@ jobs:
         with:
           name: ROMarr-Windows-native-proof
           path: |
-            ${{ runner.temp }}/romarr-desktop-proof/**
+            ${{ runner.temp }}/romarr-desktop-proof/smoke-proof.json
+            ${{ runner.temp }}/romarr-desktop-proof/smoke-ui.png
+            ${{ runner.temp }}/romarr-desktop-proof/smoke-error.txt
+            ${{ runner.temp }}/romarr-desktop-proof/config/desktop.log
             ${{ runner.temp }}/romarr-desktop-package/ROMarr-*/BUILD-INFO.json
           if-no-files-found: warn
           retention-days: 14

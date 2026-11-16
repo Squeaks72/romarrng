@@ -10,7 +10,68 @@ Minimum Android version: Android 7.0 (API 24). Target/compile API: 36.
 Packaged architectures: ARM64 and x86_64. This is an installable Android application,
 including on compatible Android desktop environments; it is not a Linux desktop binary.
 
+## Google Play Beta & Direct APK Downloads
+
+ROMarr is available for Android in two convenient ways:
+
+1. 📲 **Google Play Closed Beta Track (12 Testers Needed)**:
+   👉 **[Join the Android Beta on Google Play](https://play.google.com/apps/internaltest/4700888732790045566)**  
+   Opting in allows direct install and automatic updates from Google Play on your phone, tablet, or gaming handheld.
+
+2. 📦 **Direct APK Sideload (GitHub Releases)**:
+   👉 **[Download the Latest APK from Releases](https://github.com/BlizzHacker/romarr/releases)**  
+   Self-contained APK with Chaquopy Python runtime embedded. Install directly on any ARM64 or x86_64 device running Android 7.0+ without waiting for Google Play approval or needing Termux/Docker.
+
+## Argosy Launcher and Frontend Integration
+
+ROMarr includes native RomM v5 API compatibility. This allows mobile launchers and frontend apps originally built for RomM to use ROMarr directly as their backend server.
+
+### Connecting Argosy Launcher
+
+[Argosy Launcher](https://github.com/rommapp/argosy-launcher) is an open-source, controller-first Android launcher designed for retro gaming handhelds.
+
+To pair Argosy with ROMarr:
+1. Ensure ROMarr is running (either locally on your Android device or on your home server/NAS at `http://<your-server-ip>:6868`).
+2. Open **Argosy Launcher** on your Android device.
+3. In the server setup screen, enter your ROMarr URL:
+   - For local ROMarr on the same device: `http://127.0.0.1:6868`
+   - For remote server: `http://<lan-ip>:6868` or your HTTPS domain.
+4. Argosy queries `/api/heartbeat`, `/api/users/me`, `/api/permissions/me`, and `/api/platforms`.
+5. ROMarr's standalone portal proxy responds with full RomM 5.1.0-compatible capabilities, letting Argosy discover your platforms, library ROMs, box art, and metadata.
+
+### Handheld Gaming Devices & Controller Navigation
+
+ROMarr and Argosy Launcher are optimized for modern Android gaming handhelds, including:
+- **Ayn Odin 2 / Odin 2 Mini / Odin Pro**
+- **Retroid Pocket 4 Pro / Retroid Pocket 5 / Retroid Pocket Mini / Retroid Pocket 3+**
+- **Anbernic RG556 / RG Cube / RG405M / RG505**
+- **Logitech G Cloud / Razer Edge / Pimax Portal**
+
+### Compatible Android Emulators
+
+Files in your library can be launched directly into installed emulators via Android's `ACTION_VIEW` intent and FileProvider:
+- **RetroArch** (`com.retroarch` / `com.retroarch.aarch64`)
+- **Dolphin Emulator** (`org.dolphinemu.dolphinemu`)
+- **DuckStation** (`com.github.stenzek.duckstation`)
+- **PPSSPP** (`org.ppsspp.ppsspp` / `org.ppsspp.ppssppgold`)
+- **NetherSX2 / AetherSX2** (`xyz.aethersx2.android`)
+- **Citra / Lime3DS / Citra Enhanced** (`org.citra.citra_emu`)
+- **Vita3K Android** (`org.vita3k.emulator`)
+- **Mupen64Plus FZ** (`org.mupen64plusae.v3.fzurita`)
+
 ## Use
+
+| Android Home & Top Toolbar | Slide-Out Drawer & Appearance |
+|---|---|
+| ![ROMarr Android App with native toolbar and ROM Hub](img/editions/romarr-android-edition.png) | ![ROMarr Android slide-out navigation drawer and theme picker](img/editions/romarr-android-drawer.png) |
+
+The dark native toolbar keeps the active device or server visible above the app.
+Open **ROMarr menu** (⋮) for **This device**, **Servers**, **Import ROM or DAT**,
+**Play a local file**, **Connection details**, and **Privacy policy**. The privacy
+policy opens `https://romarr.app/privacy` in your system browser without changing
+the selected server or exposing its session. Long server names shorten on
+small screens; Connection details shows the complete address. The toolbar and
+WebView respect system bars, display cutouts and the on-screen keyboard.
 
 - **This device** opens the bundled server. The native host preclaims this listener with an ephemeral secret and supplies
   a private HttpOnly session cookie before loading the UI. Other local apps cannot
@@ -87,7 +148,7 @@ private Java properties file containing storeFile, storePassword, keyAlias and
 keyPassword. Signed APK output is `apk/release/app-release.apk`. Never put that
 file, keystore, or password inside the checkout.
 
-The public 1.10.0 preview uses a persistent owner-controlled preview certificate
+The 1.10.x previews use a persistent owner-controlled preview certificate
 with SHA-256 fingerprint
 `76ade6d94d71536eeacc5d87c4db4d05a877d7c0410d3a94b8c307d9fe69868c`.
 Its PKCS12 key, password and signing properties are private mode-0600 files under
@@ -96,6 +157,11 @@ The owner must arrange an encrypted private backup of the key and password befor
 relying on update continuity; losing it prevents updates to that signed install.
 This is a preview distribution identity, not proof of a verified Play publisher.
 A future different Play signing identity may require uninstall/reinstall.
+
+The 12-test API 36 instrumentation suite includes native toolbar/WebView bounds,
+long server names and actual keyboard resize checks. The layout case also runs
+at 360 dp width, font scale 1.3, and 640 × 360 dp landscape. Screenshots and private
+exact-source receipts accompany the server build; see [build proof](../desktop/android/BUILD-PROOF.md).
 
 The instrumentation tests run the packaged Python interpreter, start the actual
 loopback server, fetch health and UI responses, reject anonymous protected API/setup requests,

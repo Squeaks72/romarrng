@@ -144,7 +144,7 @@ def test_searchable_platform_dropdowns_and_all_platforms_filter():
     # Add New (which absorbed Interactive Search) uses the searchable picker with
     # the consistent 'Any platform' label; the library filter says 'All platforms'.
     assert "{value:'',label:'Any platform'}" in html
-    assert "{value:'',label:'All platforms'" in html
+    assert "sel('platform','All platforms'" in html
     # Fix existing filenames includes 'Select a platform' placeholder
     assert '<select id="rn-plat"><option value="" disabled selected hidden>Select a platform</option>' in html
 

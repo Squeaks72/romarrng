@@ -42,6 +42,7 @@ import os
 import pathlib
 import re
 import threading
+import subprocess
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -66,6 +67,7 @@ from . import clamav, scanners, nup, mdm
 from . import soundtracks as soundtracks_mod
 from .emulators import EmulatorHub
 from .libretro import CoreHub
+from .cartridge import CartridgeHub
 from .emulator_catalog import resource_catalog
 from .dat import DatIndex, parse_dat
 from .decompress import run_batch as run_decompress_batch, scan_compressed
@@ -110,6 +112,7 @@ from .playability import (
     WOLF, MoonlightHost, PlayerPolicy, RetroArchNCI, StreamServer,
     StreamSources, routes_for, routes_for_file)
 from .lists import LIST_TYPES
+from . import release_controls
 
 #: List-source fields that are credentials: masked on the way out, kept on
 #: edit when the form returns the placeholder.
@@ -527,6 +530,9 @@ class ROMarr:
         self._lock = threading.Lock()
         # A manual check and the daily sweep must never overlap or auto-apply twice.
         self._update_check_lock = threading.Lock()
+        # First-run setup claims serialize here after pre-hashing so concurrent
+        # claimants cannot both observe an unclaimed install and mint sessions.
+        self._setup_lock = threading.Lock()
         # Git HEAD can move without restarting this service. Pin the source
         # actually running at service construction, not a later checkout HEAD.
         from . import nightly, selfupdate
@@ -1721,6 +1727,29 @@ class ROMarr:
         }
         self.store.save()
         return {"ok": True}
+
+    def claim_setup(self, password: str) -> str | None:
+        """Hash outside the claim lock, then atomically persist and claim ownership."""
+        candidate_hash = self.auth.hash_password(password)
+        with self._setup_lock:
+            if self.claimed:
+                return None
+            with self.store._lock:
+                had_previous = "_password_hash" in self.store.settings
+                previous_hash = self.store.settings.get("_password_hash")
+                self.store.settings["_password_hash"] = candidate_hash
+                try:
+                    self.store.save(raise_on_error=True)
+                except Exception:
+                    if had_previous:
+                        self.store.settings["_password_hash"] = previous_hash
+                    else:
+                        self.store.settings.pop("_password_hash", None)
+                    raise
+            self.auth.password_hash = candidate_hash
+            self.claimed = True
+            log.info("this install has been claimed; setup is now closed")
+            return self.auth.issue_session()
 
     def setup_dats(self, directory: str) -> dict:
         """Validate the optional DAT folder and explain an empty result."""
@@ -4343,7 +4372,8 @@ class ROMarr:
                         prefer_hardlinks=staged_source == source and bool(self.store.settings.get("prefer_hardlinks", False)),
                                       layout=self.library_layout(target_cfg),
                                       translation=is_translation(source.name),
-                                      platform_folders=target_folders)
+                                      platform_folders=target_folders,
+                                      **self._import_hash_options())
         except (OSError, ValueError) as err:
             reason = f"could not prepare scanned import: {err}"
             return {"ok": False, "reason": reason, "imported": [], "refused": [
@@ -4384,7 +4414,7 @@ class ROMarr:
 
             forced = force and status == BAD_DUMP
             self._index_hash(verdict, platform.slug, source.stem,
-                             outcome.destination)
+                             outcome.destination, sha1=outcome.sha1)
             self.store.record(Event(
                 kind="imported", game=source.stem, platform=platform.slug,
                 release=source.name, library=label,
@@ -5970,8 +6000,17 @@ class ROMarr:
     # secret is stored as `token` on both sides, so no second exchange is
     # needed to talk back.
 
+    def _import_hash_options(self) -> dict:
+        """Check imported payloads against retained copies across all configured roots."""
+        index = getattr(self, "hashes", None)
+        if index is None or not self.store.settings.get("hash_index", True):
+            return {}
+        roots = [self.library]
+        roots.extend(self.library_root(cfg) for cfg, _ in self.game_libraries)
+        return {"hash_index": index, "duplicate_roots": tuple(dict.fromkeys(roots))}
+
     def _index_hash(self, verdict, platform: str, fallback: str,
-                    destination=None) -> None:
+                    destination=None, *, sha1: str = "") -> None:
         """Record an imported file's hash, if verification produced one.
 
         Import is where new ROMs arrive, so without this the index only ever
@@ -5979,7 +6018,8 @@ class ROMarr:
         acquisition pipeline did its job.
         """
         rom = getattr(verdict, "rom", None)
-        sha1 = str(getattr(rom, "sha1", "") or "")
+        physical_sha1 = str(sha1 or "")
+        sha1 = str(getattr(rom, "sha1", "") or physical_sha1)
         if not sha1:
             return
         from .dat import VERIFIED
@@ -5995,7 +6035,7 @@ class ROMarr:
                 path = ""
         self.hashes.add(sha1, getattr(verdict, "game", "") or fallback,
                         platform, getattr(verdict, "status", "") == VERIFIED,
-                        path)
+                        path, physical_sha1=physical_sha1)
         self.hashes.save()
 
     #: Progress of the background hash seed, so the UI can show it moving
@@ -6663,18 +6703,22 @@ class ROMarr:
                 # Keep the hash. Netplay is decided on bytes, and this walk
                 # is the only place ROMarr ever computes them; discarding
                 # them here is what left an offer with nothing to carry.
-                if sha:
-                    self.hashes.add(
-                        sha, verdict.game or path.stem, platform.slug,
-                        verdict.status == VERIFIED,
-                        path.relative_to(library_root).as_posix())
                 # DAT verification strips copier headers on some platforms.
                 # Quarantine candidates must match every physical byte instead.
                 try:
                     raw_sha = raw_sha1(path)
-                    raw_size = path.stat().st_size
+                    final = path.stat()
+                    raw_size = final.st_size
                 except OSError:
                     continue
+                if (after.st_size, after.st_mtime_ns, after.st_ino) != (
+                        final.st_size, final.st_mtime_ns, final.st_ino):
+                    continue
+                if sha:
+                    self.hashes.add(
+                        sha, verdict.game or path.stem, platform.slug,
+                        verdict.status == VERIFIED,
+                        path.relative_to(library_root).as_posix(), physical_sha1=raw_sha)
                 key = (raw_sha, raw_size)
                 if key in seen:
                     state["duplicates"].append({
@@ -7119,7 +7163,8 @@ class ROMarr:
                 not running_revision
                 or settings.get("_update_checked_revision") != running_revision):
             state, reason = "unknown", "nightly_build_changed"
-        elif state in ("available", "current") and not _comparable_version(VERSION) and channel != "nightly":
+        elif state in ("available", "current") and channel != "nightly" and not (
+                release_controls.version_key(VERSION) if channel in ("alpha", "beta", "rc") else _comparable_version(VERSION)):
             state, reason = "unknown", "running_version_unknown"
         elif state in ("available", "current") and channel != "nightly" and (
                 get_build_info(VERSION).get("type") == "development"):
@@ -7204,6 +7249,8 @@ class ROMarr:
                         "latest_revision": verdict.get("latest_revision", ""),
                         "update_available": state == "available",
                         "message": message}
+            if channel in ("alpha", "beta", "rc"):
+                return release_controls.check_channel(self, channel, VERSION)
             if channel != "stable":
                 self._record_update_check("unknown", "unsupported_update_channel",
                                           checked_channel=channel)
@@ -7250,7 +7297,7 @@ class ROMarr:
                 return failed("invalid_response", "github.com returned invalid release data")
             latest = str(body.get("tag_name") or "").lstrip("vV")
             url = str(body.get("html_url") or "")
-            if not _comparable_version(latest):
+            if not _comparable_version(latest) or release_controls.stage(latest) != "stable":
                 return failed("invalid_release",
                               "github.com answered without a valid release tag")
 
@@ -7337,7 +7384,7 @@ class ROMarr:
         with self._lock:
             channel = str(self.store.settings.get("update_channel")
                           or "stable").lower()
-            if channel not in ("stable", "nightly"):
+            if channel not in release_controls.CHANNELS:
                 return {"ok": False, "error": f"unknown update channel {channel!r}"}
             if expected_channel and (
                     channel != expected_channel
@@ -7356,6 +7403,10 @@ class ROMarr:
                 return {"ok": False, "deferred": True,
                         "error": "downloads or imports are in flight; the update "
                                  "will apply on the next daily check"}
+            if channel in ("alpha", "beta", "rc") and (
+                    self.store.settings.get("_update_checked_channel") != channel
+                    or self.store.settings.get("_update_state") != "available"):
+                return {"ok": False, "error": "Check the selected preview channel before applying it"}
             latest = (expected_release if expected_channel else
                       str(self.store.settings.get("_latest_version") or ""))
             if channel == "nightly":
@@ -7392,6 +7443,8 @@ class ROMarr:
             capability_reason = "update_check_disabled"
         elif not env.can_apply:
             capability_reason = "install_cannot_self_update"
+        elif check["channel"] in ("alpha", "beta", "rc"):
+            capability_reason = "preview_channel_manual_apply"
         elif check["channel"] != "stable":
             capability_reason = "nightly_revision_check_not_supported"
         elif not _comparable_version(VERSION):
@@ -7402,6 +7455,8 @@ class ROMarr:
             capability_reason = "enabled"
         return {
             "running_version": VERSION,
+            "preview": release_controls.active_preview(env),
+            "channels": list(release_controls.CHANNELS),
             "build": get_build_info(VERSION),
             "latest_version": check["latest_version"],
             "update_available": check["update_available"],
@@ -7612,6 +7667,70 @@ class ROMarr:
 
         targets = self._portal_targets()
         wanted = str(url or "").strip() or self.active_portal_url()
+        sub_path = str(path or "").strip()
+        if not sub_path and wanted:
+            parts = urlsplit(wanted)
+            sub_path = parts.path or "/"
+            if parts.query:
+                sub_path = f"{sub_path}?{parts.query}"
+        if not sub_path.startswith("/"):
+            sub_path = "/" + sub_path
+
+        # Standalone ROMarr local emulation & Argosy fallback response when no external library is configured
+        if not wanted or not targets:
+            if sub_path.startswith("/api/heartbeat"):
+                payload = {
+                    "SYSTEM": {
+                        "version": getattr(self, "VERSION", "1.10.1"),
+                        "romm_version": "5.1.0-romarr",
+                        "arch": "x86_64",
+                        "os": "Linux"
+                    },
+                    "METADATA_SOURCES": {
+                        "libretro_api_enabled": True,
+                        "steam_grid_db_enabled": True
+                    },
+                    "SAVE_SYNC": {
+                        "enabled": True,
+                        "snapshots_enabled": True
+                    }
+                }
+                return 200, "application/json", json.dumps(payload).encode("utf-8")
+            if sub_path.startswith("/api/users/me"):
+                payload = {
+                    "id": 1,
+                    "username": "romarr",
+                    "enabled": True,
+                    "role": "admin",
+                    "avatar_path": None,
+                    "updated_at": None,
+                    "ra_username": None
+                }
+                return 200, "application/json", json.dumps(payload).encode("utf-8")
+            if sub_path.startswith("/api/permissions/me"):
+                payload = {
+                    "is_admin": True,
+                    "hidden": {"platforms": [], "roms": []}
+                }
+                return 200, "application/json", json.dumps(payload).encode("utf-8")
+            if sub_path.startswith("/api/platforms"):
+                plats = []
+                for idx, p in enumerate(PLATFORMS, 1):
+                    plats.append({
+                        "id": idx,
+                        "slug": p.slug,
+                        "name": p.name,
+                        "fs_slug": p.slug,
+                        "rom_count": 0,
+                        "display_name": p.name,
+                        "url_logo": None,
+                        "firmware": []
+                    })
+                return 200, "application/json", json.dumps(plats).encode("utf-8")
+            if sub_path.startswith("/api/roms"):
+                return 200, "application/json", b'{"items":[],"total":0,"page":1,"size":50,"pages":0}'
+            return 400, "application/json", b'{"error":"http(s) URL required"}'
+
         parts = urlsplit(wanted)
         if parts.scheme not in ("http", "https") or not parts.netloc:
             return 400, "application/json", b'{"error":"http(s) URL required"}'
@@ -8282,6 +8401,7 @@ class ROMarr:
                 layout=self.library_layout(target_cfg),
                 translation=is_translation(name),
                 platform_folders=target_folders,
+                **self._import_hash_options(),
                 **({"selected_primaries": selected_primaries} if selected_primaries is not None else {}),
                 **({"bundle_routes": bundle_routes} if bundle_routes is not None else {}))
             game_title = (queue_item.game if queue_item and getattr(queue_item, "game", "") else name)
@@ -8304,6 +8424,9 @@ class ROMarr:
             fulfils_base = not (queue_item and queue_item.import_intent.get("existing_game"))
             for outcome in outcomes:
                 if outcome.ok:
+                    if outcome.sha1:
+                        self._index_hash(outcome.verification, platform.slug, game_title,
+                                         outcome.destination, sha1=outcome.sha1)
                     self.store.record(Event(kind="imported", game=game_title,
                                             platform=platform.slug, release=name,
                                             library=label,
@@ -8429,7 +8552,9 @@ def is_portal_subpath(path: str) -> bool:
                         "/api/stats", "/api/tasks", "/api/playlists",
                         "/api/saves", "/api/states", "/api/screenshots",
                         "/api/platforms/", "/api/platform", "/api/activity",
-                        "/api/client_tokens", "/api/play_sessions",
+                        "/api/client_tokens", "/api/client-tokens", "/api/auth/device",
+                        "/api/search/cover", "/api/search",
+                        "/api/play_sessions",
                         "/api/recommendations", "/api/music", "/api/sync",
                         "/api/feeds", "/api/logs", "/api/export",
                         "/api/netplay", "/api/permissions", "/api/memory_cards",
@@ -8765,6 +8890,10 @@ def make_handler(service: ROMarr):
             return self._gate(self._get)
 
         def do_POST(self):
+            if urlparse(self.path).path == "/api/v1/mcp":
+                from . import mcp
+                # MCP always checks an explicit API header, even with REST auth disabled.
+                return self._guard(lambda: mcp.http(self, service))
             return self._gate(self._post)
 
         def do_PUT(self):
@@ -8999,6 +9128,11 @@ def make_handler(service: ROMarr):
                     return self._json(200, result)
                 except (ValueError, requests.RequestException):
                     return self._json(400, {"error": "Could not check this upstream release. Use its downloads page."})
+            if route.path == "/api/v1/cartridge/status":
+                try:
+                    return self._json(200, CartridgeHub(service.store.path.parent).status())
+                except Exception as err:
+                    return self._json(400, {"error": str(err)})
             if route.path == "/api/v1/downloadclient/mdm":
                 return self._json(200, service.mdm_capability())
             if route.path == "/metrics":
@@ -9093,6 +9227,13 @@ def make_handler(service: ROMarr):
             if route.path == "/api/v1/tag":
                 return self._json(200, {
                     "tags": service.store.settings.get("_tags") or {}})
+            if route.path in ("/api/v1/update/prs", "/api/v1/update/releases"):
+                try:
+                    items = (release_controls.list_prs() if route.path.endswith("/prs") else
+                             release_controls.releases((query.get("channel") or ["stable"])[0]))
+                    return self._json(200, {"items": items})
+                except (ValueError, requests.RequestException) as exc:
+                    return self._json(400, {"error": str(exc)})
             if route.path == "/api/v1/update":
                 return self._json(200, service.update_status())
             if route.path == "/api/v1/asset":
@@ -9475,6 +9616,9 @@ def make_handler(service: ROMarr):
             if route.path == "/api/v1/hub/fleet":
                 return self._json(200, hub.fleet_profiles())
             if route.path == "/api/v1/mcp":
+                from . import mcp
+                if "text/event-stream" in self.headers.get("Accept", ""):
+                    return mcp.http(self, service)
                 return self._json(200, hub.mcp_manifest())
             if route.path == "/api/v1/moonlight":
                 return self._json(200, service.moonlight_status())
@@ -9589,6 +9733,19 @@ def make_handler(service: ROMarr):
             except json.JSONDecodeError:
                 return self._json(400, {"error": "invalid json"})
 
+            if route.path in ("/api/v1/update/pr", "/api/v1/update/pr/apply", "/api/v1/update/pr/restore"):
+                try:
+                    if not isinstance(body, dict):
+                        raise ValueError("Expected an object")
+                    if route.path.endswith("/apply"):
+                        result = release_controls.apply_pr(service, body)
+                    elif route.path.endswith("/restore"):
+                        result = release_controls.restore_preview(service, body)
+                    else:
+                        result = release_controls.inspect_pr(body.get("number"))
+                    return self._json(200, result)
+                except (ValueError, OSError, subprocess.SubprocessError, requests.RequestException) as exc:
+                    return self._json(400, {"error": str(exc)})
             if route.path == "/api/v1/capture":
                 # Catalogue rows the operator's own browser saw, from a site no
                 # HTTP client can read. Authenticated by the same gate as every
@@ -10132,26 +10289,31 @@ def make_handler(service: ROMarr):
                 # First-run claim. Open only while unclaimed, and it closes the
                 # moment it succeeds -- so this is a one-shot, not a standing
                 # unauthenticated way to reset the password.
+                already_claimed = {
+                    "error": "already set up",
+                    "detail": "This ROMarr already has a password. Sign in "
+                              "instead.",
+                }
                 if service.claimed:
-                    return self._json(409, {
-                        "error": "already set up",
-                        "detail": "This ROMarr already has a password. Sign in "
-                                  "instead.",
-                    })
+                    return self._json(409, already_claimed)
+                if not isinstance(body, dict):
+                    return self._json(400, {"error": "Use a JSON object"})
                 password = str(body.get("password") or "")
                 if len(password) < MIN_PASSWORD:
                     return self._json(400, {
                         "error": "weak password",
                         "detail": f"Use at least {MIN_PASSWORD} characters.",
                     })
-                service.store.settings["_password_hash"] = \
-                    service.auth.hash_password(password)
-                service.auth.password_hash = \
-                    service.store.settings["_password_hash"]
-                service.claimed = True
-                service.store.save()
-                log.info("this install has been claimed; setup is now closed")
-                token = service.auth.issue_session()
+                try:
+                    token = service.claim_setup(password)
+                except Exception:
+                    log.exception("failed to persist initial setup password")
+                    return self._json(500, {
+                        "error": "could not save password",
+                        "detail": "Could not persist the setup password.",
+                    })
+                if token is None:
+                    return self._json(409, already_claimed)
                 return self._send_session(token, {"ok": True})
             if route.path == "/api/v1/login":
                 # Exchange a credential for a session, so a browser presents
@@ -10402,6 +10564,29 @@ def make_handler(service: ROMarr):
                         scanners.ScanUnavailable) as err:
                     log.warning("Emulator installation failed: %s", type(err).__name__)
                     return self._json(400, {"error": str(err) if isinstance(err, (ValueError, scanners.ScanUnavailable)) else "Emulator installation failed"})
+            if route.path == "/api/v1/cartridge/install":
+                try:
+                    cartridge_hub = CartridgeHub(service.store.path.parent)
+                    result = cartridge_hub.install(scanner=service.scan_installation)
+                    return self._json(200, result)
+                except (ValueError, OSError, requests.RequestException, scanners.ScanUnavailable) as err:
+                    log.warning("Cartridge installation failed: %s", type(err).__name__)
+                    return self._json(400, {"error": str(err) if isinstance(err, (ValueError, scanners.ScanUnavailable)) else "Cartridge installation failed"})
+            if route.path == "/api/v1/cartridge/launch":
+                try:
+                    cartridge_hub = CartridgeHub(service.store.path.parent)
+                    port_val = service.port if hasattr(service, "port") else 6868
+                    result = cartridge_hub.launch(port=port_val, game_id=str(body.get("game_id") or "") or None)
+                    return self._json(200, result)
+                except Exception as err:
+                    return self._json(400, {"error": str(err)})
+            if route.path == "/api/v1/emulators/plug-and-play":
+                try:
+                    cartridge_hub = CartridgeHub(service.store.path.parent)
+                    result = cartridge_hub.plug_and_play_setup()
+                    return self._json(200, result)
+                except Exception as err:
+                    return self._json(400, {"error": str(err)})
             if route.path == "/api/v1/security/inspect":
                 try:
                     return self._json(200, service.security_inspect(

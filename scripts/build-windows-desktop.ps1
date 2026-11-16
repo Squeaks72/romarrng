@@ -9,7 +9,7 @@ Python, ROM Hub, MinGit, .NET and a fixed WebView2 runtime ship in the package.
 [CmdletBinding()]
 param(
     [string]$OutputDirectory,
-    [string]$Version = '1.10.0',
+    [string]$Version = '1.10.1',
     [string]$PythonPath = 'python',
     [string]$StoreIdentityName = 'MoveWeight.ROMarr.Desktop',
     [string]$StorePublisher = 'CN=MoveWeight',
@@ -19,13 +19,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'desktop-version.ps1')
+$packageVersion = Get-ROMarrDesktopPackageVersion -Version $Version
 if (-not $IsWindows) { throw 'Build the desktop package on Windows with .NET 10 SDK and Python 3.13.' }
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repo 'artifacts\windows' }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 [IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
-if ($Version -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') { throw 'Version must contain three or four numeric components.' }
-if (-not $StoreVersion) { $StoreVersion = if ($Version.Split('.').Count -eq 3) { "$Version.0" } else { $Version } }
+if (-not $StoreVersion) { $StoreVersion = $packageVersion.StoreVersion }
 if ($StoreVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'StoreVersion must have four numeric components.' }
 if ($StoreIdentityName -notmatch '^[A-Za-z0-9.-]+$') { throw 'StoreIdentityName must be the package identity from Partner Center.' }
 
@@ -157,7 +158,7 @@ try {
     foreach ($image in $iconImages) { $writer.Write($image) }
 } finally { $writer.Dispose(); $iconStream.Dispose() }
 
-& dotnet publish (Join-Path $repo 'desktop\windows\ROMarr.Desktop.csproj') --configuration Release --runtime win-x64 --self-contained true --output $bundle "-p:Version=$Version" '-p:DebugType=None' '-p:DebugSymbols=false' "-p:ApplicationIcon=$iconPath"
+& dotnet publish (Join-Path $repo 'desktop\windows\ROMarr.Desktop.csproj') --configuration Release --runtime win-x64 --self-contained true --output $bundle "-p:Version=$Version" "-p:InformationalVersion=$Version" '-p:DebugType=None' '-p:DebugSymbols=false' "-p:ApplicationIcon=$iconPath"
 if ($LASTEXITCODE -ne 0) { throw 'The native desktop application did not publish.' }
 if (-not (Test-Path -LiteralPath (Join-Path $bundle 'ROMarr.exe'))) { throw 'ROMarr.exe is missing.' }
 Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination (Join-Path $bundle 'LICENSE.txt')
