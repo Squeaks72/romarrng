@@ -13,6 +13,8 @@ ROMarr can import files you already have with only a destination folder. Searchi
 - [Home Assistant](#home-assistant)
 - [From source](#from-source)
 - [Windows app](#windows-app)
+- [macOS, Linux & SteamOS Standalone Launcher (Non-Server Users)](#macos-linux--steamos-standalone-launcher-non-server-users)
+- [Raspberry Pi, Retro Punks Arcade & Handheld Setups](#raspberry-pi-retro-punks-arcade--handheld-setups)
 - [Windows source install](#windows-source-install)
 - [First run: claiming the install](#first-run-claiming-the-install)
 - [The rule that catches everyone](#the-rule-that-catches-everyone)
@@ -316,11 +318,13 @@ python -m romarr
 
 Open <http://localhost:6868>. This runs in the foreground; Ctrl+C stops it. Keep the same environment variables when starting it again. To run unattended, configure your operating system's service manager with those paths and the virtual-environment interpreter.
 
-ZIP handling is built in. Install `bsdtar` for supported `.7z` and `.rar` archives (`libarchive-tools` on Debian/Ubuntu, `libarchive` on Alpine/Arch, or `brew install libarchive` on macOS). GNU/BusyBox tar is not a substitute. ROM Hub is optional and has [separate installation instructions](PLUGINS.md#add-rom-hub-to-a-source-or-lxc-installation).
+ZIP handling is built in. Install `bsdtar` for supported `.7z` and `.rar` archives (`libarchive-tools` on Debian/Ubuntu, `libarchive` on Alpine/Arch, or `brew install libarchive` on macOS). GNU/BusyBox tar is not a substitute. For RAR releases split into volumes (`.part01.rar`, `.rar` + `.r00`, or `.001`), also install `unar` (`apt install unar`) or 7-Zip with RAR support (the official `7zz` from [its releases](https://github.com/ip7z/7zip/releases); Alpine's and Debian's `7zip` packages leave RAR out), on `PATH`. bsdtar reads one volume at a time, so it cannot join them. ROMarr uses 7-Zip or unar for every `.rar` when one is installed; the browser image ships `unar`. ROM Hub is optional and has [separate installation instructions](PLUGINS.md#add-rom-hub-to-a-source-or-lxc-installation).
 
 `.env.example` documents additional environment options. Python does not automatically load a `.env` file; source it or supply an environment file through your service manager. Configure connections in the UI after first startup.
 
 ## Windows app
+
+![ROMarr Windows Desktop App showing Cartridge menu and Emulator Hub](img/editions/romarr-windows-edition.png)
 
 Download the portable **Windows 10/11 x64** app. The package contains the native Windows window, embedded WebView2 interface, Python backend, ROM Hub and Git. No Python, PowerShell, Docker, .NET or separate browser installation is required to use it.
 
@@ -328,7 +332,7 @@ Download the portable **Windows 10/11 x64** app. The package contains the native
 2. Extract the **whole ZIP** to a folder you own. Keep `ROMarr.exe`, `backend`, `browser` and `git` together. Do not open the EXE from inside the ZIP.
 3. Double-click **ROMarr.exe**. Choose your data folder and ROM library folder, then click **Start ROMarr**.
 4. Set your ROMarr password in the embedded interface. Follow **Settings -> Setup Guide**. Choose **I already have ROMs** to start with an existing collection.
-5. Add your connections and plugins when needed. The **Cartridge** menu offers separate optional downloads for Windows and Xbox players; neither is required for ROMarr.
+5. Add your connections and plugins when needed. The **Cartridge** menu offers optional player downloads for Windows, Xbox, and Android (Argosy Launcher); none are required for ROMarr, but they provide seamless frontends to play your library across desktop, console, and handheld screens.
 
 The app listens on `127.0.0.1:6868` by default. Its native window has folder pickers, Start/Stop, a port setting, data/log access and help links. Closing it stops the backend it started. It does not run as a Windows service or start automatically with Windows.
 
@@ -339,6 +343,51 @@ To update, close ROMarr, extract the new release into a fresh application folder
 Windows checks build the actual app and run it with external Python and Git removed from `PATH`. They check the native window, embedded sign-in/setup guide, API protection, bundled plugin installation and settings after restart. Check the release's linked run and proof for its exact results; real hardware and every external integration need their own field reports.
 
 The **unsigned MSIX** is for development and Store preparation. It is not a certified Microsoft Store release or a normal unsigned installation option. [Build and Store submission details](../desktop/windows/BUILDING.md).
+
+## macOS, Linux & SteamOS Standalone Launcher (Non-Server Users)
+
+For desktop users who want to run ROMarr on their Mac, Linux PC, or Steam Deck without managing Docker containers or manual virtual environments:
+
+The standalone launcher (`scripts/start-desktop.sh`) automatically bootstraps an isolated virtual environment, configures loopback listeners, sets up your platform's native ROM directories, launches the backend, and opens your browser.
+
+```bash
+git clone https://github.com/BlizzHacker/romarr.git
+cd romarr
+chmod +x ./scripts/start-desktop.sh
+./scripts/start-desktop.sh
+```
+
+### SteamOS / Steam Deck
+- On Steam Deck (Desktop Mode), open Konsole and run `./scripts/start-desktop.sh`.
+- It detects SteamOS automatically and maps default storage to `/run/media/mmcblk0p1/Emulation/roms` (MicroSD EmuDeck location) or `~/Emulation/roms` (internal storage).
+- You can add ROMarr as a Non-Steam Game in Steam to launch it directly from Gaming Mode!
+
+### macOS (Apple Silicon / Intel)
+- Defaults configuration to `~/Library/Application Support/ROMarr` and ROMs to `~/Games/ROMs`.
+- Uses system `open` to display the UI immediately.
+
+---
+
+## Raspberry Pi, Retro Punks Arcade & Handheld Setups
+
+ROMarr connects directly to dedicated living room cabinets, Raspberry Pi micro-consoles, and mobile handhelds through the **Supportive Library Shell & Device Fleet** (`/api/v1/hub/fleet`):
+
+| Platform / Setup | Typical ROM Path | Protocol / Sync Method |
+|---|---|---|
+| **SteamOS / Steam Deck** | `~/Emulation/roms/{platform}` | Local loopback / EmuDeck ES-DE gamelist.xml |
+| **Arcade Punks / Batocera (x86 & Pi)** | `/userdata/roms/{platform}` | Network SMB (`\\batocera\share\roms`) / SSH rsync |
+| **Raspberry Pi RetroPie** | `/home/pi/RetroPie/roms/{platform}` | SMB (`\\retropie\roms`) / SSH |
+| **Snapdragon / Adreno Handhelds** (Odin 2, Retroid Pocket 4/5, Ayaneo) | `/storage/emulated/0/ROMs/{platform}` | Android MTP / MicroSD / RomM Argosy companion |
+| **muOS / NextUI Handhelds** (Anbernic, Miyoo, TrimUI) | `/mnt/mmc/ROMS/{platform}` | Grout sync protocol / SSH |
+| **Cross-Platform Handhelds** | Cloud / WebDAV | RetroArch WebDAV cloud saves & states |
+
+In ROMarr, navigate to **Library Shell & Device Fleet** -> **Device Fleet** to audit existing scraped images, run Igir 1G1R deduplication against verified No-Intro/Redump DATs, and push updated `gamelist.xml` files.
+
+| Device Fleet Sync Planner | Handheld & Console Profiles |
+|---|---|
+| ![Device Fleet non-destructive 1G1R sync planner](img/device-fleet.png) | ![Device Fleet cards for ES-DE, RetroPie, Batocera, Steam Deck, and Android handhelds](img/portal-fleet.png) |
+
+---
 
 ## Windows source install
 
@@ -369,7 +418,7 @@ The first launch creates `.venv-windows` in the checkout and installs the requir
 
 Use the same data directory for later launches. After setup, change the saved library destination under **Settings → Media Management/Libraries**; passing a different startup path does not silently replace a saved setting. The launcher prints where the state file lives.
 
-ZIP imports need no extra archive program. `.7z`/`.rar` imports require a working `bsdtar` executable on `PATH`; test one small archive before importing a collection. Optional ROM Hub installation and Windows confinement limits are documented in the [plugin guide](PLUGINS.md).
+ZIP imports need no extra archive program. `.7z`/`.rar` imports require a working `bsdtar` executable on `PATH`, and split RAR sets also need 7-Zip (checked on `PATH` and in `C:\Program Files\7-Zip` / `C:\Program Files (x86)\7-Zip`); test one small archive before importing a collection. Optional ROM Hub installation and Windows confinement limits are documented in the [plugin guide](PLUGINS.md).
 
 The Windows CI smoke job is provided to check startup, authentication and state persistence on Windows; consult its result for the revision you use. It does not prove every external client, archive tool or filesystem share works on your PC. Use **Manual Import** for an existing library, and check one imported file before adding a whole collection.
 
@@ -551,6 +600,21 @@ offers, and it is the whole list.
 **Torrent daemons** — qBittorrent, Transmission, Deluge, rTorrent, Synology
 Download Station, aria2, Flood, Freebox Download, Hadouken, uTorrent /
 BitTorrent, porla, Vuze, BiglyBT.
+
+**Standalone engines (no external daemon needed)** —
+- **Standalone BitTorrent (MDM)** & **Standalone Direct HTTP (MDM)** — powered
+  by the companion open-source
+  [Mister Download Manager](https://github.com/anefzaoui/misterdownloadmanager)
+  (`misterdownloadmanager-cli`, GPL-3.0-or-later, invoked out-of-process or
+  via Remote HTTPS against `misterdownloadmanager --headless`). Supports magnets,
+  `.torrent` uploads, multi-connection HTTP (`-c 1..128`), and selective
+  collection file downloads. On glibc Linux (x86_64) and Windows (x86_64),
+  *Settings → Download Clients* offers a one-click SHA-256-verified installer
+  into `<data_dir>/tools/mdm`; on Alpine/musl Docker images, connect Remote mode
+  to a companion `misterdownloadmanager --headless` container.
+- **Standalone Usenet (NNTP)** — built-in pure-Python NNTP/NNTPS client with
+  `.nzb` parsing, concurrent connections, yEnc CRC32 verification, and
+  automatic missing-article retirement; needs only your Usenet host credentials.
 
 **Debrid and cloud** — Real-Debrid, AllDebrid, Premiumize, TorBox,
 Debrid-Link, Offcloud, put.io, Linksnappy. These do not run on your hardware:
@@ -826,8 +890,9 @@ somebody running it.
 | `Download path does not exist` while the file is plainly there | The client reports a path ROMarr cannot see. | Make the container-side download path match what the client reports, or add a remote path mapping. |
 | Results found, then refused | No download client speaks that release's protocol. | Add a torrent and/or usenet client — the Download Clients page names the gap. |
 | Imported ROM never appears in the library | The rescan was refused. | RomM: grant the account task permission. Or the ROM landed outside the tree your library scans. |
+| A RAR release split into volumes fails with "split RAR archive" | Neither 7-Zip with RAR support nor `unar` is installed; bsdtar reads one volume at a time. | Use the browser image, or install `unar` or the official `7zz` (see above). Alpine has no package that joins split RAR sets. |
 | Every PlayStation / PS2 / Wii import fails on the archive | `bsdtar` is missing. Those sets ship as `.7z`, and busybox/GNU `tar` is not a substitute — ROMarr will not pretend otherwise. | Docker and the Proxmox installer include it. From source: install `libarchive-tools`. |
-| Hub tab says plugins are unavailable | `rom-hub` is not installed. Expected on armv7, where its `pydantic` dependency has no musl wheel. | Elsewhere: `pip install "rom-hub @ git+https://github.com/BlizzHacker/rom-hub@master"` |
+| Hub tab says plugins are unavailable | `rom-hub` is not installed. Expected on armv7, where its `pydantic` dependency has no musl wheel. | Elsewhere: `pip install "rom-hub @ git+https://github.com/BlizzHacker/rom-hub@02e9a1dbc7ebca5191b4a977233a4d6d0466ed4b"` |
 | ROM imports but will not play in the browser | The platform has no emulator core in your library's web player. | Expected. The ROM is catalogued, not playable in-browser. |
 | Scheduled jobs never run on a freshly rebooted host | Fixed in `5cb6a75`. "Never run" was recorded as time `0.0`, and `time.monotonic()` counts from boot on Linux, so on a machine with less uptime than the job's interval every job looked "not due". | Update. |
 
@@ -875,3 +940,8 @@ ROMs survive; if it was inside the container's disk, they do not. Check with
 
 ROMarr never edits your library server's database and never deletes ROMs it
 did not import, so removing it leaves the library exactly as it was.
+
+
+## Unraid: choose the official package
+
+Use the [official ROMarr listing](https://ca.unraid.net/apps/romarr-04jslct0riva81?q=romarr). Check that Repository is `ghcr.io/blizzhacker/romarr:latest` (or an official version tag). ROMarrNG is maintained separately and is not supported here. [Identify your build and read the support policy](OFFICIAL-DISTRIBUTION.md).

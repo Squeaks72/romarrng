@@ -108,6 +108,8 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
+          # Same pin as upstream's docker.yml: the Archive.org tests import rom_hub.
+          pip install "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/b0c7885c057730c42608c5570359166128bbe3eb.tar.gz"
           python -m pytest tests/ -q
 
       - name: Push main

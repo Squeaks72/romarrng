@@ -67,6 +67,14 @@ ECOSYSTEM: dict[str, list[Project]] = {
             site="https://igir.io",
             install="npm install -g igir@5.8.0",
             tab="igir"),
+        Project(
+            "eXo2romm",
+            "Repackage eXoDOS game zips for RomM by rewriting pack-root dosbox.conf "
+            "mounts so imported zips launch standalone. Created by derkommutator -- "
+            "this plugin was inspired to assist with more users having this.",
+            repo="https://github.com/derkommutator/eXo2romm",
+            site="https://github.com/BlizzHacker/rom-hub-exo2romm",
+            tab="acquisition"),
     ],
     "First-party apps — maintained by the RomM team": [
         Project(
@@ -312,6 +320,12 @@ ECOSYSTEM: dict[str, list[Project]] = {
             "A free and reliable BitTorrent client, the one ROMarr defaults to.",
             repo="https://github.com/qbittorrent/qBittorrent",
             site="https://www.qbittorrent.org", tab="acquisition"),
+        Project(
+            "Mister Download Manager",
+            "An open-source multi-connection HTTP and BitTorrent engine that "
+            "powers ROMarr's standalone download clients.",
+            repo="https://github.com/anefzaoui/misterdownloadmanager",
+            site="https://misterdownloadmanager.com", tab="acquisition"),
         Project(
             "ROM Hub",
             "ROMarr's plugin factory -- where a source or Igir 1G1R runner is written, run and "

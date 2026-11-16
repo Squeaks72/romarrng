@@ -214,11 +214,13 @@ PLATFORMS: tuple[Platform, ...] = (
              max_size=256 * GB, media=DISC),
     Platform("psvita", "Sony PlayStation Vita", (".vpk", ".pkg", ".zip"),
              ("playstation vita", "sony playstation vita", "ps vita", "vita"),
-             max_size=16 * GB, archive_is_the_rom=True),
+             max_size=16 * GB, archive_is_the_rom=True,
+             native_markers=("psv",)),
     Platform("psp", "Sony PlayStation Portable",
              (".cso", ".iso", ".chd", ".pbp"),
              ("playstation portable", "psp"),
-             max_size=4 * GB, media=DISC),
+             max_size=4 * GB, media=DISC,
+             native_markers=("psx2psp", "ps12psp")),
     Platform("saturn", "Sega Saturn",
              (".chd", ".cue", ".bin", ".iso", ".ccd", ".mds"),
              ("sega saturn",), max_size=2 * GB, media=DISC),
@@ -261,17 +263,18 @@ PLATFORMS: tuple[Platform, ...] = (
     # Nintendo Switch uses TitleDB for validation instead of DAT files, since
     # NoIntro/Redump do not publish Switch DATs. Switch games come as .nsp
     # (digital/eShop) or .xci (cartridge dump) files, identified by their
-    # 16-character title ID.
+    # 16-character title ID. A .nup packs a decrypted dump into one file; it
+    # is listed last and `selection` ranks it below the installable formats.
     Platform("switch", "Nintendo Switch",
-             (".nsp", ".xci", ".nca", ".xcz", ".nsz"),
+             (".nsp", ".xci", ".nca", ".xcz", ".nsz", ".nup"),
              ("nintendo switch", "switch"),
              max_size=32 * GB, media=CARTRIDGE,
-             native_markers=("eshop", "nsp", "xci")),
+             native_markers=("eshop", "nsp", "xci", "nsw", "nup")),
     Platform("switch-2", "Nintendo Switch 2",
-             (".nsp", ".xci", ".xcz", ".nsz"),
+             (".nsp", ".xci", ".xcz", ".nsz", ".nup"),
              ("switch 2", "switch2"),
              max_size=128 * GB, media=CARTRIDGE,
-             native_markers=("eshop", "nsp", "xci")),
+             native_markers=("eshop", "nsp", "xci", "nup")),
     # The two Xbox generations are separate folders in RomM and separate
     # machines to every emulator, so they are separate here. Naming them is
     # also what lets `selection` tell them apart: "xbox" is a foreign-platform

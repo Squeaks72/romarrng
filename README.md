@@ -1,15 +1,46 @@
-# ROMarr
+# <img src="docs/img/brand/romarr-icon.svg" alt="" width="44" height="40" align="absmiddle"> ROMarr
+
+![ROMarr — Find, verify and organize your game library](docs/img/brand/romarr-hero-banner.jpg)
 
 The *arr for games.
 
 Find games, verify ROMs, and import them into your library.
 
+**New here?** Start with [one system and one game](docs/FIRST-GAME.md). ROMarr finds and organizes; an emulator plays. RomM is an optional library frontend. You can bring files you already own or connect search sources when you are ready.
+
 [![Tests and images](https://github.com/BlizzHacker/romarr/actions/workflows/docker.yml/badge.svg)](https://github.com/BlizzHacker/romarr/actions/workflows/docker.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-Join_ROMarr-5865F2?logo=discord&logoColor=white)](https://discord.gg/ywNFceuAd)
+[![Open Collective](https://opencollective.com/romarr/tiers/badge.svg)](https://opencollective.com/romarr)
+[![GG Requestz](https://img.shields.io/badge/Companion-GG_Requestz-8A2BE2?logo=gamepad&logoColor=white)](https://github.com/BlizzHacker/ggrequestz)
+[![RomM Ecosystem](https://img.shields.io/badge/Ecosystem-RomM-blue?logo=gamepad&logoColor=white)](https://github.com/rommapp/romm)
+[![r/romm](https://img.shields.io/badge/Reddit-r%2Fromm-FF4500?logo=reddit&logoColor=white)](https://www.reddit.com/r/romm)
+[![r/arr](https://img.shields.io/badge/Reddit-r%2Farr-FF4500?logo=reddit&logoColor=white)](https://www.reddit.com/r/arr)
+[![Android Beta](https://img.shields.io/badge/Google_Play-Android_Beta-brightgreen?logo=googleplay&logoColor=white)](https://play.google.com/apps/internaltest/4700888732790045566)
+[![Android APK](https://img.shields.io/badge/Android-Direct_APK-3DDC84?logo=android&logoColor=white)](https://github.com/BlizzHacker/romarr/releases)
+[![Argosy Compatible](https://img.shields.io/badge/Frontend-Argosy_Launcher-purple?logo=android&logoColor=white)](https://github.com/rommapp/argosy-launcher)
+[![Unraid Community Apps](https://img.shields.io/badge/Unraid-Community_Apps-orange?logo=unraid&logoColor=white)](https://ca.unraid.net/apps/romarr-04jslct0riva81?q=romarr)
+[![Microsoft Store](https://img.shields.io/badge/Microsoft_Store-Windows_App-0078D4?logo=windows&logoColor=white)](https://github.com/BlizzHacker/romarr/releases)
+[![Submit Package](https://img.shields.io/badge/Package_Submissions-Submit_ROMarr-purple?logo=github&logoColor=white)](docs/SUBMISSIONS.md)
 
-**[Install](#install)** · **[First setup](docs/GETTING-STARTED.md)** · **[Plugins](docs/PLUGINS.md)** · **[Roadmap](ROADMAP.md)** · **[Releases](https://github.com/BlizzHacker/romarr/releases)**
+**[Install](#install)** · **[First setup](docs/GETTING-STARTED.md)** · **[Discord](https://discord.gg/ywNFceuAd)** · **[Open Collective](https://opencollective.com/romarr)** · **[GG Requestz](https://github.com/BlizzHacker/ggrequestz)** · **[RomM](https://github.com/rommapp/romm)** · **[r/romm](https://www.reddit.com/r/romm)** · **[r/arr](https://www.reddit.com/r/arr)** · **[Android App & APK](docs/ANDROID.md)** · **[Unraid App](https://ca.unraid.net/apps/romarr-04jslct0riva81?q=romarr)** · **[Plugins](docs/PLUGINS.md)** · **[Roadmap](ROADMAP.md)** · **[Releases](https://github.com/BlizzHacker/romarr/releases)** · **[Submit Package](docs/SUBMISSIONS.md)** · **[Privacy](docs/PRIVACY.md)**
+
+> [!NOTE]
+> **Community & Support:**  
+> Join the official **[ROMarr Discord](https://discord.gg/ywNFceuAd)**, follow or sponsor the project on **[Open Collective](https://opencollective.com/romarr)**, or hang out on Reddit in **[r/romm](https://www.reddit.com/r/romm)** and **[r/arr](https://www.reddit.com/r/arr)**. Connect companion game request workflows via **[GG Requestz](https://github.com/BlizzHacker/ggrequestz)** and frontend setups via **[RomM](https://github.com/rommapp/romm)**.
+
+> [!TIP]
+> **Android Beta, Handhelds & Argosy Launcher Integration!**  
+> Run ROMarr natively on your phone, tablet, or gaming handheld (Ayn Odin, Retroid Pocket, Anbernic, Logitech G Cloud):  
+> - **Google Play Test Track:** [Join the Android Beta on Google Play](https://play.google.com/apps/internaltest/4700888732790045566) (12 testers needed)  
+> - **Direct APK Sideload:** [Download the Standalone APK](https://github.com/BlizzHacker/romarr/releases) with bundled Chaquopy Python runtime — no Termux or Docker required.  
+> - **Argosy Launcher & Emulator Pairing:** Connect [Argosy Launcher](https://github.com/rommapp/argosy-launcher) directly to ROMarr via native RomM API support, and launch games into RetroArch, Dolphin, PPSSPP, NetherSX2, DuckStation, and Citra with one tap!
 
 ![ROMarr interactive search, with scores and reasons beside each result](docs/img/interactive-search-live.png)
+
+Forks and code reuse are welcome; independent projects should use their own branding. [Attribution and branding policy](docs/OFFICIAL-DISTRIBUTION.md#attribution-and-branding).
+
+**Unraid:** install the [official ROMarr listing](https://ca.unraid.net/apps/romarr-04jslct0riva81?q=romarr), using `ghcr.io/blizzhacker/romarr`. **ROMarrNG is a separate fork and is not supported by this project.** [Official builds and support policy](docs/OFFICIAL-DISTRIBUTION.md).
 
 ## What can I use it for?
 
@@ -18,12 +49,72 @@ Find games, verify ROMs, and import them into your library.
 | Import ROMs I already have | **Manual Import** | A destination folder and access to the source files. No indexer or download client needed. |
 | Find and download a particular game | **Add New** or **Interactive Search** | A search source, a matching download client, and a destination folder. |
 | Check what a collection is missing | **Collections** | A No-Intro or Redump DAT and your local library. |
+| Report a suspicious or unwanted file | **Activity → Reports & Help** | A relative library path; available scanners record evidence, quarantine is your choice. [How reporting works](docs/REPORTING.md). |
+| Connect an AI assistant | **Hub → Library Shell → AI agents (MCP)** | Your server URL and API key. [Claude, Codex, Hermes and Antigravity setup](docs/MCP.md). |
 | Reclaim space taken by exact duplicates | **Stats → Audit** | A local library; review the preview before moving duplicates to quarantine. Restore is available. |
 | Add another game source | **Hub → Plugins** | ROM Hub, included in the Windows app and amd64/arm64 Docker images. [Details](docs/PLUGINS.md). |
+| Adopt an existing RomM collection | **Settings → Library & Hub** | Point ROMarr at RomM's roms directory, keep DAT verification automatic, and pair with [Argosy Launcher](docs/ANDROID.md#argosy-launcher-and-frontend-integration). |
+| Sync with Handhelds & Emulators | **Hub → Handheld Fleet** | Sync verified libraries to Android handhelds, Steam Deck, Batocera, RetroPie, and muOS with 1,200+ emulator presets. |
 
 You can use a plain **folder** as your library. RomM, Gaseous, Retrom and other library integrations are optional. Your emulator or frontend plays the games; ROMarr handles finding, checking and importing files.
 
-Imports can be checked against DAT checksums. The result is **verified**, **bad dump**, or **unknown**. Without a matching DAT, a file is unknown; that does not mean it is damaged. **Rename on import** can use a verified single-file ROM's DAT name while keeping its source extension; unknown filenames are retained and existing files are not overwritten. A bulk, in-place rename planner for existing libraries is on the [roadmap](ROADMAP.md).
+Imports can be checked against DAT checksums. The result is **verified**, **bad dump**, or **unknown**. Without a matching DAT, a file is unknown; that does not mean it is damaged. **Rename on import** can use a verified single-file ROM's DAT name while keeping its source extension; unknown filenames are retained and existing files are not overwritten. For files already in your library, use the [rename preview and rollback guide](docs/EXISTING-LIBRARY-RENAME.md). Review each proposed change; multi-file disc sets and ambiguous matches are skipped.
+
+## Editions & Screenshots
+
+ROMarr shares one unified interface across browser deployments, Windows standalone, Android phones/handhelds, and [`ROMarr.app`](https://romarr.app). All captures below are taken from a live 76,064-game library running ROMarr v1.10.0.
+
+### Platform Editions & Authentication
+
+| Edition | Highlights | Preview |
+|---|---|---|
+| **Browser Web UI** | 76,064 games cached across 73 platforms with cover art, fast filters, and status badges | ![ROMarr Browser Edition — 76,064 games across 73 platforms](docs/img/editions/romarr-browser-edition.png) |
+| **Windows Desktop App** | Portable x64 WebView2 window, tray host, Cartridge player menu, and 1,220-entry Emulator Hub | ![ROMarr Windows Desktop Edition with Cartridge menu and Emulator Hub](docs/img/editions/romarr-windows-edition.png) |
+| **Android App (Mobile & Handhelds)** | Bundled Chaquopy server plus HTTPS remote profile switching over mobile touch UI | ![ROMarr Android App connected to a remote server](docs/img/editions/romarr-android-edition.png) |
+| **Android Slide-Out Drawer** | Touch navigation drawer with expandable hub sections and integrated Color Changer | ![ROMarr Android navigation drawer and theme controls](docs/img/editions/romarr-android-drawer.png) |
+| **ROMarr.app Website** | Project landing page synced with real scored search results and live accent swatches | ![ROMarr.app landing page showcase](docs/img/editions/romarr-website-edition.png) |
+| **Sign-In & OIDC SSO** | Built-in password/API-key authentication alongside external SSO providers such as Authentik | ![ROMarr sign-in and OIDC SSO screen](docs/img/editions/romarr-signin-sso.png) |
+
+### Vector SVG Branding & Live Color Changer
+
+The separated vector icon ([`romarr-icon.svg`](docs/img/brand/romarr-icon.svg)) and stacked lockup dynamically bind to `var(--accent)` so the logo, wordmark, active navigation, and charts shift cleanly together in real time:
+
+| Steel Blue (`#75adff`) | Warm Amber (`#f2a33c`) | Emerald Green (`#3ecf6d`) | Royal Violet (`#c084fc`) |
+|---|---|---|---|
+| ![Steel Blue accent theme](docs/img/editions/theme-blue.png) | ![Warm Amber accent theme](docs/img/editions/theme-amber.png) | ![Emerald Green accent theme](docs/img/editions/theme-emerald.png) | ![Royal Violet accent theme](docs/img/editions/theme-violet.png) |
+
+### Library Discovery, Confined Plugins & Device Sync
+
+| Feature | Preview |
+|---|---|
+| **Library Overview** — 76,056 files on disk, platform pills, genre/region/decade filters, and cover grid | ![ROMarr library view across 73 platforms](docs/img/library.png) |
+| **Discover Shelf** — 42,210 metadata-matched games from your library with top-rated, hidden-gem, and franchise filters | ![ROMarr Discover shelf with 42,210 games](docs/img/discover.png) |
+| **ROM Hub Plugins** — 29 confined subprocess sources (`archive-org`, `vimm-net`, `minerva-archive`, `theromdepot`, and more) | ![ROM Hub showing 29 enabled plugins](docs/img/hub-plugins.png) |
+| **Device Fleet & 1G1R Planner** — Non-destructive Igir sync plans and frontend exports for ES-DE, RetroPie, Batocera, Steam Deck, and Argosy | ![Device Fleet non-destructive 1G1R sync planner](docs/img/device-fleet.png) |
+
+<details>
+<summary>Tour more views: MCP AI Connector, Device Cards, Emulator Hub, Collections, Friends & System Telemetry</summary>
+
+| View | Preview |
+|---|---|
+| **Device Profiles & Handheld Cards** | ![Device Fleet cards for ES-DE, RetroPie, Batocera, Steam Deck, and Android handhelds](docs/img/portal-fleet.png) |
+| **AI Agents (MCP) Connector** | ![Authenticated MCP endpoint config for Claude Code, Codex, Hermes, and Antigravity](docs/img/ai-agents-mcp.png) |
+| **Emulator Hub & Cartridge Setup** | ![Cartridge plug-and-play toolbar and 1,220-entry Emulator Hub](docs/img/emulators-cartridge.png) |
+| **Ecosystem (Igir v5.8.0 & Backends)** | ![Igir v5.8.0 runner and RomM/Gaseous/Retrom/Gameyfin integrations](docs/img/ecosystem.png) |
+| **Collections & Set Torrents** | ![1G1R DAT comparison and budgeted qBittorrent set acquisition](docs/img/collections.png) |
+| **Statistics & Indexer Telemetry** | ![Library totals, platform imports, and grabs by indexer](docs/img/stats.png) |
+| **Friends & Federation** | ![Confirmed peer invitations and 198,106-hash netplay verification](docs/img/friends.png) |
+| **Browse Shared Friend Shelf** | ![Browsing a peer server library and adding titles to Wanted](docs/img/friend-library.png) |
+| **Import Lists & Storefront Connectors** | ![One-click Steam, GOG, Epic, Battle.net, PlayStation, Xbox, and itch.io lists](docs/img/lists.png) |
+| **Storefront Session Token Modal** | ![PlayStation session paste modal in dark Steel Blue UI](docs/img/connect-modal.png) |
+| **Activity History** | ![Grabbed, ignored, and failed event trail with indexer sources](docs/img/activity-history.png) |
+| **Notification Providers** | ![Discord, Slack, Webhook, ntfy.sh, Gotify, Telegram, Pushover, and Apprise](docs/img/connect.png) |
+| **Library Backends** | ![Configured library destinations and status checks](docs/img/libraries.png) |
+| **System Health & GG Requestz** | ![Service health checks and GG Requestz webhook configuration](docs/img/status.png) |
+| **Scheduled Tasks** | ![Automated import, missing search, RSS, list sync, and hash indexing tasks](docs/img/tasks.png) |
+| **Live Process Logs** | ![Streaming service logs inside the web interface](docs/img/logs.png) |
+
+</details>
 
 ## Install
 
@@ -31,11 +122,16 @@ Imports can be checked against DAT checksums. The result is **verified**, **bad 
 
 | Method | Best fit | Guide |
 |---|---|---|
+| **Unraid** | Unraid NAS & server arrays | [Install from Unraid Community Applications](https://ca.unraid.net/apps/romarr-04jslct0riva81?q=romarr) |
 | **Docker Compose** | Most servers, NAS hosts, or Docker Desktop | [Quick start below](#docker-compose-quick-start) |
-| **Proxmox LXC** | A Proxmox host | [LXC installer](docs/INSTALL.md#proxmox-lxc) |
 | **Windows app** | Windows 10/11 on x64 | [Download the Windows ZIP](docs/INSTALL.md#windows-app), extract it and double-click **ROMarr.exe**. No Python, PowerShell or .NET installation required. |
+| **macOS, Linux & SteamOS** | Desktop PCs, MacBooks, Steam Deck & Handhelds (Non-Server) | [Standalone Desktop Launcher](docs/INSTALL.md#macos-linux--steamos-standalone-launcher-non-server-users): run `./scripts/start-desktop.sh` |
+| **Android & Handhelds** | Android 7+ on ARM64/x86_64 (Odin, Retroid, phones, tablets) | [Join Google Play Beta](https://play.google.com/apps/internaltest/4700888732790045566) or download APK from [Releases](https://github.com/BlizzHacker/romarr/releases). Embedded Chaquopy core, emulator handoff, and [Argosy Launcher](docs/ANDROID.md#argosy-launcher-and-frontend-integration) compatibility. Read [Android setup](docs/ANDROID.md). |
+| **Proxmox LXC** | A Proxmox host | [LXC installer](docs/INSTALL.md#proxmox-lxc) |
+| **Chrome / ChromeOS** | A running ROMarr server | [Install the web app or server-launcher extension](docs/CHROME.md). Online connection required. |
 | **Linux/macOS source checkout** | Development or an existing Python host | [Source instructions](docs/INSTALL.md#from-source) |
 | **Home Assistant add-on** | A Home Assistant installation | [Add-on instructions](docs/INSTALL.md#home-assistant); this packaging needs more field testing. |
+| **Package Submissions** | Community Catalogs (TrueNAS, CasaOS, Flathub) | [Submission Directory & Registry Guides](docs/SUBMISSIONS.md) |
 
 For Docker, have Docker Engine or Docker Desktop with Compose installed. Reserve port **6868** and choose where settings, downloads, and ROMs will live. ROMs and download space are usually much larger than the app itself.
 
@@ -94,7 +190,7 @@ The image includes archive tools. **ROM Hub is included on amd64/arm64; it is un
 ## What else is included?
 
 - Wanted lists and scheduled searches, with the reason shown when a release is rejected.
-- Prowlarr, Torznab/Newznab and torrent RSS sources; torrent, Usenet and plugin download clients.
+- Prowlarr, Torznab/Newznab and torrent RSS sources; external or standalone download clients (including built-in NNTP Usenet and companion [Mister Download Manager](https://github.com/anefzaoui/misterdownloadmanager) CLI/Remote BitTorrent—with exact single-file selection on release grabs—& multi-connection HTTP).
 - DAT collection comparison, region/1G1R selection, and staged acquisition from an existing qBittorrent set torrent.
 - Exact duplicate audit, quarantine and restore; a preview comes before any move.
 - Preview-first renaming for DAT-verified single files already in a library, with a saved restore journal.
@@ -105,13 +201,28 @@ Source access, available files, credentials and platform support vary. Check the
 
 ## Play with Cartridge
 
-[Cartridge for Windows](https://github.com/BlizzHacker/romarr/releases/download/v1.8.0/Cartridge-Windows-Portable-0.2.0-x64.exe) and [Cartridge for Xbox](https://github.com/BlizzHacker/RommForXbox) are optional players for a RomM library. Choose the app for your device. ROMarr manages acquisition and imports; Cartridge connects to RomM to browse and play. You can keep using your existing frontend instead. The Windows app's **Cartridge** menu and the Setup Guide link to both.
+**Cartridge** is the dedicated player ecosystem for self-hosted game libraries, connecting seamlessly to [RomM](https://romm.app) or directly to **ROMarr's embedded RomM-API backend**. While ROMarr finds, verifies, and organizes your files, Cartridge provides controller-first frontends to browse, sync saves, and launch games across your screens:
+
+| Platform | Client | Best Fit | Features & Downloads |
+|---|---|---|---|
+| **Windows** | [Cartridge for Windows](https://github.com/BlizzHacker/Cartridge) | Desktop PCs, laptops, and Windows handhelds (ROG Ally, Legion Go) | Embedded RomM console player, standalone window, no external browser required. [Download Portable EXE](https://github.com/BlizzHacker/romarr/releases/download/v1.8.0/Cartridge-Windows-Portable-0.2.0-x64.exe) or visit [BlizzHacker/Cartridge](https://github.com/BlizzHacker/Cartridge). |
+| **Xbox** | [Cartridge for Xbox](https://github.com/BlizzHacker/Cartridge) | Xbox Series X\|S and Xbox One consoles | Native UWP/WebView2 gamepad experience, big-screen TV navigation, and EmulatorJS cores. Available on [Microsoft Store (App ID: 9MXC51W17LH4)](https://apps.microsoft.com/detail/9MXC51W17LH4) and [BlizzHacker/Cartridge](https://github.com/BlizzHacker/Cartridge). |
+| **Android** | [Cartridge for Android](https://github.com/BlizzHacker/Cartridge) | Retro handhelds (Odin 2, Retroid Pocket, Anbernic), Android TV, tablets, phones | Gamepad-native launcher with bidirectional save-sync, rich metadata, on-demand downloads, and automated emulator handoff to RetroArch, Dolphin, PPSSPP, and NetherSX2. [Download APK from Releases](https://github.com/BlizzHacker/Cartridge/releases) or visit [BlizzHacker/Cartridge](https://github.com/BlizzHacker/Cartridge). |
+
+You can use Cartridge alongside your existing setup or keep using your favorite frontend (Playnite, LaunchBox, ES-DE, Pegasus). The Windows desktop app's **Cartridge** menu and the setup guides link to all three clients.
+
+## Community & Support
+
+- **Discord:** Join the [ROMarr Discord server](https://discord.gg/ywNFceuAd) for release help, plugin tips, and troubleshooting.
+- **Open Collective:** Back ROMarr on [opencollective.com/romarr](https://opencollective.com/romarr) ([contributors badge](https://opencollective.com/romarr/tiers/backer/badge.svg?label=Backer&color=brightgreen)).
 
 ## Help and documentation
 
 | Need | Read |
 |---|---|
 | First setup and a successful import | [Getting started](docs/GETTING-STARTED.md) |
+| Usenet providers, indexers and failed searches | [Usenet setup and troubleshooting](docs/USENET.md) |
+| Docker Desktop, NAS mounts and slow library scans | [NAS library guide](docs/NAS-LIBRARIES.md) |
 | Safely rename existing library files | [Preview, selection and rollback guide](docs/EXISTING-LIBRARY-RENAME.md) |
 | Installation, Windows, backups, updates and environment variables | [Install guide](docs/INSTALL.md) |
 | Plugin availability and installation | [ROM Hub guide](docs/PLUGINS.md) |

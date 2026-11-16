@@ -30,7 +30,37 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .platforms import by_slug
+
 log = logging.getLogger(__name__)
+
+
+def validate_dat_catalog_platforms(value: Any) -> dict[str, str]:
+    """Validate explicit DAT display-name to canonical ROMarr platform bindings.
+
+    Never infer platforms from a DAT title. Case-equivalent catalog duplicates,
+    malformed names and aliases cannot become a trusted request mapping.
+    """
+    if not isinstance(value, dict) or len(value) > 256:
+        raise ValueError("DAT catalog mappings must be an object with at most 256 entries")
+    out: dict[str, str] = {}
+    seen: set[str] = set()
+    for catalog, slug in value.items():
+        if (not isinstance(catalog, str) or not catalog.strip()
+                or catalog != catalog.strip() or len(catalog) > 256
+                or any(ord(char) < 32 for char in catalog)):
+            raise ValueError("DAT catalog name is empty, malformed, or too long")
+        folded = catalog.casefold()
+        if folded in seen:
+            raise ValueError("Duplicate DAT catalog name; use one mapping per catalog")
+        if not isinstance(slug, str) or not slug or len(slug) > 80:
+            raise ValueError("DAT mapping must use a canonical platform slug")
+        platform = by_slug(slug)
+        if platform is None or platform.slug != slug:
+            raise ValueError("DAT mapping must use an existing canonical platform slug")
+        seen.add(folded)
+        out[catalog] = slug
+    return out
 
 
 class StateUnreadable(RuntimeError):
@@ -261,6 +291,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # reload_dats when saved from the UI, so the setting acts rather than
     # just sits.
     "dat_path": "",
+    # Explicit, optional DAT header-name -> canonical platform slug associations.
+    # No automatic request-aware import reads these mappings yet (Part 2).
+    "dat_catalog_platforms": {},
     # Directory shape ROMs are filed in, matching the library server's own
     # setting. "flat" is <root>/<platform>/<rom> (RomM "Structure A"); "nested"
     # is <root>/<platform>/roms/<rom> (RomM "Structure B"). Overridable per
@@ -296,10 +329,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "region_scores": {},
     "allow_beta": False,
     "allow_rom_hacks": False,
-    # Acquisition & release profiles (global and per-system)
+    # Acquisition & release profiles (global and per-system).
+    # 0 defers max_size_mb to each platform's native medium ceiling (`Platform.max_size`).
     "min_seeders": 1,
     "min_size_mb": 0,
-    "max_size_mb": 8192,
+    "max_size_mb": 0,
     "size_preference": "auto",       # auto | smaller | larger | none
     "size_weight": 0,
     "preferred_terms": [],
@@ -335,10 +369,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Behaviour
     "auto_import": True,
     "rescan_after_import": True,
+    "reconcile_after_import": True,
     # Scan every finished download with ClamAV before it is imported (see
     # clamav.py). The address is clamd's: tcp://host:3310, or a socket path.
     "clamav_enabled": False,
     "clamav_address": "",
+    "scanner_defender_enabled": False,
+    "scanner_mwm_enabled": False,
+    "scanner_mwm_url": "",
+    "scanner_vt_enabled": False,
     # Failed download handling, the same idea Radarr and Sonarr have: a
     # release that could not be downloaded is not one to choose again. When
     # on, a download that the client refused, that finished with no ROMs in
@@ -753,10 +792,25 @@ class Store:
         Unknown keys are dropped rather than stored: a typo in a PUT should not
         silently become permanent state that nothing ever reads.
         """
+        # Validate before changing any settings: a rejected mapping must not
+        # commit unrelated fields from the same API request.
+        mapping = (validate_dat_catalog_platforms(patch["dat_catalog_platforms"])
+                   if "dat_catalog_platforms" in patch else None)
         with self._lock:
+            # No catalog provenance can be trusted without a selected DAT root.
+            # Refuse the whole patch before changing memory or the saved file.
+            if (mapping and not str(
+                    patch.get("dat_path", self.settings.get("dat_path")) or ""
+            ).strip()):
+                raise ValueError("Select a DAT directory before saving catalog mappings")
+            if ("dat_path" in patch
+                    and str(patch["dat_path"] or "") != str(self.settings.get("dat_path") or "")
+                    and (mapping if mapping is not None
+                         else self.settings.get("dat_catalog_platforms") or {})):
+                raise ValueError("Clear DAT catalog mappings before changing the DAT directory")
             for key, value in patch.items():
                 if key in DEFAULT_SETTINGS:
-                    self.settings[key] = value
+                    self.settings[key] = mapping if key == "dat_catalog_platforms" else value
             out = dict(self.settings)
         self.save()
         return out

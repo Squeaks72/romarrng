@@ -20,7 +20,21 @@ VERSION = "3.1.0"
 #: One line per route. Anything served and not described here fails the test,
 #: which is the whole mechanism keeping this honest.
 DESCRIPTIONS: dict[str, tuple[str, str]] = {
+    "/api/v1/update/prs": ("GET", "List official open ROMarr pull requests for optional owner-reviewed previews."),
+    "/api/v1/update/releases": ("GET", "Published release catalogue filtered by stable, RC, beta or alpha eligibility."),
+    "/api/v1/update/pr": ("POST", "Inspect an official PR author, exact head/base and completed check results without applying code."),
+    "/api/v1/update/pr/apply": ("POST", "Explicitly approve a pinned fast-forward PR on an idle clean source installation after a private configuration backup."),
+    "/api/v1/update/pr/restore": ("POST", "Restore the recorded prior code only if the preview source and worktree remain unchanged; preserve configuration backups."),
+    "/api/v1/file-reports": ("GET", "Local user reports and snapshot scanner evidence; authentication required."),
+    "/api/v1/file-reports/submit": ("POST", "Report a relative library file and queue a bounded snapshot scan."),
+    "/api/v1/file-reports/quarantine": ("POST", "Explicitly quarantine unchanged reviewed bytes; never delete."),
+    "/api/v1/file-reports/restore": ("POST", "Restore quarantined bytes without overwriting an existing destination."),
+    "/api/v1/support/github": ("POST", "Prepare a reviewed GitHub issue or submit with explicit consent and an operator token."),
     "/": ("GET", "The web UI."),
+    "/manifest.webmanifest": ("GET", "Constant installable app manifest."),
+    "/service-worker.js": ("GET", "Online-only app service worker; no request interception or caching."),
+    "/app-icon-192.png": ("GET", "Constant 192 pixel app icon."),
+    "/app-icon-512.png": ("GET", "Constant 512 pixel app icon."),
     "/favicon.ico": ("GET", "The retro cartridge SVG favicon."),
     "/favicon.svg": ("GET", "The retro cartridge SVG favicon."),
     "/api/health": ("GET", "Liveness. Returns {ok} unauthenticated, the full "
@@ -195,8 +209,10 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "/api/v1/hub/catalogue": ("GET", "Search the plugin catalogue."),
     "/api/v1/hub/plugins": ("GET", "The plugin catalogue, unfiltered."),
     "/api/v1/hub/igir": ("GET", "Igir v5.8.0 1G1R front-end status, default profile, and CLI execution (POST runs or previews an Igir 1G1R job with {romm} output tokens)."),
+    "/api/v1/hub/exo2romm": ("GET", "eXo2romm eXoDOS-to-RomM ZIP repackager status, attribution to derkommutator, and defaults (POST previews or repackages eXoDOS game zips)."),
     "/api/v1/hub/fleet": ("GET", "Multi-device and network library sync profiles for ES-DE, RetroPie/ArcadePunks, Batocera, Argosy, Grout, Steam Deck, and RetroArch WebDAV (POST builds a 1G1R + gamelist.xml sync plan)."),
-    "/api/v1/mcp": ("GET", "Model Context Protocol (MCP) tool manifest and Open-Eyes desktop bridge configuration for ROMarr."),
+    "/api/v1/mcp": ("GET", "MCP connection manifest (GET), or authenticated stateless JSON-RPC MCP transport (POST). GET text/event-stream returns 405; no standalone SSE stream is offered."),
+    "/api/v1/hub/archive-org/auth": ("POST", "Save or clear host-managed Archive.org credentials; returns status without credentials."),
     "/api/v1/hub/plugin": ("POST", "Install, enable, disable or uninstall a plugin."),
     "/api/v1/hub/source/check": ("POST", "Whether a repository URL may be "
                                          "installed from."),
@@ -376,6 +392,29 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
                                               "challenges, header spoofing and "
                                               "logins, and reports such sites "
                                               "as unavailable instead."),
+    "/api/v1/emulators": ("GET", "Searchable, paginated emulator catalog and installed portable builds."),
+    "/api/v1/emulators/resources": ("GET", "Browse source directories, browser portals and preservation references."),
+    "/api/v1/emulators/forks": ("GET", "Browse and retain a page of public upstream forks."),
+    "/api/v1/emulators/cores": ("GET", "Search all upstream libretro core metadata."),
+    "/api/v1/emulators/cores/readiness": ("GET", "Check required core firmware file presence."),
+    "/api/v1/emulators/cores/install": ("POST", "Install an official host core with CRC32 verification and configured scanning."),
+    "/api/v1/emulators/cores/configure": ("POST", "Create a dedicated RetroArch configuration and save directories."),
+    "/api/v1/emulators/release": ("GET", "Check the selected emulator's official release assets."),
+    "/api/v1/emulators/install": ("POST", "Verify, scan and install a portable emulator on the ROMarr host."),
+    "/api/v1/emulators/plug-and-play": ("POST", "One-click plug-and-play setup configuring Cartridge and recommended emulators."),
+    "/api/v1/cartridge/status": ("GET", "Check Cartridge player installation and available platforms."),
+    "/api/v1/cartridge/install": ("POST", "Auto-install the verified portable Cartridge player."),
+    "/api/v1/cartridge/launch": ("POST", "Launch Cartridge player paired with ROMarr."),
+    "/api/v1/security/inspect": ("POST", "Inspect an explicitly selected shared file with MWM or Arkana."),
+    "/api/v1/downloadclient/mdm": ("GET", "Availability of the external "
+                                          "Mister Download Manager CLI for "
+                                          "standalone torrent and accelerated "
+                                          "HTTP downloads."),
+    "/api/v1/downloadclient/mdm/install": ("POST", "Download, SHA-256 verify, "
+                                                   "and install the companion "
+                                                   "Mister Download Manager "
+                                                   "binaries locally."),
+    "/api/v1/game/nfo": ("GET", "Read a bounded same-stem NFO for a cached local folder game; unsupported platforms fail closed."),
     "/api/v1/library": ("GET", "Configured library servers."),
     "/api/v1/library/schema": ("GET", "Library backend types and their fields."),
     "/api/v1/library/config": ("GET", "One library's stored configuration."),
@@ -490,11 +529,58 @@ def spec(version: str = "0.0.0", *, base_url: str = "") -> dict:
     for path in sorted(DESCRIPTIONS):
         method, summary = DESCRIPTIONS[path]
         paths[path] = _operation(path, method, summary)
+    paths["/api/v1/mcp"].update(_operation(
+        "/api/v1/mcp", "POST", "Stateless MCP JSON-RPC initialize, ping, tools/list and tools/call. Requires an explicit API-key header even when REST auth is disabled."))
+    paths["/api/v1/mcp"]["post"]["requestBody"] = {
+        "required": True, "content": {"application/json": {"schema": {"type": "object"}}}}
     paths["/api/v1/queue/import-plan"].update(_operation(
         "/api/v1/queue/import-plan", "GET", "Read-only payload preview for a completed queue item; returns grouped companions, excluded extras, sizes and an approval token."))
     paths["/api/v1/queue/import-plan"]["get"]["parameters"] = [
         {"name": "index", "in": "query", "required": True,
          "schema": {"type": "integer", "minimum": 0}}]
+    paths["/api/v1/hub/exo2romm"].update(_operation(
+        "/api/v1/hub/exo2romm", "POST",
+        "Preview or run eXo2romm eXoDOS-to-RomM ZIP repackaging (crediting derkommutator/eXo2romm)."))
+    paths["/api/v1/hub/exo2romm"]["post"]["requestBody"] = {
+        "required": True,
+        "content": {"application/json": {"schema": {
+            "type": "object",
+            "properties": {
+                "input_paths": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                    "description": "One or more eXoDOS .zip file paths or folders containing .zip archives.",
+                },
+                "dos_dir": {
+                    "type": "string",
+                    "description": "eXoDOS !dos template folder containing <top>/dosbox.conf.",
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Target RomM DOS output directory for repackaged zips.",
+                },
+                "error_log": {
+                    "type": "string",
+                    "description": "Optional error log file path override.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "When true (default), validate archives and preview rewritten dosbox.conf without writing files.",
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "When true, replace existing output archives instead of skipping them.",
+                },
+            },
+            "required": ["input_paths"],
+        }}},
+    }
+    paths["/api/v1/hub/exo2romm"]["post"]["responses"]["400"] = {
+        "description": "Invalid request payload or all input archives failed processing.",
+    }
     _guide_contracts(paths)
 
     return {

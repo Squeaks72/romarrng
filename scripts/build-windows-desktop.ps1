@@ -9,7 +9,7 @@ Python, ROM Hub, MinGit, .NET and a fixed WebView2 runtime ship in the package.
 [CmdletBinding()]
 param(
     [string]$OutputDirectory,
-    [string]$Version = '1.8.0',
+    [string]$Version = '1.10.1',
     [string]$PythonPath = 'python',
     [string]$StoreIdentityName = 'MoveWeight.ROMarr.Desktop',
     [string]$StorePublisher = 'CN=MoveWeight',
@@ -19,13 +19,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'desktop-version.ps1')
+$packageVersion = Get-ROMarrDesktopPackageVersion -Version $Version
 if (-not $IsWindows) { throw 'Build the desktop package on Windows with .NET 10 SDK and Python 3.13.' }
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repo 'artifacts\windows' }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 [IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
-if ($Version -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') { throw 'Version must contain three or four numeric components.' }
-if (-not $StoreVersion) { $StoreVersion = if ($Version.Split('.').Count -eq 3) { "$Version.0" } else { $Version } }
+if (-not $StoreVersion) { $StoreVersion = $packageVersion.StoreVersion }
 if ($StoreVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'StoreVersion must have four numeric components.' }
 if ($StoreIdentityName -notmatch '^[A-Za-z0-9.-]+$') { throw 'StoreIdentityName must be the package identity from Partner Center.' }
 
@@ -46,7 +47,7 @@ foreach ($directory in @($backend, $site, $backendApp)) {
 $pythonVersion = '3.13.17'
 $pythonUrl = "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-embed-amd64.zip"
 $pythonSha = '9e35319bffedab8b36ad44d8f377cb4f1733bcec257a0b6d04d94f01486ddb38'
-$hubCommit = '8e46348783546ee03b00e2c933155ba60d29619d'
+$hubCommit = 'b0c7885c057730c42608c5570359166128bbe3eb'
 $hubUrl = "https://github.com/BlizzHacker/rom-hub/archive/$hubCommit.tar.gz"
 $gitVersion = '2.56.0.3'
 $gitUrl = 'https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.3/MinGit-2.56.0.3-64-bit.zip'
@@ -106,11 +107,12 @@ Copy-Item -LiteralPath $webExe[0].Directory.FullName -Destination (Join-Path $bu
 & $PythonPath -m pip install --disable-pip-version-check --no-cache-dir --target $site -r (Join-Path $repo 'requirements.txt') "rom-hub @ $hubUrl"
 if ($LASTEXITCODE -ne 0) { throw 'Could not bundle the Python dependencies and pinned ROM Hub.' }
 Copy-Item -LiteralPath (Join-Path $repo 'romarr') -Destination (Join-Path $backendApp 'romarr') -Recurse
+[IO.File]::WriteAllText((Join-Path $backendApp 'romarr\_version.py'), "__version__ = '$Version'`n")
 # _pth is relative to python.exe and is also honored by ROM Hub child processes.
 $pythonPaths = @('python313.zip', '.', 'Lib/site-packages', 'app', 'import site')
 [IO.File]::WriteAllLines((Join-Path $backend 'python313._pth'), $pythonPaths)
 $packagedPython = Join-Path $backend 'python.exe'
-& $packagedPython -c 'import sys, requests, romarr.app, rom_hub; from rom_hub.cli import main; assert sys.version_info[:3] == (3,13,17); print("Bundled Python, ROMarr and ROM Hub imports passed")'
+& $packagedPython -c 'import sys, requests, romarr.app, rom_hub; from rom_hub.cli import main; from rom_hub.ia_session import archive_transport; assert sys.version_info[:3] == (3,13,17); print("Bundled Python, ROMarr and ROM Hub imports passed")'
 if ($LASTEXITCODE -ne 0) { throw 'The embedded Python package is incomplete.' }
 & (Join-Path $bundle 'git\cmd\git.exe') --version
 if ($LASTEXITCODE -ne 0) { throw 'Bundled MinGit did not run.' }
@@ -156,7 +158,7 @@ try {
     foreach ($image in $iconImages) { $writer.Write($image) }
 } finally { $writer.Dispose(); $iconStream.Dispose() }
 
-& dotnet publish (Join-Path $repo 'desktop\windows\ROMarr.Desktop.csproj') --configuration Release --runtime win-x64 --self-contained true --output $bundle "-p:Version=$Version" '-p:DebugType=None' '-p:DebugSymbols=false' "-p:ApplicationIcon=$iconPath"
+& dotnet publish (Join-Path $repo 'desktop\windows\ROMarr.Desktop.csproj') --configuration Release --runtime win-x64 --self-contained true --output $bundle "-p:Version=$Version" "-p:InformationalVersion=$Version" '-p:DebugType=None' '-p:DebugSymbols=false' "-p:ApplicationIcon=$iconPath"
 if ($LASTEXITCODE -ne 0) { throw 'The native desktop application did not publish.' }
 if (-not (Test-Path -LiteralPath (Join-Path $bundle 'ROMarr.exe'))) { throw 'ROMarr.exe is missing.' }
 Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination (Join-Path $bundle 'LICENSE.txt')

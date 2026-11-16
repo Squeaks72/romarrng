@@ -88,8 +88,8 @@ def test_library_banner_tile_badges_and_nav_count():
 def test_queue_page_shows_progress_and_refreshes():
     q = _block("const fmtEta=", "RENDER.history=")
     for needle in ("QBIT_STATE", "stalled — no peers", "not in qBittorrent", "class=\"pbar\"", "class=\"pmeta\"",
-                   "ETA ${fmtEta(i.eta)}", "fmtSpeed(i.speed)", "/api/v1/queue?refresh=1", "id=\"q-refresh\"",
-                   "Updated ", "setInterval(", ",4000)", "data-qprog", "gameHref(i.platform"):
+                   "ETA ${fmtEta(i.eta)}", "fmtSpeed(i.speed)", "id=\"q-refresh\"",
+                   "setInterval(", "data-qprog", "gameHref(i.platform"):
         assert needle in q, needle
     assert ".pbar{" in SOURCE and ".pmeta{" in SOURCE
 
@@ -108,7 +108,7 @@ def test_profiles_page_has_video_standard_and_formats_editor():
 def test_general_media_and_hub_additions():
     gen = _block("RENDER.general=", "\nRENDER.")
     assert 'data-k="romm_public_url"' in gen and "RomM address for links" in gen
-    assert "<b>Unpacking.</b>" in SOURCE and "nested up to two levels" in SOURCE
+    assert "<b>Unpacking.</b>" in SOURCE and "ZIPs nested inside a ZIP" in SOURCE
     assert "hs.isolation==='uid'" in SOURCE and "This host has no Landlock" in SOURCE
 
 

@@ -1,5 +1,7 @@
 # ROM Hub plugins
 
+![ROM Hub showing 29 enabled confined plugins](img/hub-plugins.png)
+
 **ROM Hub** is the plugin host. A **plugin** adds a source or capability: for example, searching a homebrew catalogue or looking up metadata. Installing ROMarr and installing a plugin are separate steps.
 
 ## Is ROM Hub already installed?
@@ -25,6 +27,14 @@ The top of the Plugins page reports whether plugins can run confined on your hos
 
 A metadata-only plugin does not become a game search source. Other capabilities, including assets and cores, belong to ROM Hub and may require its CLI; installing them does not automatically configure an emulator or frontend. For a plugin marked **key needed**, follow that plugin's repository instructions for credentials/configuration.
 
+### Archive.org login
+
+On the installed Archive.org card, enter your email and password to save a login. Both fields are required when replacing it. Login does not grant access to files restricted by their owners.
+
+For headless installations, set `ROM_HUB_ARCHIVE_ORG_EMAIL_FILE` and `ROM_HUB_ARCHIVE_ORG_PASSWORD_FILE` to files readable by ROMarr. Alternatively, use `ROM_HUB_ARCHIVE_ORG_EMAIL` and `ROM_HUB_ARCHIVE_ORG_PASSWORD`. File settings take precedence for each field; an incomplete external login is an error and does not fall back to saved credentials. The legacy `ROMARR_ARCHIVE_ORG_*` names are also supported, but do not mix the two families.
+
+Credentials are stored by ROM Hub, not in ROMarr's settings or plugin configuration. Plugins run with the ROMarr service account's filesystem access, so only install plugins you trust. On headless Linux, the default store keeps its encryption key beside the encrypted file; use an externally supplied `ROM_HUB_SECRET_KEY` or an OS keyring if filesystem readers are in your threat model. Do not put passwords in the Nix store.
+
 ## Examples in the catalogue
 
 These entries and their tagged source repositories were checked on **2026-10-24**. They are also present in the catalogue pinned by ROMarr's Docker build. This confirms that the plugins are available to install; each upstream service can still be unavailable, change its API, or restrict individual files.
@@ -36,8 +46,24 @@ These entries and their tagged source repositories were checked on **2026-10-24*
 | **Aminet** | Search/import from the Amiga archive | [rom-hub-aminet v0.2.0](https://github.com/BlizzHacker/rom-hub-aminet/tree/v0.2.0) |
 | **libretro Thumbnails** | Metadata/artwork capability, rather than game search | [rom-hub-libretro-thumbnails v0.2.0](https://github.com/BlizzHacker/rom-hub-libretro-thumbnails/tree/v0.2.0) |
 | **Igir 1G1R Collection Manager** | Igir v5.8.0 1G1R DAT verification, patching (BPS/IPS/UPS/Xdelta3/PMSR) & cleanup for RomM, Gaseous, Retrom, ES-DE & Batocera | [rom-hub-igir v0.1.0](https://github.com/BlizzHacker/rom-hub-igir/tree/v0.1.0) |
+| **eXo2romm** | Repackage eXoDOS game zips for standalone RomM playback by rewriting pack-root `dosbox.conf` mounts (credits [derkommutator/eXo2romm](https://github.com/derkommutator/eXo2romm); inspired to assist more users) | [rom-hub-exo2romm v0.1.0](https://github.com/BlizzHacker/rom-hub-exo2romm/tree/v0.1.0) |
 
 The [full catalogue](https://github.com/BlizzHacker/rom-hub/blob/master/catalog/plugins.json) also includes Archive.org, Demozoo, IF Archive and other sources. Read the individual plugin's limits: for example, the itch.io entry is explicitly **play in browser, no import**. A catalogue listing does not promise downloadable copies of every game on that site.
+
+### gamesgamesgamesgamesgames Video Game Standard (`rom-hub-gamesgames`)
+
+The `gamesgames` ROM Hub plugin ([`BlizzHacker/rom-hub-gamesgames`](https://github.com/BlizzHacker/rom-hub-gamesgames)) packages [gamesgamesgamesgamesgames](https://github.com/gamesgamesgamesgamesgames)' decentralized video game data architecture as an opt-in metadata plugin (`[capabilities] metadata`) rather than baking ATProto into ROMarr core:
+
+- **Video Game Lexicons ([gamesgamesgamesgamesgames/lexicon](https://github.com/gamesgamesgamesgamesgames/lexicon))**:
+  - `games.gamesgamesgamesgames.game`: Unified open standard for video games with IGDB, Wikidata, and ROMarr/RomM links.
+  - `games.gamesgamesgamesgames.release`: Platform editions, dump formats, and cryptographic DAT verification checksums (SHA-256, CRC32, MD5).
+  - `games.gamesgamesgamesgames.playState`: Decentralized player progression (`playing`, `completed`, `backlog`, `dropped`, `wishlist`), play time, and ratings synced across your screens.
+  - `games.gamesgamesgamesgames.achievement`: Cross-game trophies and achievements recorded on your personal game shelf.
+  - `dev.cartridge.verificationRequest`: Verification requests stored in your DID that carry a SHA-256 or CRC32 checksum for a No-Intro or Redump candidate. The plugin does not compare the checksum with DAT data or sign the request.
+- **Embedded Gaming AppView ([gamesgamesgamesgamesgames/happyview](https://github.com/gamesgamesgamesgamesgames/happyview))**:
+  - In `v0.1.0`, the plugin manifest registers a metadata provider (`enrich`); standalone HTTP XRPC endpoints (`games.gamesgamesgamesgames.getGame`, `listGames`, `getPlayState`) and background Jetstream event indexing are helper classes inside `gamesgames.lexicons` and are not exposed as host HTTP routes unless wired separately.
+- **Sovereign Gaming Studio ([gamesgamesgamesgamesgames/cartridge](https://github.com/gamesgamesgamesgamesgames/cartridge))**:
+  - Portable, player-owned game libraries and shelf records that travel with your gaming handle across devices.
 
 ## Add ROM Hub to a source or LXC installation
 
@@ -46,7 +72,7 @@ Install Git using your operating system's package manager. Then install the host
 ```bash
 # Proxmox installation path; change it for your own source checkout.
 /opt/romarr/.venv/bin/python -m pip install \
-  "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/f30123ff9113c2a8067e76e177a2405ca66561ab.tar.gz"
+  "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/b0c7885c057730c42608c5570359166128bbe3eb.tar.gz"
 ```
 
 For a checkout using `.venv`, use `.venv/bin/python` instead. Installing into system Python or another virtual environment will not make the package available to ROMarr. Refresh the Plugins page after installing; restart ROMarr after a package upgrade if it has already loaded an older module.
@@ -54,7 +80,7 @@ For a checkout using `.venv`, use `.venv/bin/python` instead. Installing into sy
 For the advanced [Windows source helper](INSTALL.md#windows-source-install), run from the repository directory:
 
 ```powershell
-.\.venv-windows\Scripts\python.exe -m pip install "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/f30123ff9113c2a8067e76e177a2405ca66561ab.tar.gz"
+.\.venv-windows\Scripts\python.exe -m pip install "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/b0c7885c057730c42608c5570359166128bbe3eb.tar.gz"
 ```
 
 Use your chosen virtual-environment path if you changed `-VenvDirectory`. Git must be on `PATH` when installing plugin repositories. The Hub page reports the lack of Linux sandbox support on Windows; do not assume it is confined there.
@@ -80,4 +106,12 @@ ROMarr's **Hub → Library Shell** (`/#portal`), **Hub → Plugins** (`/#hub`), 
 - **Supportive Library Shell (Iframe Portal)**: Embed **RomM**, **Retrom**, **Gaseous**, **Gameyfin**, or **GG Requestz** directly inside ROMarr with one-click API rescans, Igir v5.8.0 1G1R verification, Netplay SHA-1 hash seeding, and reverse-proxy CSP header guidance.
 - **Multi-Device & Network Fleet Manager (`/api/v1/hub/fleet`)**: Synchronize verified 1G1R sets and `gamelist.xml` / Playnite / LaunchBox manifests across local LAN/SMB/NFS shares, SSH/Tailscale handhelds, and cloud WebDAV targets — supporting **ES-DE**, **Raspberry Pi / RetroPie / ArcadePunks / Batocera**, **Argosy Launcher**, **Grout** (muOS/NextUI), **DeckRommSync** (Steam Deck), **SwitchRomM / Tinfoil**, **pkgj / pkgi / fpkgi**, **Kekatsu**, and **RetroArch Cloud Sync**.
 - **Igir v5.8.0 1G1R Front-End (`/api/v1/hub/igir`)**: Full GUI and API wrapper for Igir v5.8.0 with native `{romm}`, `{es}`, and `{batocera}` output folder tokens.
-- **Open-Eyes & ROMarr MCP Bridge (`/api/v1/mcp`)**: Ready-to-copy `mcpServers` configuration pairing [BlizzHacker/open-eyes](https://github.com/BlizzHacker/open-eyes) desktop control with ROMarr's API tools.
+- **ROMarr MCP (`/api/v1/mcp`)**: Connect Claude, Codex, Hermes or Antigravity directly to your own server. Streamable HTTP and a portable stdio bridge support API-key authentication. Read-only tools are enabled by default; [setup and permissions](MCP.md). Open-Eyes is a separate optional desktop-control tool.
+
+### Platform-specific searches
+
+Interactive Search translates ROMarr platform names into the identifiers
+ROM Hub sources expect. For example, selecting **Sega Genesis / Mega Drive**
+queries the plugins as `genesis`; you do not need to clear the platform filter.
+The same translation covers TurboGrafx-16, Odyssey 2, ZX81, and Apple II.
+Your saved platform choices and library folders stay the same.

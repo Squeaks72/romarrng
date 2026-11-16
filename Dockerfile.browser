@@ -31,9 +31,13 @@ ARG PLAYWRIGHT_VERSION=1.62.0
 
 # gosu is su-exec's Debian twin and takes the same "uid:gid cmd" arguments, so
 # the shared entrypoint runs unchanged under the su-exec name.
+# unar (LGPL, Debian main) joins RAR releases split into volumes, which bsdtar
+# cannot; romarr/library.py::rar_tool prefers it over bsdtar for .rar. Alpine
+# has no package that joins split RAR sets (its 7zip is built without RAR),
+# so the standard image explains how to add one instead.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-        gosu tzdata libarchive-tools libseccomp2 git ca-certificates \
+        gosu tzdata libarchive-tools libseccomp2 git ca-certificates unar \
  && ln -s "$(command -v gosu)" /usr/local/bin/su-exec \
  && rm -rf /var/lib/apt/lists/*
 
@@ -42,7 +46,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt \
  && pip install --no-cache-dir "playwright==${PLAYWRIGHT_VERSION}" \
  && if [ "$TARGETARCH" != "arm" ]; then \
       pip install --no-cache-dir \
-        "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/f30123ff9113c2a8067e76e177a2405ca66561ab.tar.gz"; \
+        "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/b0c7885c057730c42608c5570359166128bbe3eb.tar.gz"; \
     fi
 
 # Setuid helper that runs Hub plugins as a separate uid (no Landlock needed).
@@ -58,6 +62,14 @@ COPY romarr/ /app/romarr/
 ARG ROMARR_VERSION=""
 RUN printf '__version__ = "%s"\n' "${ROMARR_VERSION:-0.0.0+unknown}" \
     > /app/romarr/_version.py
+
+# Diagnostic build provenance. Non-tag builds retain the unknown release
+# version while carrying their exact source revision (no fabricated release).
+ARG ROMARR_BUILD_KIND="unknown"
+ARG ROMARR_SOURCE_REF=""
+ARG ROMARR_SOURCE_REVISION=""
+ARG ROMARR_SOURCE_REPOSITORY=""
+RUN python -c 'import os, pathlib; keys = ("ROMARR_BUILD_KIND", "ROMARR_SOURCE_REF", "ROMARR_SOURCE_REVISION", "ROMARR_SOURCE_REPOSITORY"); values = {k.lower(): os.environ.get(k, "") for k in keys}; pathlib.Path("/app/romarr/_build_info.py").write_text("".join(k + " = " + repr(v) + "\n" for k, v in values.items()), encoding="utf-8")'
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /config /roms
 
@@ -79,7 +91,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 LABEL org.opencontainers.image.title="ROMarr (browser edition)" \
       org.opencontainers.image.description="ROMarr on Debian with the Playwright client, for the Headless Browser download client" \
       org.opencontainers.image.source="https://github.com/BlizzHacker/romarr" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.revision="${ROMARR_SOURCE_REVISION}"
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-m", "romarr"]

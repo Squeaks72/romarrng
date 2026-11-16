@@ -80,6 +80,23 @@ def service_fixture(tmp_path,monkeypatch,names=None):
     return service,row,source
 
 
+def test_hub_empty_preview_remains_accessible_after_review_pause(tmp_path, monkeypatch):
+    """Verify hub bundles paused in import-review remain previewable even when items list is empty."""
+    from romarr.downloaders import HubConfig, HubDownloader
+    service, row, source = service_fixture(tmp_path, monkeypatch, ("manual.pdf",))
+    row.download_id = ""
+    client = HubDownloader(HubConfig(save_path=str(tmp_path)))
+    client._write([{"name": "bundle", "state": "done", "file": str(source)}])
+    service.clients = [client]
+    service.store.settings["auto_import"] = False
+    assert service.queue_rows()[0]["can_preview_import"]
+    assert service.queue_import_plan(0, {})["preview"]["extras"] == ["manual.pdf"]
+    assert not service.import_finished()[0]["ok"]
+    assert row.state == "import-review" and row.import_preview["items"] == []
+    assert service.queue_rows()[0]["can_preview_import"]
+    assert service.queue_import_plan(0, {})["preview"]["extras"] == ["manual.pdf"]
+
+
 def test_http_requires_final_tree_review_and_persists_roles(tmp_path,monkeypatch):
     import requests,threading
     from http.server import ThreadingHTTPServer
@@ -161,3 +178,11 @@ def test_route_directory_permission_failure_returns_failed_outcome(tmp_path,monk
     result,=import_rom(source,resolve("switch"),root,selected_primaries=list(routes),bundle_routes=routes)
     assert not result.ok and "destination preparation failed" in result.reason
     assert source.exists() and not (root/"switch/Fixture Game/update/Fixture Game update.nsp").exists()
+
+
+def test_a_nup_is_not_an_existing_game_package():
+    """RomM bundles are routed around .nsp/.xci packages; a NUP is a whole
+    dump in one file, so it never marks a folder as an existing game."""
+    from romarr.romm_bundle import PACKAGE_SUFFIXES
+
+    assert ".nup" not in PACKAGE_SUFFIXES

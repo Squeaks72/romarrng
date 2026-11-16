@@ -20,6 +20,10 @@ download client and a database.
 """
 
 from html import escape
+import json
+import struct
+import zlib
+from functools import lru_cache
 
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
@@ -125,6 +129,7 @@ a:hover{text-decoration:underline;text-underline-offset:2px}
   border-bottom:1px solid var(--line-soft);flex:none;overflow:hidden;
   white-space:nowrap}
 #brand span{color:var(--accent-text)}
+.brand-icon{width:30px;height:27px;margin-right:9px;flex:none;display:block}
 #navwrap{flex:1;overflow-y:auto;padding:6px 0 10px}
 .navgroup{padding:8px 0 2px}
 .navhead{padding:6px 20px;font-size:10.5px;font-weight:600;
@@ -608,8 +613,6 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 .libstats span{font-size:12.5px;color:var(--dim)}
 .libstats details{flex-basis:100%;font-size:12.5px;color:var(--dim)}
 .libstats summary{cursor:pointer;width:max-content}
-.lfrow{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center}
-.lfrow select{width:auto;max-width:100%;padding:6px 10px;font-size:12.5px}
 /* ---- responsive category navigation ---- */
 #rail{width:222px;min-height:0}
 #navwrap{flex:1 1 auto;min-height:0;overscroll-behavior:contain}
@@ -711,6 +714,50 @@ html:not(.sidebar-ready):has(#fallback-accent-2:checked){--accent:#c084fc;}
 html:not(.sidebar-ready):has(#fallback-accent-3:checked){--accent:#5aa2f0;}
 html:not(.sidebar-ready):has(#fallback-accent-4:checked){--accent:#2dd4bf;}
 html:not(.sidebar-ready):has(#fallback-accent-5:checked){--accent:#7bd88f;}
+"""
+
+
+# Narrow screens keep the full navigation drawer and independently scroll tables.
+CSS += """
+#main,.page,.card,.panels>*{min-width:0}
+.library-platform-choice select{min-height:40px;max-width:100%;margin-bottom:8px}
+.library-platforms{max-width:100%}
+.library-filters{margin-bottom:10px}
+.library-filters>summary,.library-count-explainer>summary{cursor:pointer;min-height:36px;display:flex;align-items:center;gap:8px;color:var(--dim)}
+.library-filters>summary::before,.library-count-explainer>summary::before{content:'▸'}
+.library-filters[open]>summary::before,.library-count-explainer[open]>summary::before{content:'▾'}
+@media(max-width:700px){
+ .library-platform-choice select{width:100%;font-size:16px}
+ .library-platforms{flex-wrap:nowrap!important;overflow-x:auto;padding-bottom:8px;scrollbar-width:thin;overscroll-behavior-x:contain}
+ .library-platforms>button{flex:0 0 auto;white-space:nowrap}
+ .library-filters>summary{min-height:44px}
+ .library-filter-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+ .library-filter-fields select{width:100%;min-width:0}
+ .library-filter-fields>.help{grid-column:1/-1}
+ #lib-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+ #lib-grid .nm{white-space:normal;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+}
+
+@media(max-width:820px){
+  table,#page>table{display:block;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}
+  th,td{min-width:90px;overflow-wrap:anywhere}
+  .rowact{flex-wrap:wrap}
+  .card h3{flex-wrap:wrap}
+  .row>*{max-width:100%;min-width:0}
+  input,select,textarea{max-width:100%}
+}
+@media(max-width:700px){
+  #top{flex-wrap:wrap}
+  #top h1{min-width:0;overflow-wrap:anywhere;flex:1}
+  #top #search{flex:1 1 100%;width:100%;margin-left:0}
+  button,.btn,.mini,.tab,.navlinks .nav,.navhead{min-height:44px}
+  input:not([type=checkbox]):not([type=radio]),select{min-height:44px;font-size:16px}
+  #sidebar-close{width:44px;height:44px;top:8px;right:8px}
+  .modal{padding:16px 10px;padding-bottom:max(16px,env(safe-area-inset-bottom))}
+  .modal .box{padding:18px 14px;max-height:calc(100dvh - 32px);overflow:auto}
+  .page{padding-bottom:max(36px,env(safe-area-inset-bottom))}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
+}
 """
 
 
@@ -890,7 +937,31 @@ def _theme_control_html() -> str:
         '<label class="sw pick" title="Any colour you like">'
         f'<input type="color" id="accent-pick" value="{ACCENTS[0][0]}" '
         'aria-label="Custom accent colour"></label>'
-        '</div></div></details></div>'
+        '</div></div></details>'
+        '<a id="android-beta-link" href="https://play.google.com/apps/internaltest/4700888732790045566" '
+        'target="_blank" rel="noopener noreferrer" class="nav" '
+        'style="margin:8px 10px 4px;padding:7px 10px;font-size:12px;font-weight:600;'
+        'color:var(--accent-text,#3ea6ff);background:var(--accent-soft,rgba(62,166,255,0.1));'
+        'border:1px solid var(--border,#333);border-radius:6px;display:flex;align-items:center;gap:7px;">'
+        '<span aria-hidden="true">📲</span><span>Android Beta</span>'
+        '<span style="margin-left:auto;font-size:10px;opacity:.7">Play ↗</span></a>'
+        '<div id="community-links" style="display:flex;gap:6px;margin:4px 10px 6px;">'
+        '<a id="discord-link" href="https://discord.gg/ywNFceuAd" '
+        'target="_blank" rel="noopener noreferrer" class="nav" '
+        'title="Join the ROMarr Discord" '
+        'style="flex:1;min-width:0;margin:0;padding:6px 8px;font-size:11.5px;font-weight:600;'
+        'color:var(--text,#eff3f8);background:var(--surface-soft,rgba(255,255,255,0.03));'
+        'border:1px solid var(--border,#273341);border-radius:6px;display:flex;align-items:center;justify-content:center;gap:4px;">'
+        '<span>Discord</span><span style="font-size:10px;opacity:.7">↗</span></a>'
+        '<a id="opencollective-link" href="https://opencollective.com/romarr" '
+        'target="_blank" rel="noopener noreferrer" class="nav" '
+        'title="Support ROMarr on Open Collective" '
+        'style="flex:1.25;min-width:0;margin:0;padding:6px 8px;font-size:11.5px;font-weight:600;'
+        'color:var(--accent-text,#3ea6ff);background:var(--surface-soft,rgba(255,255,255,0.03));'
+        'border:1px solid var(--border,#273341);border-radius:6px;display:flex;align-items:center;justify-content:center;gap:4px;">'
+        '<span>Open Collective</span><span style="font-size:10px;opacity:.7">↗</span></a>'
+        '</div>'
+        '</div>'
     )
 
 # The nav, in *arr order. `count` names a stat the badge reads.
@@ -911,12 +982,15 @@ NAV = [
         ('queue', 'Queue', 'queued'),
         ('history', 'History', None),
         ('blocklist', 'Blocklist', None),
+        ('reports', 'Reports & Help', None),
     ]),
     ('Hub', [
         ('hub', 'Plugins', None),
-        ('portal', 'Library Shell', None),
+        ('emulators', 'Emulators', None),
+        ('portal', 'Library & Devices', None),
         ('peers', 'Friends', None),
         ('ecosystem', 'Ecosystem', None),
+        ('agents', 'AI Agents', None),
     ]),
     ('Settings', [
         ('general', 'General', None),
@@ -1304,6 +1378,7 @@ function sidebarBindNav(){
 // The arguments are decoded into ROUTE_ARGS for the renderer.
 let ROUTE_ARGS=[], ROUTE_SPEC='', routeEpoch=0;
 let activePage=null, pageVersion=0, metadataLookup=null;
+let exoJobSeq=0;
 // Keep the last successful Identify result only for the current browser page.
 let metadataFilename='Chrono.Trigger.USA.v1.1.smc';
 let metadataCachedFilename='', metadataCachedResult=null;
@@ -1318,6 +1393,8 @@ function go(pageSpec){
   // Hashes are untrusted input; inherited Object properties are not renderers.
   if(!Object.prototype.hasOwnProperty.call(RENDER,page)){ page='library'; pageSpec='library'; ROUTE_ARGS=[]; }
   ROUTE_SPEC=pageSpec;
+  if(typeof RENDER!=='undefined'&&RENDER._queueTimer){clearInterval(RENDER._queueTimer);RENDER._queueTimer=null;}
+  if(RENDER._libraryTimer){clearTimeout(RENDER._libraryTimer);RENDER._libraryTimer=null;}
   activePage=page;
   ++pageVersion;
   metadataLookup?.abort();
@@ -1337,9 +1414,9 @@ function go(pageSpec){
     update:'Update',
     blocklist:'Blocklist',connections:'Connections',metadata:'Metadata',
     calendar:'Release Calendar',manualimport:'Manual Import',
-    collections:'Collections — full sets and 1G1R',
-    getstarted:'Get Started',setup:'Setup Guide',
-    hub:'ROM Hub — Plugins',portal:'Library Shell & Device Fleet'};
+    collections:'Collections \u2014 full sets and 1G1R',
+    getstarted:'Get Started',setup:'Setup Guide',reports:'Reports & Help',
+    hub:'ROM Hub — Plugins',emulators:'Emulator Hub',portal:'Library & Devices',agents:'AI Agents (MCP)'};
   $('#top h1').textContent=titles[page]||'ROMarr';
   // The Filter box filters the games grid and nothing else.
   $('#search').classList.toggle('hide', page!=='library');
@@ -1385,6 +1462,24 @@ RENDER.hub=async()=>{
         +'data-slug="'+esc(pl.slug)+'">'+(pl.enabled?'Disable':'Enable')+'</button>'
       : '<button class="mini accent" data-act="install" data-slug="'+esc(pl.slug)+'">Install'
         +(pl.key_required?' · key needed':'')+'</button>';
+    const ia=hs.archive_org_auth||{};
+    const authForm=(pl.slug==='archive-org'&&pl.installed)
+      ?'<div style="margin-top:12px"><b>Archive.org login</b>'
+        +'<p class="help">'+(ia.external
+          ?'Managed by external credentials (read-only here).'
+          :ia.configured?'Account credentials saved. Enter both fields to replace them.'
+          :'Optional account for restricted ZIP listings and downloads.')
+        +'</p>'
+        +(ia.error?'<p class="help">'+esc(ia.error)+'</p>':'')
+        +(ia.external?'':'<form id="ia-auth-form" autocomplete="off">'
+          +'<div class="row"><input id="ia-email" type="email" placeholder="Archive.org email" '
+          +'autocomplete="off" required maxlength="320">'
+          +'<input id="ia-password" type="password" placeholder="Password" '
+          +'autocomplete="new-password" required maxlength="4096"></div>'
+          +'<div class="row"><button class="mini accent" type="submit">Save login</button>'
+          +(ia.configured?'<button class="mini" id="ia-auth-clear" type="button">Clear login</button>':'')
+          +'</div></form>')
+        +'</div>' : '';
     return '<div class="pcard'+(pl.installed?' installed':'')+'">'
       +'<h4>'+esc(pl.name)+(pl.author?'<span class="by">by '+esc(pl.author)+'</span>':'')+'</h4>'
       +'<div class="desc">'+esc(pl.description||'No description supplied.')+'</div>'
@@ -1393,7 +1488,8 @@ RENDER.hub=async()=>{
         ?'<a href="'+esc(pl.repository)+'" target="_blank" rel="noopener">Instructions and source</a>':'')
       +(pl.key_required?'<div class="help">Requires an account or key. Check the instructions before installing.</div>':'')
       +'<div class="foot">'+action
-      +(net?'<span class="net">reaches '+esc(net)+'</span>':'')+'</div></div>';
+      +(net?'<span class="net">reaches '+esc(net)+'</span>':'')+'</div>'
+      +authForm+'</div>';
   };
 
   const render=d=>{
@@ -1464,11 +1560,30 @@ RENDER.hub=async()=>{
       +'<div class="row" style="margin-top:8px">'
       +'<button class="btn" id="igir-dry">Preview / Dry-Run 1G1R (test + report)</button>'
       +'<button class="btn ghost" id="igir-run">Execute 1G1R Sort (copy + extract + test + clean)</button>'
-      +'<button class="btn ghost" id="igir-portal">Open Library Shell & Device Fleet</button>'
+      +'<button class="btn ghost" id="igir-portal">Library & Devices</button>'
       +'<button class="btn ghost" id="igir-eco">RomM Ecosystem & Console Feeds</button>'
       +'<a class="btn ghost" href="https://github.com/emmercm/igir/releases/tag/v5.8.0" target="_blank" rel="noopener">Igir v5.8.0 Docs</a>'
       +'</div>'
       +'<div id="igir-msg"></div></div>'
+
+      +'<div class="card"><h3>eXo2romm — eXoDOS to RomM Standalone Repackager</h3>'
+      +'<p class="help">Repackage eXoDOS game <code>.zip</code> archives so each game launches standalone inside RomM. '
+      +'Credits <a href="https://github.com/derkommutator/eXo2romm" target="_blank" rel="noopener">derkommutator/eXo2romm</a> (Unlicense) '
+      +'&mdash; this plugin was inspired to assist with more users having this.</p>'
+      +'<div class="panels" style="margin-top:8px">'
+      +'<div class="field"><label for="exo-in">Input Zip(s) or Folder</label><input id="exo-in" placeholder="/data/eXoDOS/roms or /data/eXoDOS/Abaron (1995).zip"></div>'
+      +'<div class="field"><label for="exo-dos">eXoDOS !dos Template Directory (DOS_DIR)</label><input id="exo-dos" value="/data/eXoDOS/Content/eXo/eXoDOS/!dos"></div>'
+      +'<div class="field"><label for="exo-out">RomM DOS Output Directory (OUTPUT_DIR)</label><input id="exo-out" value="/var/lib/romm/library/roms/dos"></div>'
+      +'<div class="field"><label for="exo-log">Error Log (optional override)</label><input id="exo-log" placeholder="Default: <OUTPUT_DIR>/eXo2romm-errors.log"></div>'
+      +'</div>'
+      +'<label class="check" for="exo-overwrite" style="margin-top:4px"><input type="checkbox" id="exo-overwrite"><span>Overwrite existing output zips (unchecked preserves resume-safe skipping)</span></label>'
+      +'<div class="row" style="margin-top:8px">'
+      +'<button class="btn" id="exo-dry">Preview / Dry-Run (check dosbox.conf)</button>'
+      +'<button class="btn ghost" id="exo-run">Repackage eXoDOS ZIPs</button>'
+      +'<a class="btn ghost" href="https://github.com/derkommutator/eXo2romm" target="_blank" rel="noopener">Upstream: derkommutator/eXo2romm</a>'
+      +'<a class="btn ghost" href="https://github.com/BlizzHacker/rom-hub-exo2romm" target="_blank" rel="noopener">ROM Hub Plugin Repo</a>'
+      +'</div>'
+      +'<div id="exo-msg"></div></div>'
       +'<div class="panels">'
       +'<div class="card"><h3>Add your own</h3>'
       +'<p class="help">Install a plugin straight from its repository — yours, '
@@ -1525,6 +1640,53 @@ RENDER.hub=async()=>{
     };
     if($('#igir-dry')) $('#igir-dry').onclick=()=>runIgirJob(true);
     if($('#igir-run')) $('#igir-run').onclick=()=>runIgirJob(false);
+    const runExoJob=async(dry)=>{
+      const box=$('#exo-msg');
+      if(!box) return;
+      const runVer=typeof pageVersion==='number'?pageVersion:0;
+      const seq=++exoJobSeq;
+      const inputs=($('#exo-in').value||'').split(/[\r\n]+/).map(s=>s.trim()).filter(Boolean);
+      if(!inputs.length){
+        box.innerHTML='<div class="panel-note panel-warn">Enter at least one eXoDOS .zip path or folder above.</div>';
+        return;
+      }
+      box.innerHTML='<div class="panel-note">Running eXo2romm '+(dry?'preview':'repackaging')+'…</div>';
+      const payload={
+        input_paths:inputs,
+        dos_dir:($('#exo-dos').value||'').trim(),
+        output_dir:($('#exo-out').value||'').trim(),
+        error_log:($('#exo-log').value||'').trim(),
+        dry_run:dry,
+        overwrite:Boolean($('#exo-overwrite')&&$('#exo-overwrite').checked)
+      };
+      try{
+        const r=await fetch('/api/v1/hub/exo2romm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        const res=await r.json();
+        if((typeof activePage!=='undefined'&&activePage!=='hub')||(typeof pageVersion==='number'&&pageVersion!==runVer)||seq!==exoJobSeq) return;
+        const targetBox=$('#exo-msg');
+        if(!targetBox) return;
+        const rows=(res.results||[]).slice(0,25).map(item=>
+          '<div style="margin-top:4px;font-size:12px"><code>'+esc(item.status||'')+'</code> '+esc(item.detail||'')
+          +(item.preview_conf?'<pre style="margin:6px 0 0;padding:8px;background:var(--bg);border:1px solid var(--line);overflow:auto">'+esc(item.preview_conf)+'</pre>':'')
+          +'</div>'
+        ).join('');
+        const extra=(res.results||[]).length>25?'<div class="help" style="margin-top:6px">Showing first 25 of '+res.results.length+' archive(s).</div>':'';
+        if(!r.ok||!res.ok){
+          targetBox.innerHTML='<div class="panel-note panel-warn"><b>'+esc(res.error||res.summary||'eXo2romm failed.')+'</b>'+rows+extra+'</div>';
+          return;
+        }
+        targetBox.innerHTML='<div class="panel-note'+(res.clean===false?' panel-warn':'')+'"><b>'+esc(res.summary||'Done')+'</b>'
+          +(res.credit?'<br><span class="help" style="margin:0">'+esc(res.credit)+'</span>':'')
+          +(res.error_log?'<br><span class="help" style="margin:0">Error log: <code>'+esc(res.error_log)+'</code></span>':'')
+          +rows+extra+'</div>';
+      }catch(e){
+        if((typeof activePage!=='undefined'&&activePage!=='hub')||(typeof pageVersion==='number'&&pageVersion!==runVer)||seq!==exoJobSeq) return;
+        const targetBox=$('#exo-msg');
+        if(targetBox) targetBox.innerHTML='<div class="panel-note panel-warn">Could not reach /api/v1/hub/exo2romm</div>';
+      }
+    };
+    if($('#exo-dry')) $('#exo-dry').onclick=()=>runExoJob(true);
+    if($('#exo-run')) $('#exo-run').onclick=()=>runExoJob(false);
     const qi=$('#pq');
     let t=null;
     qi.oninput=()=>{clearTimeout(t);t=setTimeout(async()=>{
@@ -1538,6 +1700,47 @@ RENDER.hub=async()=>{
       cap = cap===c.dataset.cap ? '' : c.dataset.cap; render(await load());});
     p.querySelectorAll('.chip[data-inst]').forEach(c=>c.onclick=async()=>{
       inst = inst===c.dataset.inst ? '' : c.dataset.inst; render(await load());});
+
+    const iaForm=$('#ia-auth-form');
+    const iaClear=$('#ia-auth-clear');
+    const iaBtn=iaForm?iaForm.querySelector('button[type="submit"]'):null;
+    const setIaBusy=busy=>{if(iaBtn)iaBtn.disabled=busy;if(iaClear)iaClear.disabled=busy;};
+    const isCurrentHub=ver=>(typeof activePage==='undefined'||activePage==='hub')&&(typeof pageVersion!=='number'||pageVersion===ver);
+    const submitIaAuth=async(payload,fallbackError,okToast)=>{
+      const opVer=typeof pageVersion==='number'?pageVersion:0;
+      setIaBusy(true);
+      try{
+        try{
+          const response=await fetch('/api/v1/hub/archive-org/auth',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify(payload)});
+          const result=await response.json();
+          if(!isCurrentHub(opVer)) return;
+          actionError=result.ok?'':(result.error||fallbackError);
+          if(result.ok)toast(okToast);
+        }catch(e){
+          if(!isCurrentHub(opVer)) return;
+          actionError=fallbackError;
+        }
+        const nextHs=await j('/api/v1/hub/status').catch(()=>hs);
+        if(!isCurrentHub(opVer)) return;
+        hs=nextHs;
+        const nextData=await load();
+        if(!isCurrentHub(opVer)) return;
+        render(nextData);
+      }finally{
+        if(isCurrentHub(opVer)) setIaBusy(false);
+      }
+    };
+    if(iaForm) iaForm.onsubmit=async e=>{
+      e.preventDefault();
+      const email=$('#ia-email').value.trim(), password=$('#ia-password').value;
+      if(!email||!password)return;
+      await submitIaAuth({email,password},'Could not save Archive.org login','Archive.org credentials saved');
+    };
+    if(iaClear) iaClear.onclick=async()=>{
+      await submitIaAuth({clear:true},'Could not clear Archive.org login','Archive.org credentials cleared');
+    };
 
     p.querySelectorAll('button[data-act]').forEach(b=>b.onclick=async()=>{
       const slug=b.dataset.slug, action=b.dataset.act;
@@ -1671,7 +1874,7 @@ function bindPicker(root,id,items,onChange){
 }
 
 let LIB={platform:'',genre:'',region:'',decade:'',origin:'',source:'',sort:'',
-         offset:0,limit:120};
+         offset:0,limit:120,filtersOpen:null};
 // What each catalogue is called on screen. Spelled out rather than shown as
 // the raw key, because "archive" and "flashpoint" mean nothing to somebody
 // who did not set the indexers up, and "cloud" has to say plainly that
@@ -1682,9 +1885,37 @@ const SOURCE_LABEL={
   flashpoint:'Flashpoint (streams)',
   cloud:'Catalogued, source unknown'};
 const num=n=>(n===null||n===undefined)?'—':Number(n).toLocaleString();
-let libraryRequest=0;
-RENDER.library=async(renderEpoch=routeEpoch)=>{
-  const request=++libraryRequest;
+/** Explain an in-progress library read without treating a partial shelf as empty. */
+function libraryScanHelp(d){
+  const scan=d.scan||{};
+  if(!d.loading&&!d.partial&&!scan.running&&scan.stage!=='error')return '';
+  const running=scan.running===true;
+  const stage=scan.stage==='error'?'Library scan needs attention'
+    :d.partial&&!running?'Library scan incomplete'
+    :({counting:'Preparing the library scan',reading:'Reading the library',
+       complete:'Library scan complete'}[scan.stage]||'Library scan status');
+  const fallback=running?'ROMarr is reading the configured library. Loaded games remain available while the scan runs.'
+    :d.partial?'The scan did not load the complete library. Review its status or error before retrying.'
+    :'Waiting for the library status.';
+  const read=Number.isFinite(Number(scan.read))?Math.max(0,Number(scan.read)):null;
+  const elapsed=Number.isFinite(Number(scan.elapsed_seconds))?Math.max(0,Number(scan.elapsed_seconds)):null;
+  const progress=[read===null?'':num(read)+' games read',elapsed===null?'':num(elapsed)+' s elapsed'].filter(Boolean).join(' · ');
+  return `<div class="panel-note" role="status"><b>${esc(stage)}</b>
+    ${scan.library?`<span> · ${esc(scan.library)}</span>`:''}
+    <p>${esc(d.scan_message||d.message||fallback)}</p>
+    ${progress?`<p class="help">${esc(progress)}</p>`:''}
+    <p class="help">Large folders and network shares can take time. This view may contain only the games read so far.
+    For mounts, permissions and scan errors, see the
+    <a href="https://github.com/BlizzHacker/romarr/blob/main/docs/NAS-LIBRARIES.md" target="_blank" rel="noopener">NAS library guide</a>.</p></div>`;
+}
+
+RENDER.library=async()=>{
+  const version=typeof pageVersion==='number'?pageVersion:null;
+  const request=(RENDER._libraryRequest||0)+1;
+  RENDER._libraryRequest=request;
+  if(RENDER._libraryTimer){clearTimeout(RENDER._libraryTimer);RENDER._libraryTimer=null;}
+  const current=()=>request===RENDER._libraryRequest
+    &&(version===null||(pageVersion===version&&activePage==='library'));
   const p=$('#page');
   if(!p.querySelector('#lib-grid')) p.innerHTML='<div class="empty">Loading library…</div>';
   const q=($('#search').value||'').trim();
@@ -1697,38 +1928,50 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
     +`&source=${encodeURIComponent(LIB.source)}`
     +`&sort=${encodeURIComponent(LIB.sort)}`)
     .catch(()=>({items:[],error:'unreachable'}));
-  // A newer render (another filter, another page) has taken over.
-  if(renderEpoch!==routeEpoch||request!==libraryRequest) return;
+  if(!current())return;
+  if((d.scan&&d.scan.running)||(d.loading&&!d.error&&!(d.scan&&d.scan.stage==='error'))){
+    RENDER._libraryTimer=setTimeout(()=>{
+      RENDER._libraryTimer=null;
+      if(current())return RENDER.library();
+    },5000);
+  }
 
   if(d.loading){
-    // The first fetch has not landed yet. Say so, rather than showing an
-    // empty grid that reads as "your library is empty".
-    p.innerHTML=`<div class="card"><h3>Reading the library</h3>
-      <p class="help">${esc(d.message||'Fetching from RomM…')}
-      ${d.error?` Last attempt: <b>${esc(d.error)}</b>. Retrying with backoff.`:''}</p></div>`;
+    // A partial network-library read is progress, not an empty collection.
+    p.innerHTML=libraryScanHelp(d)
+      +(d.error?'<p class="help" style="color:var(--warn)">Last attempt: '+esc(d.error)+'</p>':'');
     return;
   }
 
+  const scanRunning=!!(d.scan&&d.scan.running);
   const items=d.items||[];
   const T=d.totals||{};
   // Every platform the library server holds, from the first second --
-  // even ones the background walk has not reached. 49 platforms do not fit
-  // as a wall of buttons, so they live in a searchable picker. The number is
-  // the platform's whole row count; "N here" is the part that is a file on
-  // this disk, and a partly-read platform says how much has loaded so far.
-  // That split matters: "Browser 94,415" beside "Nintendo DS 8,112" looked
-  // like the same claim, when not one of those 94,415 is a file on this disk.
-  const platItems=[{value:'',label:'All platforms',meta:fmt(d.grand_total)}]
-    .concat((d.platforms||[]).map(x=>{
-      const part=x.cached!==undefined&&x.cached<x.count;
-      const cat=x.catalogued||0, disk=x.on_disk||0;
-      return {value:x.platform,label:x.platform,
-        meta:(part?fmt(x.cached)+'/'+fmt(x.count):fmt(x.count))+(cat>0?' · '+fmt(disk)+' here':'')};
-    }));
+  // even ones the background walk has not reached. When a platform is only
+  // partly cached the chip says so rather than under-reporting silently.
+  //
+  // The number on a chip is the platform's whole row count, and on its own
+  // that was actively misleading: "Browser 94,415" sat beside "Nintendo DS
+  // 8,112" looking like the same claim, when not one of those 94,415 is a
+  // file on this disk. A chip whose contents are wholly or partly catalogued
+  // now shows the split and says which is which on hover.
+  const chips=(d.platforms||[]).filter((x,i)=>i<12||x.platform===LIB.platform).map(x=>{
+    const part=x.cached!==undefined&&x.cached<x.count;
+    const cat=x.catalogued||0, disk=x.on_disk||0;
+    const mixed=cat>0;
+    const tip=[part?`${x.cached} of ${x.count} loaded so far`:'',
+               mixed?`${disk} on disk · ${cat} catalogued elsewhere`:'']
+              .filter(Boolean).join(' — ');
+    return `<button class="btn ${LIB.platform===x.platform?'':'ghost'}" data-plat="${esc(x.platform)}"
+      style="padding:4px 10px;font-size:12px"
+      title="${esc(tip)}">${esc(x.platform)}
+      <span style="opacity:.7">${part?x.cached+'/'+x.count:x.count}</span>
+      ${mixed?`<span style="opacity:.55;font-size:11px">(${disk}&nbsp;here)</span>`:''}</button>`;
+  }).join('');
   const f=d.facets||{};
   const sel=(key,label,list,fmt)=>{
     if(!list||!list.length) return '';
-    return `<select data-lf="${key}" aria-label="${esc(label)}">
+    return `<select data-lf="${key}" aria-label="${esc(label)}" style="padding:4px 8px;font-size:12px">
       <option value="">${label}</option>
       ${list.map(x=>`<option value="${esc(x.value)}"${LIB[key]===x.value?' selected':''}
         >${esc(fmt?fmt(x.value):x.value)} (${x.count})</option>`).join('')}
@@ -1742,23 +1985,35 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
   // actually here. The middle number is the interesting one -- it is what
   // would have to be fetched or streamed before anybody could play it.
   const srcRows=(f.sources||[]).filter(x=>x.value!=='local');
-  const readNote=T.counted_from==='cached rows'
-    ?`Counted from the ${num(d.cached_total)} rows read so far — this library server does not report the split itself${d.partial?', and the read is still running':''}.`
-    :((T.total!==null&&T.total!==undefined&&d.cached_total<T.total)
-      ?`${num(d.cached_total)} of those are loaded and browsable here${d.partial?' — still reading':''}.`:'');
   const banner=`<div class="libstats">
       <div><b>${num(T.on_disk)}</b><span>On disk here</span></div>
       <div><b>${num(T.catalogued)}</b><span>Catalogued, streams</span></div>
       <div><b>${num(T.total)}</b><span>Total known</span></div>
-      ${readNote?`<p class="help" style="flex-basis:100%;margin:0">${esc(readNote)}</p>`:''}
-      ${srcRows.length?`<details><summary>How these are counted</summary>
-        <p class="help" style="margin:6px 0 0">Catalogued entries by source:
-        ${srcRows.map(x=>`<b style="font-size:inherit">${num(x.count)}</b> ${esc(SOURCE_LABEL[x.value]||x.value)}`).join(' · ')}.
-        Source is read from the filename each indexer writes, so anything ROMarr cannot place
-        stays “source unknown” rather than being filed under a guess.</p></details>`:''}
-    </div>`;
-  const head=banner+`<div class="lfrow">
-      ${pickerHtml('lib-plat',platItems,LIB.platform,'Platform')}
+    </div>
+    ${srcRows.length?`<details class="library-count-explainer"><summary>About these counts</summary><p class="help" style="margin:8px 0 0">
+      Catalogued entries by source:
+      ${srcRows.map(x=>`<b>${num(x.count)}</b> ${esc(SOURCE_LABEL[x.value]||x.value)}`)
+        .join(' · ')}. Source is read from the filename each indexer writes,
+      so anything ROMarr cannot place stays “source unknown” rather than
+      being filed under a guess.</p></details>`:''}
+    ${T.counted_from==='cached rows'
+      ?`<p class="help" style="margin:6px 0 0">Counted from the ${num(d.cached_total)}
+        rows read so far — this library server does not report the split
+        itself${scanRunning?', and the read is still running':d.partial?', with an incomplete scan':''}.</p>`
+      :((T.total!==null&&T.total!==undefined&&d.cached_total<T.total)
+        ?`<p class="help" style="margin:6px 0 0">${num(d.cached_total)} of those
+          are loaded and browsable here${scanRunning?' — still reading':d.partial?' — scan incomplete':''}.</p>`:'')}
+  </div>`;
+  const filterCount=[LIB.genre,LIB.region,LIB.decade,LIB.origin,LIB.source,LIB.sort].filter(Boolean).length;
+  const head=()=>{
+    const filtersOpen=LIB.filtersOpen===null?(typeof matchMedia!=='function'||!matchMedia('(max-width:700px)').matches):LIB.filtersOpen;
+    return libraryScanHelp(d)+banner+`<div class="library-platform-choice">${sel('platform','All platforms',(d.platforms||[]).map(x=>({value:x.platform,count:x.count})))}</div>
+    <div class="row library-platforms" aria-label="Popular platforms" style="flex-wrap:wrap;gap:6px;margin-bottom:10px">
+      <button class="btn ${LIB.platform?'ghost':''}" data-plat=""
+        style="padding:4px 10px;font-size:12px">All
+        <span style="opacity:.7">${d.grand_total}</span></button>${chips}</div>
+    <details class="library-filters"${filtersOpen?' open':''}><summary>Filters and sort${filterCount?' · '+filterCount+' active':''}</summary>
+    <div class="row library-filter-fields" style="flex-wrap:wrap;gap:6px;margin:8px 0 10px;align-items:center">
       ${sel('genre','Any genre',f.genres)}
       ${sel('region','Any region',f.regions)}
       ${sel('decade','Any decade',f.decades)}
@@ -1777,25 +2032,26 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
       ${(f.genres||[]).length?`<span class="help" style="margin:0;font-size:11.5px;flex-basis:100%">
         genre/year known for ${fmt(f.identified)} of ${fmt(d.grand_total)} (${coverage}%) —
         run a metadata scan in your library server to raise it</span>`:''}
-    </div>
+    </div></details>
     <p class="help" style="margin-bottom:10px">
       Showing ${d.total?LIB.offset+1:0}–${Math.min(LIB.offset+items.length,d.total)}
       of ${d.total}${LIB.platform?` on ${esc(LIB.platform)}`:''}${q?` matching “${esc(q)}”`:''}
       · ${d.grand_total} cached across ${(d.platforms||[]).length} platforms
-      ${d.partial?' · <b>still loading from the library server…</b>':''}
+      ${scanRunning?' · <b>still loading from the library server…</b>':d.partial?' · <b>scan incomplete — see the scan status above</b>':''}
       ${d.error?` · <span style="color:var(--warn)">last refresh: ${esc(d.error)}</span>`:''}</p>`;
+  };
 
   if(!items.length){
-    p.innerHTML=head+`<div class="empty">
+    p.innerHTML=head()+`<div class="empty">
       ${q||LIB.platform?'No game matches that.':'No games returned by the library.'}</div>`;
-    bindLibraryChips(p,platItems); return;
+    bindLibraryChips(p); return;
   }
   // The shelf: status, rating and notes set by the operator, overlaid on the
   // grid. One fetch for the whole page -- the metadata is tiny.
   // Cache-only on the server, so this never waits on a Switch scan.
   const gapMap=await j('/api/v1/switch/gaps').catch(()=>({ready:false,games:{}}));
   const meta=await j('/api/v1/game/meta').catch(()=>({items:[]}));
-  if(renderEpoch!==routeEpoch||request!==libraryRequest) return;
+  if(!current())return;
   const shelf={};
   (meta.items||[]).forEach(x=>{
     shelf[`${x.platform}/${(x.game||'').toLowerCase()}`]=x; });
@@ -1809,7 +2065,7 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
   };
   // A tile opens the game's own page; the shelf editor lives there.
   const grid=`<div class="grid" id="lib-grid">${items.map((g,i)=>`<div class="tile"
-      data-open="${i}" style="cursor:pointer" title="Open game page">
+      data-open="${i}" role="link" tabindex="0" aria-label="${esc(g.name)} · ${esc(g.platform||'')}" style="cursor:pointer" title="Open game page">
     ${(gapMap.games||{})[g.id]?`<span class="gap" title="${esc(gapMap.games[g.id].map(k=>k==='update'?'Update available':'DLC missing').join(' · '))}">${gapMap.games[g.id].includes('update')?'Update':'DLC'}</span>`:''}
     <div class="art" style="background-image:url('${esc(g.cover||'')}')"></div>
     <div class="nm">${esc(g.name)}</div>
@@ -1822,21 +2078,27 @@ RENDER.library=async(renderEpoch=routeEpoch)=>{
   const gapBanner=(gapMap.ready&&gs.games_with_gaps)?`<div class="alert-bar" role="alert"><b>${fmt(gs.games_with_gaps)} Switch game${gs.games_with_gaps===1?'':'s'} need attention:</b>
     ${gs.update_gaps?`${fmt(gs.update_gaps)} update${gs.update_gaps===1?'':'s'} available`:''}${gs.update_gaps&&gs.dlc_gaps?', ':''}${gs.dlc_gaps?`${fmt(gs.dlc_gaps)} DLC missing`:''}.
     <a href="#switchupdates">Review</a></div>`:'';
-  p.innerHTML=gapBanner+head+grid+more;
-  bindLibraryChips(p,platItems);
+  p.innerHTML=gapBanner+head()+grid+more;
+  bindLibraryChips(p);
   const moreBtn=p.querySelector('#lib-more');
   if(moreBtn) moreBtn.onclick=()=>{LIB.limit+=240;go('library');};
   p.querySelectorAll('[data-open]').forEach(t=>{
     const g=items[Number(t.dataset.open)];
-    t.setAttribute('role','link'); t.tabIndex=0;
     const open=()=>{ go('game/'+encodeURIComponent(g.platform_slug||g.platform||'')+'/'+encodeURIComponent(g.id)); };
-    t.onclick=open; t.onkeydown=e=>{ if(e.key==='Enter') open(); };
+    t.onclick=open; t.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();open();} };
   });
 };
-
-function bindLibraryChips(p,platItems){
-  bindPicker(p,'lib-plat',platItems||[],v=>{
-    LIB.platform=v; LIB.offset=0; LIB.limit=120;
+function bindLibraryChips(p){
+  const filters=p.querySelector('.library-filters');
+  if(filters){
+    let previousOpen=filters.open;
+    filters.ontoggle=()=>{
+      if(filters.open===previousOpen)return;
+      previousOpen=filters.open;LIB.filtersOpen=previousOpen;
+    };
+  }
+  p.querySelectorAll('[data-plat]').forEach(b=>b.onclick=()=>{
+    LIB.platform=b.dataset.plat; LIB.offset=0; LIB.limit=120;
     go('library');
   });
   p.querySelectorAll('[data-lf]').forEach(s=>s.onchange=()=>{
@@ -1869,12 +2131,32 @@ function shelfEditor(g, meta){
     <div class="field"><label>Notes</label>
       <textarea data-f="notes" rows="4"
         style="width:100%;resize:vertical">${esc(meta.notes||'')}</textarea></div>
+    <details id="sh-nfo"><summary>Release notes (NFO)</summary>
+      <p class="help" id="sh-nfo-status">Open to read a same-name NFO beside this local game.</p>
+      <pre id="sh-nfo-text" style="white-space:pre;overflow:auto;max-height:360px"></pre></details>
     <div class="foot">
       <button class="btn ghost sp" data-close>Cancel</button>
       <button class="btn" id="sh-save">Save</button>
     </div></div>`;
   document.body.append(m);
   m.onclick=e=>{ if(e.target===m||e.target.dataset.close!==undefined) closeModal(); };
+  m.querySelector('#sh-nfo').ontoggle=async(e)=>{
+    if(!e.target.open||e.target.dataset.loaded)return;
+    e.target.dataset.loaded='1';
+    const status=m.querySelector('#sh-nfo-status');
+    status.textContent='Reading release notes…';
+    try{
+      const nfo=await j('/api/v1/game/nfo?id='+encodeURIComponent(g.id||'')
+        +'&source='+encodeURIComponent(g.source||''));
+      if(!m.isConnected)return;
+      status.textContent=nfo.available
+        ?nfo.filename+(nfo.truncated?' — preview limited to 128 KiB':'')
+        :(nfo.reason||'No same-name NFO is available for this local folder game.');
+      m.querySelector('#sh-nfo-text').textContent=nfo.text||'';
+    }catch(err){
+      if(m.isConnected)status.textContent='Could not read release notes.';
+    }
+  };
   m.querySelector('#sh-save').onclick=async()=>{
     const f=readForm();
     const r=await j('/api/v1/game/meta',{method:'POST',
@@ -1895,7 +2177,7 @@ function shelfEditor(g, meta){
 async function renderReleases(out,game,platform){
   const mb=n=>n>=1048576?(n/1048576).toFixed(1)+' MB'
     :n>0?(n/1024).toFixed(0)+' KB':'—';
-  out.innerHTML='<div class="empty">Searching every indexer…</div>';
+  out.innerHTML='<div class="empty">Searching enabled sources…</div>';
   const d=await j(`/api/v1/release?game=${encodeURIComponent(game)}`
     +`&platform=${encodeURIComponent(platform||'')}`).catch(()=>({error:'Search failed'}));
   if(d.error){
@@ -1903,9 +2185,16 @@ async function renderReleases(out,game,platform){
     return;
   }
   if(!d.items.length){
-    out.innerHTML='<div class="empty">Nothing found. A search where '
-      +'every indexer fails looks exactly like one that found nothing &mdash; '
-      +'check Indexers if this is unexpected.</div>';
+    out.innerHTML='<div class="panel-note"><b>No releases returned.</b>'
+      +'<p>No download was started. Check the search source first:</p>'
+      +'<ol><li>Open <a href="#indexers">Indexers</a>, enable your source and use its <b>Test</b> button. '
+      +'For Prowlarr, check the indexer there too.</li>'
+      +'<li>Try the title on the source itself, then try a shorter title and the correct platform here. '
+      +'Check the source’s game categories and API access. A working connection does not guarantee that game is listed.</li>'
+      +'<li>For Usenet, add a <b>Newznab indexer</b> as well as your provider and download client. '
+      +'A provider login alone does not supply search results.</li></ol>'
+      +'<p>You can also browse <a href="#hub">ROM Hub sources</a> or <a href="#manualimport">import existing files</a>. '
+      +'After you grab a result, download or import failures appear in <a href="#queue">Queue</a> and <a href="#history">History</a>.</p></div>';
     return;
   }
   out.innerHTML=`
@@ -3722,68 +4011,83 @@ function sharingEditor(peer){
 }
 
 RENDER.portal=async()=>{
-  const [libs, fleet, mcp, sys] = await Promise.all([
+  if(window._portalTab==='mcp'){window._portalTab='shell'; go('agents'); return;}
+  const version=pageVersion;
+  const current=()=>version===pageVersion&&activePage==='portal';
+  const [libs, fleet, sys] = await Promise.all([
     j('/api/v1/library').catch(()=>({items:[]})),
-    j('/api/v1/hub/fleet').catch(()=>({profiles:[],igir:{}})),
-    j('/api/v1/mcp').catch(()=>({tools:[],mcp_client_config:{}})),
+    j('/api/v1/hub/fleet').catch(()=>({profiles:[],kinds:{},igir:{}})),
     j('/api/v1/system/status').catch(()=>({}))
   ]);
+  if(!current()) return;
   const servers=(libs.items||[]).filter(l=>l.url).map(l=>({...l}));
   if(sys&&sys.ggrequestz&&sys.ggrequestz.url&&!servers.some(s=>s.url===sys.ggrequestz.url)){
-    servers.push({name:'GG Requestz',type:'ggrequestz',url:sys.ggrequestz.url,path:sys.library_path||'/mnt/roms'});
+    servers.push({name:'GG Requestz',type:'ggrequestz',url:sys.ggrequestz.url,public_url:sys.ggrequestz.public_url||sys.ggrequestz.url,path:sys.library_path||'/roms'});
   }
-  if(location.hostname.includes('moveweight.com')&&!servers.some(s=>s.url==='https://romm.moveweight.com')){
-    servers.push({name:'RomM (Public)',type:'romm',url:'https://romm.moveweight.com',path:sys.library_path||'/mnt/roms'});
-  }
-  let tab='shell';
+  let tab=window._portalTab||'shell';
   let currentUrl=window._portalTargetUrl||(servers[0]&&servers[0].url)||'';
   let currentName=window._portalTargetName||(servers[0]&&servers[0].name)||'Library Server';
   let useProxy=window._portalUseProxy!==undefined?window._portalUseProxy:true;
   let showShieldHelp=false;
 
+  const isConfiguredOrigin=(u)=>{
+    if(!u) return false;
+    try{
+      const target=new URL(u).origin;
+      return servers.some(s=>{try{return new URL(s.url).origin===target;}catch{return false;}});
+    }catch{return false;}
+  };
+
+  let viewGen=0, planSeq=0;
   const draw=()=>{
+    viewGen++;
     const tabBar=`<div class="cat-bar" style="margin-bottom:14px">
-      <span class="chip${tab==='shell'?' on':''}" data-ptab="shell">Supportive Library Shell (RomM / Retrom / Gaseous)</span>
-      <span class="chip${tab==='fleet'?' on':''}" data-ptab="fleet">Device & Network Fleet (ES-DE / RetroPie / ArcadePunks / Argosy / Grout)</span>
-      <span class="chip${tab==='mcp'?' on':''}" data-ptab="mcp">Open-Eyes & MCP Desktop Bridge</span>
+      <span class="chip${tab==='shell'?' on':''}" data-ptab="shell">Library app</span>
+      <span class="chip${tab==='fleet'?' on':''}" data-ptab="fleet">Devices</span>
     </div>`;
 
     if(tab==='shell'){
       const srvBtns=servers.map(s=>
         `<button class="chip${currentUrl===s.url?' on':''}" data-srvurl="${esc(s.url)}" data-srvname="${esc(s.name)}">
-          ${esc(s.name)} <span class="n">(${esc(s.type)})</span>
+          ${esc(s.name)} <span class="n">(${esc(s.type||'library')})</span>
         </button>`
       ).join(' ');
+      const activeSrv=servers.find(s=>s.url===currentUrl)||null;
+      const canProxy=isConfiguredOrigin(currentUrl);
+      const effectiveProxy=useProxy&&canProxy;
       const frameSrc=currentUrl
-        ? (useProxy ? ('/api/v1/portal/proxy?url='+encodeURIComponent(currentUrl)) : currentUrl)
+        ? (effectiveProxy ? ('/api/v1/portal/proxy?url='+encodeURIComponent(currentUrl)) : currentUrl)
         : '';
+      const popOutHref=activeSrv?(activeSrv.public_url||activeSrv.url):currentUrl;
 
       $('#page').innerHTML=`<div class="card">
-        <h3>Supportive Library Shell — Absorb & Empower Without Replacing</h3>
-        <p class="help">Embed <b>RomM</b>, <b>Retrom</b>, <b>Gaseous</b>, <b>Gameyfin</b>, or <b>GG Requestz</b> directly inside ROMarr.
-          Use the deep root controls below to trigger rescans, run Igir v5.8.0 1G1R verification, seed Netplay hashes, or export frontend manifests while working inside your library UI.</p>
+        <h3>Your library app</h3>
+        <p class="help">Open your configured library frontend (<b>RomM</b>, <b>Retrom</b>, <b>Gaseous</b>, <b>Gameyfin</b>, or <b>GG Requestz</b>) right inside ROMarr, or pop it out in a new tab. Add or edit library servers in <a href="#libraries">Settings → Libraries</a>.</p>
         ${tabBar}
         <div class="row" style="margin-bottom:10px">
-          ${srvBtns||'<span class="help">No library server URL configured yet — enter one below or add one in Settings → Libraries.</span>'}
-          <input id="portal-url" placeholder="https://romm.local or http://192.168.0.6:8080" value="${esc(currentUrl)}" style="flex:1;min-width:240px;padding:7px 11px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:var(--r-sm)">
-          <button class="btn" id="portal-load">Load in Shell</button>
-          <button class="btn ghost" id="portal-rescan">Rescan API</button>
-          <button class="btn ghost" id="portal-1g1r">Igir 1G1R Sort</button>
+          ${srvBtns||'<span class="help">No library server configured yet — add one in <a href="#libraries">Settings → Libraries</a> or enter a URL below.</span>'}
+          <input id="portal-url" placeholder="http://192.168.1.50:8080" value="${esc(currentUrl)}" style="flex:1;min-width:220px;padding:7px 11px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:var(--r-sm)">
+          <button class="btn" id="portal-load">Open</button>
+          <button class="btn ghost" id="portal-rescan">Refresh Library</button>
+          <button class="btn ghost" id="portal-1g1r">Preview 1G1R (Igir)</button>
           <button class="btn ghost" id="portal-hashes">Seed Netplay Hashes</button>
-          <button class="btn ${useProxy?'':'ghost'}" id="portal-shield" title="Toggle Same-Origin Authenticated Proxy Shield">${useProxy?'Shield: Same-Origin Proxy (ON)':'Framing / CSP Shield (Direct)'}</button>
-          ${currentUrl?`<a class="btn ghost" href="${esc(currentUrl.includes('192.168.0.94') && location.hostname.includes('moveweight.com') ? 'https://romm.moveweight.com' : currentUrl)}" target="_blank" rel="noopener noreferrer">Pop Out</a>`:''}
+          <button class="btn ${effectiveProxy?'':'ghost'}" id="portal-shield" title="Toggle Same-Origin Authenticated Proxy">${effectiveProxy?'Proxy: Same-Origin (ON)':'Mode: Direct Iframe'}</button>
+          ${currentUrl?`<a class="btn ghost" href="${esc(popOutHref)}" target="_blank" rel="noopener noreferrer">Open in New Tab ↗</a>`:''}
         </div>
         <div id="portal-status"></div>
+        ${currentUrl&&!canProxy?`<div class="panel-note" style="margin-bottom:12px">
+          <b>Direct iframe mode:</b> <code>${esc(currentUrl)}</code> is not in <a href="#libraries">Settings → Libraries</a>, so ROMarr loads it directly in your browser instead of routing through <code>/api/v1/portal/proxy</code> (which only proxies configured library origins).
+        </div>`:''}
         ${showShieldHelp?`<div class="panel-note" style="margin-bottom:12px">
-          <b>Same-Origin Authenticated Proxy Shield (${useProxy?'Active':'Direct URL Mode'}):</b> ROMarr routes your configured library through <code>/api/v1/portal/proxy</code>, automatically attaching your stored library credentials and stripping <code>X-Frame-Options</code> so OIDC, cross-origin cookies, and HTTPS mixed-content blocks never break the embedded shell.
-          <button class="btn ghost sm" id="portal-toggle-mode" style="margin-left:8px">${useProxy?'Switch to Direct Iframe URL':'Switch to Same-Origin Proxy'}</button>
+          <b>Same-Origin Authenticated Proxy (${effectiveProxy?'Active':'Direct URL Mode'}):</b> For servers configured in <a href="#libraries">Settings → Libraries</a>, ROMarr can relay requests through <code>/api/v1/portal/proxy</code>, attaching your stored library credentials and removing frame-blocking headers so cross-origin cookies and mixed-content blocks do not break the embedded view.
+          ${canProxy?`<button class="btn ghost sm" id="portal-toggle-mode" style="margin-left:8px">${useProxy?'Switch to Direct Iframe URL':'Switch to Same-Origin Proxy'}</button>`:''}
         </div>`:''}
         ${currentUrl
           ? `<div style="border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;background:#0d1117;height:74vh">
                <iframe id="portal-frame" src="${esc(frameSrc)}" style="width:100%;height:100%;border:0"
                  allow="fullscreen; gamepad; autoplay; clipboard-read; clipboard-write"></iframe>
              </div>`
-          : `<div class="empty-cat"><b>Select or enter a Library URL above</b>Load RomM, Retrom, or Gaseous right inside this tab so you never have to leave ROMarr.</div>`}
+          : `<div class="empty-cat"><b>No library server selected</b>Choose a configured library above, add one in <a href="#libraries">Settings → Libraries</a>, or paste a URL to open it here.</div>`}
       </div>`;
 
       document.querySelectorAll('[data-srvurl]').forEach(b=>b.onclick=()=>{
@@ -3802,7 +4106,7 @@ RENDER.portal=async()=>{
       $('#portal-rescan').onclick=async()=>{
         $('#portal-status').innerHTML='<div class="panel-note">Triggering library rescan across connected backends…</div>';
         const r=await fetch('/api/v1/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'RefreshLibrary'})}).then(x=>x.json()).catch(()=>({}));
-        const msg=r.message||r.error||'Library rescan triggered via API.';
+        const msg=r.message||r.error||'Library rescan triggered.';
         $('#portal-status').innerHTML='<div class="panel-note" style="border-left-color:var(--ok)">'+esc(msg)+'</div>';
       };
       $('#portal-hashes').onclick=async()=>{
@@ -3812,106 +4116,213 @@ RENDER.portal=async()=>{
         $('#portal-status').innerHTML='<div class="panel-note" style="border-left-color:var(--ok)"><b>Netplay Hash Seed:</b> '+esc(msg)+'</div>';
       };
       $('#portal-1g1r').onclick=async()=>{
-        const activeSrv=servers.find(s=>s.url===currentUrl)||servers[0]||{};
-        const libPath=activeSrv.path||(sys&&sys.library_path)||'/mnt/roms';
-        $('#portal-status').innerHTML='<div class="panel-note">Running Igir v5.8.0 1G1R verification preview on <code>'+esc(libPath)+'</code>…</div>';
+        const srv=servers.find(s=>s.url===currentUrl)||servers[0]||{};
+        const libPath=srv.path||(sys&&sys.library_path)||'/roms';
+        $('#portal-status').innerHTML='<div class="panel-note">Building Igir 1G1R verification preview for <code>'+esc(libPath)+'</code>…</div>';
         const r=await fetch('/api/v1/hub/igir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({input_paths:[libPath],output_path:libPath+'/{romm}',dry_run:true,preview_only:true})}).then(x=>x.json()).catch(()=>({}));
-        $('#portal-status').innerHTML='<div class="panel-note" style="border-left-color:var(--ok)"><b>Igir v5.8.0 1G1R Command:</b> <code>'+esc(r.command||'')+'</code></div>';
+        $('#portal-status').innerHTML='<div class="panel-note" style="border-left-color:var(--ok)"><b>Igir 1G1R Preview Command (changes nothing):</b><br><code>'+esc(r.command||'')+'</code></div>';
       };
     } else if(tab==='fleet'){
       const profiles=fleet.profiles||[];
-      const opts=profiles.map(p=>`<option value="${esc(p.id)}">${esc(p.name)} — ${esc(p.category)}</option>`).join('');
-      const cards=profiles.map(p=>`<div class="pcard">
+      const fileProfiles=profiles.filter(p=>(p.kind||'files')==='files');
+      const appProfiles=profiles.filter(p=>p.kind==='app');
+      const selectedId=window._fleetDeviceId||(fileProfiles[0]&&fileProfiles[0].id)||(profiles[0]&&profiles[0].id)||'es-de';
+      const selected=profiles.find(p=>p.id===selectedId)||profiles[0]||{id:'es-de',kind:'files',default_path:'~/ROMs',default_ssh_host:'user@device.local',igir_token:'{es}'};
+      const isApp=selected.kind==='app';
+      const defaultLibUrl=(servers[0]&&(servers[0].public_url||servers[0].url))||location.origin;
+      const defaultSrc=(sys&&sys.library_path)||'/roms';
+      const igirInfo=fleet.igir||{};
+      const igirBadge=igirInfo.available
+        ? `<span class="pill" style="border-color:var(--ok);color:var(--ok)">Igir ${esc(igirInfo.version||'installed')} ready</span>`
+        : `<span class="pill" title="Run the plan on a machine that has Igir">Igir not installed here: <code>${esc(igirInfo.install_cmd||'npm install -g igir')}</code></span>`;
+
+      const opts=[
+        `<optgroup label="Copy games onto the device's ROM folder">`,
+        ...fileProfiles.map(p=>`<option value="${esc(p.id)}"${p.id===selected.id?' selected':''}>${esc(p.name)}</option>`),
+        `</optgroup>`,
+        `<optgroup label="App on the device connects to your library server">`,
+        ...appProfiles.map(p=>`<option value="${esc(p.id)}"${p.id===selected.id?' selected':''}>${esc(p.name)}</option>`),
+        `</optgroup>`
+      ].join('');
+
+      const renderCard=(p)=>`<div class="pcard" data-pickdev="${esc(p.id)}" style="cursor:pointer;${p.id===selected.id?'border-color:var(--acc)':''}">
         <h4>${esc(p.name)}</h4>
-        <div class="meta"><span class="pill">${esc(p.category)}</span> <span class="pill">${esc(p.protocol)}</span> <span class="pill">${esc(p.igir_token)}</span></div>
+        <div class="meta">
+          <span class="pill">${esc(p.kind==='app'?'App / Feed':'ROM Folder')}</span>
+          <span class="pill">${esc(p.category)}</span>
+          <span class="pill">${esc(p.protocol)}</span>
+          ${p.kind==='files'?`<span class="pill">Folder layout: ${esc(p.igir_token)}</span>`:''}
+        </div>
         <div class="desc">${esc(p.description)}</div>
-        <div class="help">Default Path: <code>${esc(p.default_path)}</code></div>
-      </div>`).join('');
+        ${p.default_path?`<div class="help">Default ROM folder: <code>${esc(p.default_path)}</code></div>`:''}
+      </div>`;
 
       $('#page').innerHTML=`<div class="card">
-        <h3>Multi-Device & Network Library Fleet Manager</h3>
-        <p class="help">Synchronize, verify (1G1R via Igir v5.8.0), and export metadata (<code>gamelist.xml</code>, Playnite, LaunchBox, WebDAV, or RomM API) across every device on your LAN, SMB/NFS shares, Tailscale mesh, or cloud network.</p>
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <h3 style="margin:0">Put games on your devices</h3>
+          ${igirBadge}
+        </div>
+        <p class="help" style="margin-top:6px">Get games onto handhelds, living-room boxes, and consoles in two ways: <b>copy verified ROMs into a device's ROM folder</b> (ES-DE, RetroPie, Batocera, EmuDeck, Android handhelds), or <b>point a device app at your library server</b> (Argosy, Grout, DeckRommSync, RetroArch cloud saves, console feeds). Plans are <b>non-destructive by default</b> — existing files on the device are never deleted unless Mirror is checked.</p>
         ${tabBar}
         <div class="panels" style="margin-top:8px">
-          <div class="field"><label>Device / Setup Profile</label>
+          <div class="field"><label>Device or App</label>
             <select id="fl-dev" style="padding:9px 12px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:var(--r-sm)">${opts}</select>
           </div>
-          <div class="field"><label>Network Transport</label>
-            <select id="fl-trans" style="padding:9px 12px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:var(--r-sm)">
-              <option value="local">Local / Mounted NAS / SMB / NFS Share</option>
-              <option value="ssh">SSH / rsync over LAN or Tailscale (RetroPie / Batocera / Grout / Deck)</option>
-              <option value="rclone">Cloud / rclone Remote (WebDAV / S3 / Nextcloud)</option>
-            </select>
-          </div>
-          <div class="field"><label>Target Device Path or Share</label><input id="fl-path" value="/home/pi/RetroPie/roms/{platform}"></div>
-          <div class="field"><label>SSH / Network Host (if SSH/Tailscale)</label><input id="fl-host" value="pi@retropie.local"></div>
-          <div class="field"><label>Source ROM Library Root</label><input id="fl-src" value="/library/roms"></div>
-          <div class="field"><label>1G1R Region Priority (Igir v5.8.0)</label><input id="fl-reg" value="USA,WORLD,EUR,JPN"></div>
+          ${isApp?`
+            <div class="field"><label>Your Library Server URL (RomM or ROMarr)</label>
+              <input id="fl-liburl" value="${esc(window._fleetLibUrl||defaultLibUrl)}" placeholder="http://192.168.1.50:8080">
+            </div>
+          `:`
+            <div class="field"><label>How ROMarr Reaches the Device</label>
+              <select id="fl-trans" style="padding:9px 12px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:var(--r-sm)">
+                <option value="local">Local folder or mounted SMB / NFS share / SD card</option>
+                <option value="ssh">SSH + rsync over LAN or Tailscale (RetroPie / Batocera / Steam Deck)</option>
+                <option value="rclone">rclone remote (WebDAV / S3 / Nextcloud / cloud drive)</option>
+              </select>
+            </div>
+            <div class="field"><label>Device ROM Folder (Igir adds <code>${esc(selected.igir_token)}</code> per platform)</label>
+              <input id="fl-path" value="${esc(selected.default_path)}">
+            </div>
+            <div class="field"><label>SSH Host (when using SSH + rsync)</label>
+              <input id="fl-host" value="${esc(selected.default_ssh_host||'pi@retropie.local')}">
+            </div>
+            <div class="field"><label>Source ROM Library Folder</label>
+              <input id="fl-src" value="${esc(defaultSrc)}">
+            </div>
+            <div class="field"><label>1G1R Region Priority</label>
+              <input id="fl-reg" value="USA,WORLD,EUR,JPN">
+            </div>
+          `}
         </div>
-        <div class="row" style="margin-top:8px">
-          <button class="btn" id="fl-plan">Build 1G1R Device Sync Plan</button>
-          <a class="btn ghost" href="/api/v1/frontend/export?format=esde" target="_blank">Export ES-DE / RetroPie gamelist.xml</a>
-          <a class="btn ghost" href="/api/v1/frontend/export?format=playnite" target="_blank">Export Playnite JSON</a>
-          <a class="btn ghost" href="/api/v1/frontend/export?format=launchbox" target="_blank">Export LaunchBox XML</a>
+        ${isApp?'':`
+          <div class="row" style="margin-top:8px;gap:16px">
+            <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="fl-1g1r" checked> One game, one ROM (1G1R preferred region)</label>
+            <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="fl-mirror"> Mirror folder (delete device files not in this set)</label>
+          </div>
+        `}
+        <div class="row" style="margin-top:10px">
+          <button class="btn" id="fl-plan">${isApp?'Show Setup Steps':'Build Device Sync Plan'}</button>
+          ${isApp?'':`
+            <a class="btn ghost" href="/api/v1/frontend/export?format=esde" target="_blank">Export ES-DE / RetroPie gamelist.xml</a>
+            <a class="btn ghost" href="/api/v1/frontend/export?format=playnite" target="_blank">Export Playnite JSON</a>
+            <a class="btn ghost" href="/api/v1/frontend/export?format=launchbox" target="_blank">Export LaunchBox XML</a>
+          `}
         </div>
         <div id="fl-out"></div>
       </div>
-      <div class="card"><h3>Supported Device & Network Targets</h3><div class="pgrid">${cards}</div></div>`;
-
-      const devSel=$('#fl-dev');
-      devSel.onchange=()=>{
-        const found=profiles.find(x=>x.id===devSel.value);
-        if(found) $('#fl-path').value=found.default_path;
-      };
-      $('#fl-plan').onclick=async()=>{
-        const r=await fetch('/api/v1/hub/fleet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-          device_id:$('#fl-dev').value,
-          transport:$('#fl-trans').value,
-          target_path:$('#fl-path').value.trim(),
-          ssh_host:$('#fl-host').value.trim(),
-          source_path:$('#fl-src').value.trim(),
-          prefer_regions:$('#fl-reg').value.split(',').map(s=>s.trim()).filter(Boolean),
-          single_1g1r:true
-        })}).then(x=>x.json()).catch(()=>({}));
-        $('#fl-out').innerHTML=`<div class="panel-note" style="margin-top:12px">
-          <b>1. Igir v5.8.0 1G1R Verification & Routing Command:</b><br>
-          <code>${esc(r.igir_command||'')}</code>
-          ${r.network_sync_command?`<br><br><b>2. LAN / Tailscale / Cloud Transfer Command:</b><br><code>${esc(r.network_sync_command)}</code>`:''}
-          ${r.gamelist_export_url?`<br><br><b>3. Frontend Metadata Manifest:</b> <a href="${esc(r.gamelist_export_url)}" target="_blank">${esc(r.gamelist_export_url)}</a>`:''}
-        </div>`;
-      };
-    } else if(tab==='mcp'){
-      const cfgJson=JSON.stringify(mcp.mcp_client_config||{}, null, 2);
-      const tools=(mcp.tools||[]).map(t=>`<div class="pcard">
-        <h4><code>${esc(t.name)}</code></h4>
-        <div class="meta"><span class="pill">${esc(t.method)}</span> <code>${esc(t.path)}</code></div>
-        <div class="desc">${esc(t.description)}</div>
-      </div>`).join('');
-      $('#page').innerHTML=`<div class="card">
-        <h3>Open-Eyes Desktop Control & ROMarr MCP Bridge</h3>
-        <p class="help">Connect <a href="https://github.com/BlizzHacker/open-eyes" target="_blank" rel="noopener">BlizzHacker/open-eyes</a> (desktop vision & input control) alongside ROMarr's MCP tool surface in your local MCP host (Claude Desktop, Cursor, Windsurf, Cline, or Gemini CLI).</p>
-        ${tabBar}
-        <div class="panel-note" style="margin-bottom:12px">
-          <b>Why local MCP host config is needed:</b> Browser chat tabs run in an isolated cloud container and cannot attach directly to local <code>stdio</code> processes on your PC. Adding the JSON below to your local MCP client config gives your local AI agent full desktop control via <b>open-eyes</b> plus direct API control over <b>ROMarr</b>.
-        </div>
-        <pre style="background:var(--bg);padding:12px;border-radius:var(--r-sm);border:1px solid var(--line);overflow-x:auto;font-size:12px">${esc(cfgJson)}</pre>
-        <div class="row" style="margin-top:10px">
-          <button class="btn" id="mcp-copy">Copy mcpServers Config JSON</button>
-          <a class="btn ghost" href="https://github.com/BlizzHacker/open-eyes" target="_blank" rel="noopener">Open-Eyes Repository</a>
-        </div>
+      <div class="card">
+        <h3>Copy Games to a Device's ROM Folder</h3>
+        <p class="help">Frontends and OS images that read ROMs from a folder. Click a device to configure its sync plan.</p>
+        <div class="pgrid">${fileProfiles.map(renderCard).join('')}</div>
       </div>
-      <div class="card"><h3>Exposed ROMarr MCP Endpoints (<code>/api/v1/mcp</code>)</h3><div class="pgrid">${tools}</div></div>`;
-      $('#mcp-copy').onclick=async()=>{
-        try{ await navigator.clipboard.writeText(cfgJson); toast('Copied Open-Eyes + ROMarr MCP config!'); }
-        catch{ toast('Copy failed'); }
+      <div class="card">
+        <h3>Apps & Feeds That Connect to Your Library Server</h3>
+        <p class="help">Companion apps, WebDAV save sync, and console homebrew installers that talk to RomM or ROMarr directly — no ROM folder copy needed.</p>
+        <div class="pgrid">${appProfiles.map(renderCard).join('')}</div>
+      </div>`;
+
+      const runPlan=async()=>{
+        const gen=viewGen, seq=++planSeq;
+        const payload=isApp
+          ? {device_id:$('#fl-dev').value, library_url:($('#fl-liburl')&&$('#fl-liburl').value.trim())||defaultLibUrl}
+          : {
+              device_id:$('#fl-dev').value,
+              transport:$('#fl-trans').value,
+              target_path:$('#fl-path').value.trim(),
+              ssh_host:$('#fl-host').value.trim(),
+              source_path:$('#fl-src').value.trim(),
+              prefer_regions:$('#fl-reg').value.split(',').map(s=>s.trim()).filter(Boolean),
+              single_1g1r:$('#fl-1g1r')?$('#fl-1g1r').checked:true,
+              mirror:$('#fl-mirror')?$('#fl-mirror').checked:false
+            };
+        const r=await fetch('/api/v1/hub/fleet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(x=>x.json()).catch(e=>({ok:false,error:String(e)}));
+        if(gen!==viewGen||seq!==planSeq||!current()) return;
+        if(!r.ok){
+          $('#fl-out').innerHTML=`<div class="panel-note" style="margin-top:12px;border-left-color:var(--bad)"><b>Could not build the plan:</b> ${esc(r.error||'no answer from ROMarr')}</div>`;
+          return;
+        }
+        if(r.kind==='app'){
+          const stepsHtml=(r.setup||[]).map((s,i)=>`<div style="margin-top:6px"><b>${i+1}.</b> ${esc(s)}</div>`).join('');
+          $('#fl-out').innerHTML=`<div class="panel-note" style="margin-top:12px">
+            <b>Setup for ${esc((r.device&&r.device.name)||selected.name)}:</b>
+            ${stepsHtml}
+          </div>`;
+        } else {
+          const warnHtml=(r.warnings||[]).map(w=>`<div class="panel-note" style="margin-top:10px;border-left-color:var(--warn)"><b>Caution:</b> ${esc(w)}</div>`).join('');
+          const stepsHtml=(r.steps||[]).map((st,i)=>`<div style="margin-top:10px">
+            <b>${i+1}. ${esc(st.title)}:</b><br>
+            ${st.command?`<code>${esc(st.command)}</code> <button class="btn ghost sm" data-copycmd="${esc(st.command)}">Copy</button>`:''}
+            ${st.url?`<a href="${esc(st.url)}" target="_blank">${esc(st.url)}</a>`:''}
+          </div>`).join('');
+          $('#fl-out').innerHTML=warnHtml+`<div class="panel-note" style="margin-top:12px">
+            <b>Sync plan for ${esc((r.device&&r.device.name)||selected.name)}</b> (target folder: <code>${esc(r.output_path||r.target_path||'')}</code>)
+            ${stepsHtml}
+            <div class="help" style="margin-top:10px">Run these on the machine that holds your library. Step 1 only reads; nothing changes until step 2.</div>
+          </div>`;
+          document.querySelectorAll('[data-copycmd]').forEach(b=>b.onclick=async()=>{
+            try{await navigator.clipboard.writeText(b.dataset.copycmd);toast('Copied');}catch{toast('Copy failed');}
+          });
+        }
       };
+
+      $('#fl-dev').onchange=()=>{
+        window._fleetDeviceId=$('#fl-dev').value;
+        draw();
+      };
+      document.querySelectorAll('[data-pickdev]').forEach(card=>card.onclick=()=>{
+        window._fleetDeviceId=card.dataset.pickdev;
+        draw();
+      });
+      const invalidatePlan=()=>{
+        planSeq++;
+        const out=$('#fl-out');
+        if(out) out.innerHTML='';
+      };
+      ['#fl-mirror','#fl-1g1r','#fl-trans','#fl-path','#fl-host','#fl-src','#fl-reg','#fl-liburl'].forEach(sel=>{
+        const el=$(sel);
+        if(!el) return;
+        el.onchange=invalidatePlan;
+        if(el.tagName==='INPUT'&&el.type!=='checkbox') el.oninput=invalidatePlan;
+      });
+      $('#fl-plan').onclick=runPlan;
+      runPlan();
     }
 
     document.querySelectorAll('[data-ptab]').forEach(c=>c.onclick=()=>{
-      tab=c.dataset.ptab; draw();
+      tab=c.dataset.ptab; window._portalTab=tab; draw();
     });
   };
   draw();
+};
+
+RENDER.agents=async()=>{
+  const version=pageVersion;
+  const mcp=await j('/api/v1/mcp').catch(()=>({tools:[],mcp_client_config:{}}));
+  if(version!==pageVersion||activePage!=='agents') return;
+    const endpoint=location.origin+'/api/v1/mcp';
+    const configs={
+      claude:JSON.stringify({mcpServers:{romarr:{type:'http',url:endpoint,headers:{'X-Api-Key':'<YOUR_ROMARR_API_KEY>'}}}},null,2),
+      codex:'[mcp_servers.romarr]\nurl = '+JSON.stringify(endpoint)+'\nbearer_token_env_var = "ROMARR_API_KEY"\n',
+      hermes:'mcp_servers:\n  romarr:\n    url: '+JSON.stringify(endpoint)+'\n    headers:\n      X-Api-Key: "<YOUR_ROMARR_API_KEY>"\n',
+      antigravity:JSON.stringify({mcpServers:{romarr:{serverUrl:endpoint,headers:{'X-Api-Key':'<YOUR_ROMARR_API_KEY>'}}}},null,2),
+      stdio:JSON.stringify({mcpServers:{romarr:{command:'<PYTHON_WITH_ROMARR>',args:['<ABSOLUTE_PATH_TO_ROMARR_MCP_PY>'],env:{ROMARR_URL:location.origin,ROMARR_API_KEY:'<YOUR_ROMARR_API_KEY>'}}}},null,2)
+    };
+    const toolCards=(mcp.tools||[]).map(t=>`<div class="pcard"><h4><code>${esc(t.name)}</code></h4><div class="desc">${esc(t.description)}</div></div>`).join('');
+    $('#page').innerHTML=`<div class="card"><h3>Connect an AI agent to your ROMarr</h3>
+      <p class="help">Use your own server address and API key with Claude, Codex, Hermes, Antigravity, or another MCP client. Read-only tools show cached library, activity, history, platforms and counts.</p>
+      <p><b>Your MCP endpoint:</b> <code>${esc(endpoint)}</code></p>
+      <p class="help">Replace the key placeholder in your client settings. Your key is never included in this example. Use HTTPS for connections outside this device, or an SSH tunnel.</p>
+      <label>Client <select id="mcp-client"><option value="claude">Claude Code</option><option value="codex">Codex</option><option value="hermes">Hermes</option><option value="antigravity">Antigravity</option><option value="stdio">Other clients using stdio</option></select></label>
+      <pre id="mcp-config" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+      <button class="btn" id="mcp-copy">Copy connection example</button>
+      <p class="help">Codex reads ROMARR_API_KEY from its environment. Stdio needs Python with ROMarr's requests dependency and a local ROMarr checkout, or the standalone bridge file. See the <a href="https://github.com/BlizzHacker/romarr/blob/main/docs/MCP.md" target="_blank" rel="noopener">connection guide</a> for setup and supported transports.</p>
+      <p class="help">Writes are disabled by default. A server owner may explicitly allow adding Wanted entries and requesting a background library refresh. This connector does not run shell commands, browse files, control your desktop, or forward arbitrary API calls.</p>
+    </div><div class="card"><h3>Available read tools</h3><div class="pgrid">${toolCards}</div></div>
+    <div class="card"><h3>Optional desktop control</h3><p class="help"><a href="https://github.com/BlizzHacker/open-eyes" target="_blank" rel="noopener">Open-Eyes</a> is a separate desktop-control integration. It is optional and is not needed to connect to ROMarr.</p></div>`;
+    const config=()=>configs[$('#mcp-client').value];
+    $('#mcp-client').onchange=()=>{$('#mcp-config').textContent=config();};
+    $('#mcp-client').onchange();
+    $('#mcp-copy').onclick=async()=>{try{await navigator.clipboard.writeText(config());toast('Copied connection example');}catch{toast('Copy failed');}};
 };
 
 RENDER.ecosystem=async()=>{
@@ -3962,7 +4373,7 @@ RENDER.ecosystem=async()=>{
         </div>
         <div class="row">
           <button class="btn" id="eco-open-hub">Open Igir 1G1R Runner in Hub</button>
-          <button class="btn ghost" id="eco-open-portal">Open Library Shell & Device Fleet</button>
+          <button class="btn ghost" id="eco-open-portal">Library & Devices</button>
           <button class="btn ghost" data-copy="${esc(igir.install_cmd||'npm install -g igir@5.8.0')}">Copy Igir v5.8.0 Install</button>
           <a class="btn ghost" href="https://github.com/emmercm/igir/releases/tag/v5.8.0" target="_blank" rel="noopener">Igir v5.8.0 Release</a>
           <a class="btn ghost" href="https://docs.romm.app/latest/ecosystem/" target="_blank" rel="noopener">RomM Ecosystem Docs</a>
@@ -3994,8 +4405,95 @@ RENDER.ecosystem=async()=>{
   paint();
 };
 
+
+/* Present only verified backend identity and check state, never infer a release. */
+const updateVerdict=check=>{
+  const state=check&&typeof check.state==='string'?check.state:'unknown';
+  const nightly=check&&check.channel==='nightly';
+  if(state==='available')return {state,label:'yes',note:nightly
+    ?'A newer official Nightly revision was verified against this running build.'
+    :'A newer stable release was found by the last successful check.'};
+  if(state==='current')return {state,label:'no',note:nightly
+    ?'The running Nightly revision matches the last verified official main revision.'
+    :'The last successful comparison found this running release current.'};
+  if(state==='error')return {state,label:'error',note:nightly
+    ?'The Nightly revision check failed. No newer revision was verified.'
+    :'The latest update check failed. Retained release information may be stale.'};
+  if(state==='never_checked')return {state,label:'not checked',note:'No completed release comparison has been recorded.'};
+  if(state==='unknown'){
+    const note=nightly
+      ?'Could not verify Nightly availability from the running build and official main history.'
+      :'The running build or channel could not be compared reliably.';
+    return {state,label:'unknown',note};
+  }
+  return {state:'unknown',label:'unknown',note:'Update status could not be verified.'};
+};
+const buildIdentityLine=build=>{
+  const type=build&&build.type,ref=build&&build.source_ref;
+  const sha=build&&build.source_revision,repo=build&&build.source_repository;
+  if(!['release','development'].includes(type)
+      ||typeof ref!=='string'||!ref.startsWith('refs/')
+      ||typeof sha!=='string'||!/^[0-9a-f]{40}$/i.test(sha)
+      ||typeof repo!=='string'||!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo))
+    return '<p class="help">Build identity: unverified</p>';
+  return '<p class="help">Build: <b>'+esc(type==='development'?'Development':'Release')
+    +'</b> &middot; <code>'+esc(ref)+'</code> &middot; <code>'
+    +esc(sha.slice(0,8))+'</code></p>';
+};
+const autoApplyDetail=(settings,install)=>{
+  const st=settings||{},kind=(install||{}).kind;
+  if(!st.auto_update)return 'not configured';
+  if(st.auto_update_effective===true)return 'effective for this installation';
+  if(kind==='docker')return 'configured only; this Docker image must be updated by its host';
+  if(st.auto_update_effective===undefined)return 'effective capability not reported';
+  const reasons={
+    update_check_disabled:'scheduled checks are disabled',
+    install_cannot_self_update:'this installation cannot self-update',
+    nightly_revision_check_not_supported:'nightly auto-apply is not enabled',
+    preview_channel_manual_apply:'preview channels require manual application',
+    nightly_auto_apply_disabled:'Nightly auto-apply is not enabled',
+    running_version_unknown:'running version is unknown',
+    development_build:'development builds cannot auto-apply stable releases'
+  };
+  return 'configured but inactive: '+(reasons[st.auto_update_reason]||'not eligible');
+};
+const statsUpdateMessage=(stats,update)=>{
+  if(!update||update.running_version!==stats.version)
+    return '<div class="card"><h3>Update status unavailable</h3><p class="help">'
+      +'Could not verify update state for this running version. Open System → Update to retry.'
+      +'</p></div>';
+  const verdict=updateVerdict(update.check_status);
+  if(verdict.state==='current')return '';
+  if(verdict.state!=='available')
+    return '<div class="card"><h3>Update status: '+esc(verdict.label)
+      +'</h3><p class="help">'+esc(verdict.note)+'</p></div>';
+  const settings=update.settings||{},kind=(update.install||{}).kind;
+  let action='Use the supported update method for this installation.';
+  if(settings.auto_update_effective===true)
+    action='Automatic application is enabled for a future eligible scheduled check.';
+  else if(kind==='docker')
+    action='Docker cannot apply its own image updates. Update through the Docker host.';
+  else if(settings.update_check===false)
+    action='Scheduled update checks are disabled. Use Check now for a manual check.';
+  else if(settings.auto_update&&settings.auto_update_effective===false)
+    action='Auto-update is configured but currently unavailable for this installation.';
+  const check=update.check_status||{},nightly=check.channel==='nightly';
+  const latest=nightly?((check.latest_revision||'').slice(0,8)||'unknown')
+    :(update.latest_version||'unknown');
+  const running=nightly?((check.running_revision||'').slice(0,8)||'unknown')
+    :(stats.version||'unknown');
+  return '<div class="card" style="border-color:var(--warn)">'
+    +'<h3>Update available</h3><p class="help">ROMarr '
+    +esc(latest)+(nightly?' (Nightly revision)':'')+' is available; this install is running '
+    +esc(running)+'. '+esc(action)+'</p></div>';
+};
+
 RENDER.stats=async()=>{
-  const s=await j('/api/v1/stats');
+  const viewVersion=typeof pageVersion==='number'?pageVersion:null;
+  const [s,up]=await Promise.all([j('/api/v1/stats'),
+    j('/api/v1/update').catch(()=>null)]);
+  if((typeof activePage==='string'&&activePage!=='stats')
+      ||(viewVersion!==null&&pageVersion!==viewVersion))return;
   const hours=Math.floor((s.uptime_seconds||0)/3600);
   const bar=(entries)=>{
     const rows=Object.entries(entries||{});
@@ -4009,13 +4507,9 @@ RENDER.stats=async()=>{
       <b style="width:48px">${v}</b></div>`).join('');
   };
   $('#page').innerHTML=`
-    ${s.update_available?`<div class="card" style="border-color:var(--warn)">
-      <h3>Update available</h3><p class="help">ROMarr ${esc(s.latest_version)} is out;
-      this install is running ${esc(s.version)}. ${SETTINGS.auto_update
-        ?'Auto-update is ON — it applies on the next daily check once nothing is downloading.'
-        :'Turn on auto-update under Settings → General, or update by hand when it suits you.'}</p></div>`:''}
+    ${statsUpdateMessage(s,up)}
     <div class="card"><h3>This install</h3><div class="st">
-      <div><b>${esc(s.version)}</b><span>Version</span></div>
+      <div><b>${esc(s.version||"unknown")}</b><span>Version</span></div>
       <div><b>${num(s.library_on_disk)}</b><span>On disk here</span></div>
       <div><b>${num(s.library_catalogued)}</b><span>Catalogued, streams</span></div>
       <div><b>${num(s.library_games)}</b><span>Total known</span></div>
@@ -4026,6 +4520,7 @@ RENDER.stats=async()=>{
       <div><b>${(s.events||{}).failed||0}</b><span>Failures</span></div>
       <div><b>${s.average_rating??'—'}</b><span>Avg rating (${s.rated||0} rated)</span></div>
     </div>
+    ${buildIdentityLine(up&&up.running_version===s.version?up.build:null)}
     <p class="help" style="margin:10px 0 0">“Total known” is the other two
       added together — every row your library server holds. Only the first
       number is bytes you have; the second is a catalogue of things that
@@ -4284,13 +4779,15 @@ const progressCell=i=>{
     <div class="pmeta">${i.progress}%${done?' · done':(active?` · ETA ${fmtEta(i.eta)} · ${fmtSpeed(i.speed)}`:'')}${st?` · ${esc(st)}`:''}</div>`;
 };
 RENDER.queue=async()=>{
-  const epoch=routeEpoch;
+  clearInterval(RENDER._queueTimer); RENDER._queueTimer=null;
+  const ver=typeof pageVersion==='number'?pageVersion:0;
+  const qv=(RENDER._qVer=(RENDER._qVer||0));
   const d=await j('/api/v1/queue');
+  if((typeof activePage!=='undefined'&&activePage!=='queue')||(typeof pageVersion==='number'&&pageVersion!==ver)||(RENDER._qVer||0)!==qv) return;
   const failed=(d.items||[]).filter(i=>i.state==='failed').length;
   $('#page').innerHTML=`<div class="row" style="margin-bottom:12px">
-      <button class="btn" id="q-refresh" title="Ask qBittorrent for the latest progress right now">Refresh</button>
-      <span class="help" style="margin:0" id="q-updated" aria-live="polite">Updated ${esc(new Date().toLocaleTimeString())}</span>
       <button class="btn ghost" id="q-import">Import completed now</button>
+      <button class="btn ghost" id="q-refresh">Refresh</button>
       ${failed?`<button class="btn ghost" id="q-clearfail">Clear ${failed} failed</button>`:''}
       <span class="help" style="margin:0">${(d.items||[]).length} in flight</span>
     </div>`+(d.items.length?`<table><thead><tr><th>Game</th>
@@ -4301,27 +4798,35 @@ RENDER.queue=async()=>{
       ${i.detail?`<div style="color:var(--dim);font-size:11.5px">${esc(i.detail)}</div>`:''}
       </td><td style="text-align:right"><div class="rowact">
         ${['failed','import-failed'].includes(i.state)?`<button data-qretry="${n}">Retry</button>`:''}
-        ${i.state!=='imported'?`<button data-qplan="${n}">Preview import</button>`:''}
+        ${i.can_preview_import?`<button data-qplan="${n}">Preview import</button>`:''}
         ${i.selected_file?.hash||i.retained_torrent_hash?`<button data-qresume="${n}">Resume retained torrent</button>`:''}
         <button data-qremove="${n}">Remove</button></div></td></tr>`).join('')}
       </tbody></table>`
     :'<div class="empty">Queue is empty. Requests in flight show up here.</div>');
 
   $('#q-import').onclick=async e=>{
+    clearInterval(RENDER._queueTimer); RENDER._queueTimer=null;
+    RENDER._qVer=(RENDER._qVer||0)+1;
     e.target.disabled=true; e.target.textContent='Importing…';
     const r=await j('/api/v1/command',{method:'POST',
       headers:{'content-type':'application/json'},
       body:JSON.stringify({name:'ImportCompleted'})});
     toast(r.message||'Done'); go('queue'); refreshCounts();
   };
+  const qr=$('#q-refresh');
+  if(qr) qr.onclick=()=>{qr.disabled=true; go('queue');};
   const cf=$('#q-clearfail');
   if(cf) cf.onclick=async()=>{
+    clearInterval(RENDER._queueTimer); RENDER._queueTimer=null;
+    RENDER._qVer=(RENDER._qVer||0)+1;
     await j('/api/v1/queue/clear',{method:'POST',
       headers:{'content-type':'application/json'},
       body:JSON.stringify({state:'failed'})});
     go('queue'); refreshCounts();
   };
   const act=async(index,action)=>{
+    clearInterval(RENDER._queueTimer); RENDER._queueTimer=null;
+    RENDER._qVer=(RENDER._qVer||0)+1;
     const r=await j('/api/v1/queue/action',{method:'POST',
       headers:{'content-type':'application/json'},
       body:JSON.stringify({index:Number(index),action})});
@@ -4329,9 +4834,15 @@ RENDER.queue=async()=>{
     go('queue'); refreshCounts();
   };
   document.querySelectorAll('[data-qplan]').forEach(b=>b.onclick=async()=>{
+    clearInterval(RENDER._queueTimer); RENDER._queueTimer=null;
+    RENDER._qVer=(RENDER._qVer||0)+1;
+    if(typeof pageVersion==='number') ++pageVersion;
+    const previewVer=typeof pageVersion==='number'?pageVersion:0;
+    const previewQVer=RENDER._qVer;
     const index=Number(b.dataset.qplan);
     const post=body=>j('/api/v1/queue/import-plan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({index,...body})});
     const data=await j('/api/v1/queue/import-plan?index='+index);
+    if((typeof activePage!=='undefined'&&activePage!=='queue')||(typeof pageVersion==='number'&&pageVersion!==previewVer)||(RENDER._qVer||0)!==previewQVer) return;
     if(data.error){toast(data.error);return;}
     const plan=data.preview;
     const saved=d.items[index].import_intent||{};
@@ -4370,30 +4881,26 @@ RENDER.queue=async()=>{
   document.querySelectorAll('[data-qresume]').forEach(b=>b.onclick=()=>act(b.dataset.qresume,'resume-retained'));
   document.querySelectorAll('[data-qretry]').forEach(b=>b.onclick=()=>act(b.dataset.qretry,'retry'));
   document.querySelectorAll('[data-qremove]').forEach(b=>b.onclick=()=>act(b.dataset.qremove,'remove'));
-  // Redraw only the progress cells, so buttons keep focus. If the queue changed
-  // underneath (a row came or went), draw the whole page again instead.
-  const paintProgress=nd=>{
-    const cells=[...document.querySelectorAll('[data-qprog]')];
-    if(nd.items.length!==cells.length||nd.items.some((i,n)=>cells[n].dataset.qrel!==(i.release||''))){
-      RENDER.queue(); return; }
-    nd.items.forEach((i,n)=>{ cells[n].innerHTML=progressCell(i); });
-    const u=$('#q-updated'); if(u) u.textContent='Updated '+new Date().toLocaleTimeString();
-  };
-  const refreshNow=async()=>{
-    const b=$('#q-refresh'); if(b){b.disabled=true;b.textContent='Refreshing…';}
-    const nd=await j('/api/v1/queue?refresh=1').catch(()=>null);
-    if(b){b.disabled=false;b.textContent='Refresh';}
-    if(!nd||epoch!==routeEpoch) return;
-    paintProgress(nd);
-  };
-  $('#q-refresh').onclick=refreshNow;
-  if((d.items||[]).some(i=>i.state==='grabbed'||i.state==='downloading'||i.state==='queued')){
-    const timer=setInterval(async()=>{
-      if(epoch!==routeEpoch||!document.querySelector('[data-qprog]')){clearInterval(timer);return;}
-      const nd=await j('/api/v1/queue').catch(()=>null);
-      if(!nd||epoch!==routeEpoch) return;
-      paintProgress(nd);
-    },4000);
+  const snap=JSON.stringify(d.items||[]);
+  if(typeof window!=='undefined'&&typeof activePage!=='undefined'&&(d.items||[]).some(i=>!['imported','failed'].includes(i.state))){
+    let polling=false;
+    RENDER._queueTimer=setInterval(async()=>{
+      if(activePage!=='queue'||(typeof pageVersion==='number'&&pageVersion!==ver)||(RENDER._qVer||0)!==qv||!$('#q-import')){
+        clearInterval(RENDER._queueTimer); RENDER._queueTimer=null; return;
+      }
+      if(polling||document.hidden) return;
+      polling=true;
+      try{
+        const next=await j('/api/v1/queue').catch(()=>null);
+        if(!next||!Array.isArray(next.items)) return;
+        if(activePage!=='queue'||(typeof pageVersion==='number'&&pageVersion!==ver)||(RENDER._qVer||0)!==qv||!$('#q-import')) return;
+        if(JSON.stringify(next.items)!==snap){
+          clearInterval(RENDER._queueTimer); RENDER._queueTimer=null;
+          if(typeof refreshCounts==='function') refreshCounts();
+          RENDER.queue();
+        }
+      }finally{polling=false;}
+    },5000);
   }
 };
 
@@ -4565,7 +5072,8 @@ function settingsPage(title, help, body, after){
   if(after) after();
   $('#s-save').onclick=async()=>{
     const patch={};
-    document.querySelectorAll('[data-k]').forEach(el=>{
+    try{
+      document.querySelectorAll('[data-k]').forEach(el=>{
       // Secrets come back from the server as ********. A blank or still-masked
       // secret field means "keep what is stored", so it is not sent at all.
       if((el.type==='password'||SECRET_KEY_RE.test(el.dataset.k))&&(el.value===''||el.value===SECRET_MASK)) return;
@@ -4575,15 +5083,19 @@ function settingsPage(title, help, body, after){
             const [remote,local]=line.split('=').map(x=>(x||'').trim());
             return remote&&local?{remote,local}:null;
           }).filter(Boolean)
+        : el.dataset.datcatalogmap ? readDatCatalogLines(el.value)
         : el.dataset.foldermap ? Object.fromEntries(el.value.split('\n').map(line=>{
             const [plat,folder]=line.split('=').map(x=>(x||'').trim());
             return plat&&folder?[plat,folder]:null;
           }).filter(Boolean))
         : el.dataset.list ? el.value.split(',').map(s=>s.trim()).filter(Boolean)
         : el.value;
-    });
-    SETTINGS=await j('/api/v1/config',{method:'PUT',
+      });
+    }catch(err){toast(err.message||'Invalid DAT mapping');return;}
+    const saved=await j('/api/v1/config',{method:'PUT',
       headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
+    if(saved.error){toast(saved.error);return;}
+    SETTINGS=saved;
     toast('Saved');
   };
 }
@@ -4603,11 +5115,37 @@ const mapLines=m=>(m||[]).map(x=>(x.remote||'')+' = '+(x.local||'')).join('\n');
 const folderLines=m=>Array.isArray(m)
   ?m.map(x=>(x.platform||x.slug||'')+' = '+(x.folder||x.name||'')).join('\n')
   :Object.entries(m||{}).map(([k,v])=>k+' = '+v).join('\n');
+const datCatalogLines=m=>(m&&typeof m==='object'&&!Array.isArray(m)
+  ?Object.entries(m):[]).map(([catalog,slug])=>catalog+' = '+slug).join('\n');
+function readDatCatalogLines(value){
+  const out=Object.create(null), seen=new Set();
+  for(const raw of value.split(/\r?\n/)){
+    if(!raw.trim())continue;
+    const split=raw.lastIndexOf('=');
+    if(split<1)throw Error('DAT mapping: use exact catalog name = platform slug');
+    const catalog=raw.slice(0,split).trim(),slug=raw.slice(split+1).trim();
+    if(!catalog||!/^[a-z0-9][a-z0-9_-]*$/.test(slug))
+      throw Error('DAT mapping: use exact catalog name = canonical platform slug');
+    if(seen.has(catalog.toLocaleLowerCase()))
+      throw Error('DAT mapping: duplicate catalog name');
+    seen.add(catalog.toLocaleLowerCase());
+    out[catalog]=slug;
+  }
+  return out;
+}
 RENDER.media=()=>settingsPage('Media Management',
   'Where imported ROMs are filed. This must be the same path your library server scans.',
   fld('library_path','ROM library root',SETTINGS.library_path)
   +fld('dat_path','DAT directory',SETTINGS.dat_path||'')
-  +`<div class="help" style="margin:-6px 0 14px"><b>Unpacking.</b> ROMarr unpacks finished downloads itself, with no Unpackerr or other tool: zip, 7z, rar and tar archives (including .tar.gz, .tgz, .tar.xz and .tar.bz2), and archives nested up to two levels deep, are opened and only the ROM files are copied into the library, then the work files are removed. An archive is kept as downloaded only on platforms where it <i>is</i> the ROM (arcade, MAME, FBNeo, DOSBox), because those emulators need the zip intact. Compressed disc and cartridge formats such as CHD, RVZ, CSO, NSZ and Z3DS are not archives and are imported as they are.</div>`
+  +`<div class="help" style="margin:-6px 0 14px"><b>Unpacking.</b> ROMarr unpacks finished downloads itself, with no Unpackerr or other tool: zip, 7z, rar and tar archives (including .tar.gz, .tgz, .tar.xz and .tar.bz2), and ZIPs nested inside a ZIP, are opened and only the ROM files are copied into the library, then the work files are removed. An archive is kept as downloaded only on platforms where it <i>is</i> the ROM (arcade, MAME, FBNeo, DOSBox), because those emulators need the zip intact. Compressed disc and cartridge formats such as CHD, RVZ, CSO, NSZ and Z3DS are not archives and are imported as they are.</div>`
+  +`<div class="field"><label>Trusted DAT catalog → platform mapping (optional)</label>
+     <textarea data-k="dat_catalog_platforms" data-datcatalogmap="1" rows="4"
+       style="width:100%;resize:vertical;font:12px/1.5 ui-monospace,Menlo,monospace"
+       placeholder="Nintendo - SNES = snes">${esc(datCatalogLines(SETTINGS.dat_catalog_platforms))}</textarea>
+     <div style="color:var(--dim);font-size:11.5px;margin-top:4px">
+       One per line: exact DAT header catalog name = canonical ROMarr platform slug.
+       These entries are stored for future request-aware integration; they do not
+       enable automatic queue matching. Clear them before changing the DAT directory.</div></div>`
   +`<div class="field"><label>Remote path mappings</label>
      <textarea data-k="remote_path_mappings" data-mappings="1" rows="3"
        style="width:100%;resize:vertical;font:12px/1.5 ui-monospace,Menlo,monospace"
@@ -4634,6 +5172,15 @@ RENDER.media=()=>settingsPage('Media Management',
   +chk('retain_downloads_after_import','Keep completed downloads for seeding after import',SETTINGS.retain_downloads_after_import)
   +chk('overwrite_existing','Overwrite an existing file',SETTINGS.overwrite_existing)
   +chk('rescan_after_import','Tell your library server to rescan after an import',SETTINGS.rescan_after_import)
+  +chk('reconcile_after_import','Reconcile Wanted aliases against verified library files after an import',SETTINGS.reconcile_after_import!==false)
+  +chk('scanner_defender_enabled','Scan imports with Microsoft Defender on this Windows host',SETTINGS.scanner_defender_enabled)
+  +chk('scanner_mwm_enabled','Require an antivirus result from MoveWeight Manager',SETTINGS.scanner_mwm_enabled)
+  +fld('scanner_mwm_url','MoveWeight Manager URL',SETTINGS.scanner_mwm_url||'','text',
+       'placeholder="https://mwm.example.com"')
+  +chk('scanner_vt_enabled','Require a known VirusTotal hash report before importing',SETTINGS.scanner_vt_enabled)
+  +`<p class="help">MWM needs ROMARR_MWM_TOKEN on this host and access to the same file paths.
+      VirusTotal needs ROMARR_VIRUSTOTAL_API_KEY. It receives file hashes only.
+      Enabled scanners must finish before a manual or completed download import can proceed.</p>`
   +chk('clamav_enabled','Scan downloads with ClamAV before importing them',SETTINGS.clamav_enabled)
   +fld('clamav_address','ClamAV address',SETTINGS.clamav_address||'','text',
      'placeholder="tcp://clamav:3310 or /run/clamav/clamd.sock"')
@@ -4691,7 +5238,11 @@ RENDER.profiles=async()=>{
     };
 
     const minSize=getVal('min_size_mb',0);
-    const maxSize=getVal('max_size_mb',platInfo?platInfo.max_size_mb:8192);
+    const rawGlobalMax=(SETTINGS.max_size_mb&&Number(SETTINGS.max_size_mb)!==8192)?Number(SETTINGS.max_size_mb):0;
+    const rawPlatMax=(!isGlobal&&overrides&&overrides.max_size_mb&&Number(overrides.max_size_mb)!==8192)?Number(overrides.max_size_mb):0;
+    const maxSize=isGlobal
+      ?rawGlobalMax
+      :(rawPlatMax||(platInfo?(rawGlobalMax>0?Math.min(platInfo.max_size_mb,rawGlobalMax):platInfo.max_size_mb):rawGlobalMax));
     const minSeeders=getVal('min_seeders',1);
     const sizePref=getVal('size_preference','auto');
     const sizeWeight=getVal('size_weight',0);
@@ -4916,9 +5467,16 @@ RENDER.profiles=async()=>{
       };
     }
 
+    let maxSizeDirty=false;
+    const maxSizeEl=$('#prof-max-size');
+    if(maxSizeEl){
+      maxSizeEl.oninput=()=>{maxSizeDirty=true;};
+    }
+
     $('#prof-save-btn').onclick=async()=>{
       const minSz=Number($('#prof-min-size').value)||0;
-      const maxSz=Number($('#prof-max-size').value)||0;
+      const inputMaxSz=Number($('#prof-max-size').value)||0;
+      const maxSz=(!isGlobal&&!maxSizeDirty&&!rawPlatMax)?0:inputMaxSz;
       const seeders=Number($('#prof-min-seeders').value)||1;
       const sPref=$('#prof-size-pref').value;
       const sWeight=Number($('#prof-size-weight').value)||0;
@@ -5002,17 +5560,33 @@ RENDER.profiles=async()=>{
 };
 
 RENDER.clients=async()=>{
-  const d=await j('/api/v1/downloadclient');
-  // Reported separately because "not installed" is a legitimate state here,
-  // not a fault: an install that only fetches plain URLs is finished. Without
-  // this line a site plugin needing a click fails with nothing on screen
-  // saying the browser lane was never set up.
-  const br=await j('/api/v1/downloadclient/browser').catch(()=>null);
+  const opVer=pageVersion;
+  const isCurrentClients=()=>activePage==='clients'&&pageVersion===opVer;
+  const [d,br,mdm]=await Promise.all([
+    j('/api/v1/downloadclient'),
+    j('/api/v1/downloadclient/browser').catch(()=>null),
+    j('/api/v1/downloadclient/mdm').catch(()=>null),
+  ]);
+  if(!isCurrentClients()) return;
   const state=c=>!c.configured?'<span class="dot"></span>not configured'
     :c.ok?'<span class="dot up"></span>connected'
     :'<span class="dot down"></span>unreachable';
   const gaps=['torrent','usenet'].filter(p=>
     !d.items.some(c=>c.protocol===p&&c.configured));
+  const mdmNote=mdm?`<div class="panel-note" style="margin:8px 0 12px">
+    <b>Standalone engines (no external *arr client needed):</b>
+    <b>Standalone Usenet (NNTP)</b> runs built-in over TLS/NNTP.
+    <b>Standalone BitTorrent &amp; Multi-Connection HTTP</b> integrate with
+    <a href="https://github.com/anefzaoui/misterdownloadmanager" target="_blank" rel="noopener">Mister Download Manager</a>
+    (<code>anefzaoui/misterdownloadmanager</code>):
+    ${mdm.available
+      ?`<span style="color:var(--ok)">ready (${esc(mdm.version||mdm.cli_path||'installed')}).</span>`
+      :mdm.installable
+        ?`<span style="color:var(--warn)">${esc(mdm.reason)}</span>
+           <div style="margin-top:6px"><button class="btn ghost" id="mdm-install">Install MDM (${esc(mdm.release_tag||'v0.5.2')})</button>
+           <span class="help" id="mdm-install-msg" style="margin-left:8px"></span></div>`
+        :`<span style="color:var(--warn)">${esc(mdm.reason)}</span>`}
+  </div>`:'';
   $('#page').innerHTML=`<div class="card">
     <div class="row" style="margin-bottom:12px">
       <h3 style="margin:0">Download Clients</h3>
@@ -5024,6 +5598,7 @@ RENDER.clients=async()=>{
     ${gaps.length?`<p class="help" style="color:var(--warn)">
       No client configured for: <b>${gaps.join(', ')}</b>.
       Those results will be found and then refused.</p>`:''}
+    ${mdmNote}
     ${br?`<p class="help">ROM sites are fetched over plain HTTP by the
       <b>Direct HTTP</b> client. A handful put the file behind a form the
       site's own page submits &mdash; those need the <b>Headless Browser</b>
@@ -5048,6 +5623,32 @@ RENDER.clients=async()=>{
     :'<div class="empty">No download clients yet. Add one to start grabbing.</div>'}
   </div>`;
   $('#c-add').onclick=()=>addItem('downloadclient');
+  const installBtn=$('#mdm-install');
+  if(installBtn){
+    let mdmBusy=false;
+    installBtn.onclick=async()=>{
+      if(mdmBusy) return;
+      mdmBusy=true;
+      installBtn.disabled=true;
+      const msg=$('#mdm-install-msg');
+      if(msg) msg.textContent='Downloading and verifying SHA-256…';
+      try{
+        const res=await j('/api/v1/downloadclient/mdm/install',{
+          method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+        if(!isCurrentClients()) return;
+        if(res.ok){
+          toast('Installed '+ (res.version||'MDM'));
+          RENDER.clients();
+          return;
+        }
+        if(msg) msg.textContent=res.error||'Install failed';
+      }catch(e){
+        if(isCurrentClients()&&msg) msg.textContent=e.message||'Install failed';
+      }
+      mdmBusy=false;
+      if(isCurrentClients()) installBtn.disabled=false;
+    };
+  }
   document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=async()=>{
     const row=d.items[Number(b.dataset.edit)];
     // The table is a status view; the editor needs the stored configuration.
@@ -5120,14 +5721,23 @@ RENDER.libraries=async()=>{
 };
 
 RENDER.indexers=async()=>{
+  const version=typeof pageVersion==='number'?pageVersion:null;
   const d=await j('/api/v1/indexer');
+  if(version!==null&&(version!==pageVersion||activePage!=='indexers'))return;
   $('#page').innerHTML=`<div class="card">
     <div class="row" style="margin-bottom:12px">
       <h3 style="margin:0">Indexers</h3>
       <button class="btn" id="i-add" style="margin-left:auto">Add</button>
     </div>
-    <p class="help">Add a Newznab or Torznab indexer directly, or point at
-      Prowlarr and use everything it already has configured.</p>
+    <p class="help">Use <b>Newznab for Usenet</b> or <b>Torznab for torrents</b>, or connect
+      Prowlarr to use the indexers configured there. Prowlarr manages your sources; it does not provide their content.</p>
+    <details class="help"><summary>Usenet setup: provider, indexer and client</summary>
+      <p>Your <b>Usenet provider</b> supplies an NNTP server and login. A <b>Newznab indexer</b>
+      searches release listings and returns NZBs; its URL and API key belong here.
+      A <a href="#clients">download client</a> uses the provider to fetch those NZBs.</p>
+      <p>You can use Usenet without a torrent indexer. Game coverage varies between sources:
+      test the indexer and try a title it actually lists. A successful Test checks connectivity, not game availability.
+      For other supported search sources, browse <a href="#hub">ROM Hub plugins</a>.</p></details>
     ${d.items.length?`<table><thead><tr><th>Name</th><th>Type</th><th>URL</th>
       <th>Enabled</th><th></th></tr></thead><tbody>
       ${d.items.map((it,i)=>`<tr><td>${esc(it.name||'—')}</td>
@@ -5154,14 +5764,35 @@ RENDER.indexers=async()=>{
     editItem('indexer', d.items[Number(b.dataset.iedit)]));
 };
 
-RENDER.general=()=>settingsPage('General',
-  'Connections to the rest of the stack. Download-client and indexer credentials '
-  +'live in the environment file; the OIDC client secret below is the one '
-  +'secret this page stores, write-only — it is never read back.',
+RENDER.general=async()=>{
+  const opVer=pageVersion;
+  $('#page').innerHTML='<div class="empty">Loading settings…</div>';
+  let fresh;
+  try {
+    const response=await fetch('/api/v1/config');
+    if(!response.ok) throw new Error('Settings request failed');
+    fresh=await response.json();
+  } catch (_) {
+    if(activePage==='general'&&pageVersion===opVer)
+      $('#page').innerHTML='<div class="empty">Could not load settings. Reopen General to retry.</div>';
+    return;
+  }
+  // A slow response must not overwrite a later page's content or form state.
+  if(activePage!=='general'||pageVersion!==opVer) return;
+  SETTINGS=fresh;
+  settingsPage('General',
+  'Connections to the rest of the stack. Edit download clients and indexers '
+  +'on their dedicated Settings pages. The OIDC client secret below is '
+  +'write-only — it is never read back.',
   `<div class="field"><label>Prowlarr</label>
      <input type="text" value="${esc(SETTINGS._prowlarr_url||'')}" disabled></div>
    <div class="field"><label>qBittorrent</label>
-     <input type="text" value="${esc(SETTINGS._qbit_url||'')}" disabled></div>
+     ${Array.isArray(SETTINGS._qbit_urls)&&SETTINGS._qbit_urls.length
+       ? SETTINGS._qbit_urls.map((url,i)=>
+           `<input type="text" aria-label="qBittorrent address ${i+1}"
+              value="${esc(url)}" disabled>`).join('')
+       : '<input type="text" value="" placeholder="No enabled qBittorrent client" disabled>'}
+     <div class="help">Manage connections in <a href="#clients">Download Clients</a>.</div></div>
    <div class="field"><label>RomM</label>
      <input type="text" value="${esc(SETTINGS._romm_url||'')}" disabled></div>
    <div class="field"><label>RomM address for links</label>
@@ -5199,12 +5830,11 @@ RENDER.general=()=>settingsPage('General',
   +chk('auto_update','Apply updates automatically (git installs only; waits until nothing is downloading, then restarts ROMarr)',
        SETTINGS.auto_update)
   +sel('update_channel','Update channel',
-     [['stable','Stable — latest GitHub release tag'],
+     [['stable','Stable — published releases'], ['rc','RC — release candidates'],
+      ['beta','Beta — testing builds'], ['alpha','Alpha — early previews'],
       ['nightly','Nightly — latest commit on main']],
      SETTINGS.update_channel||'stable',
-     'Stable follows tagged releases. Nightly follows the main branch and '
-     +'restarts on any new commit — useful for a dev install, too eager for '
-     +'a living-room one.')
+     'Stable follows published releases. RC, Beta and Alpha include more stable releases too and require manual application. Nightly follows main by exact revision. PR previews are separate, explicit choices under System → Updates.')
   +chk('auto_update_plugins','Update ROM Hub plugins daily from their sources',
        SETTINGS.auto_update_plugins)
   +`<h3 style="margin-top:18px">Security</h3>
@@ -5279,10 +5909,17 @@ RENDER.general=()=>settingsPage('General',
       $('#g-totpout').style.display='none';
     };
   });
+};
 
 /* ---------------- system ---------------- */
 RENDER.status=async()=>{
+  const viewVersion=typeof pageVersion==='number'?pageVersion:null;
+  const runId=RENDER._statusRunId=(RENDER._statusRunId||0)+1;
+  const current=()=>runId===RENDER._statusRunId
+    &&(typeof activePage!=='string'||activePage==='status')
+    &&(viewVersion===null||pageVersion===viewVersion);
   const h=await j('/api/v1/system/status');
+  if(!current())return;
   const row=(l,ok,extra='')=>`<tr><td>${l}</td>
     <td><span class="dot ${ok?'up':'down'}"></span>${ok?'OK':'Not available'}</td>
     <td style="color:var(--dim)">${esc(extra)}</td></tr>`;
@@ -5342,13 +5979,13 @@ RENDER.status=async()=>{
     ${playCard(h.play_routes||{})}
     ${moonlightCard(h.moonlight||{})}
     <div class="card"><h3>About</h3><div class="st">
-      <div><b>${esc(h.version)}</b><span>Version</span></div>
+      <div><b>${esc(h.version||"unknown")}</b><span>Version</span></div>
       <div><b>${h.platforms}</b><span>Platforms</span></div>
       <div><b>${h.dats||0}</b><span>DATs loaded</span></div>
       <div><b>${h.dat_games||0}</b><span>Known dumps</span></div>
       <div><b>${h.events}</b><span>History events</span></div>
       <div><b>${esc(h.uptime)}</b><span>Uptime</span></div>
-    </div></div>
+    </div>${buildIdentityLine(h.build)}<p class="help"><a href="https://romarr.app/privacy" target="_blank" rel="noopener noreferrer">Privacy policy</a> · <a href="mailto:me@romarr.app">Contact support</a> · <a href="https://discord.gg/ywNFceuAd" target="_blank" rel="noopener noreferrer">Discord</a> · <a href="https://opencollective.com/romarr" target="_blank" rel="noopener noreferrer">Open Collective</a> · <a href="https://github.com/BlizzHacker/romarr" target="_blank" rel="noopener noreferrer">GitHub</a></p></div>
 
     <div class="card"><h3>Backup and export</h3>
     <p class="help">A snapshot restores an install: settings, libraries,
@@ -5411,6 +6048,7 @@ RENDER.status=async()=>{
     'romarr-'+$('#ex-what').value+'.'+$('#ex-fmt').value);
 
   const fe=await j('/api/v1/frontend/formats').catch(()=>({formats:[]}));
+  if(!current())return;
   const feRow=$('#fe-row'); if(!feRow) return;   // navigated away mid-fetch
   feRow.innerHTML=(fe.formats||[]).map(f=>
     '<button class="btn ghost fe-btn" data-f="'+esc(f.name||f)+'">'
@@ -5720,6 +6358,175 @@ RENDER.connections=async()=>{
   };
 };
 
+RENDER.emulators=async()=>{
+  const version=pageVersion;
+  const current=()=>version===pageVersion && activePage==='emulators';
+  let offset=0, query='', mode='projects', hostPlatform='', request=0, inspection=0;
+  $('#page').innerHTML=`<div class="card" style="border:1px solid #3b82f6;"><h3>Cartridge &amp; Plug-and-Play Setup</h3>
+    <p>Turnkey integration between ROMarr and Cartridge. Auto-install the Cartridge Player, launch it directly, or configure all emulators with one click.</p>
+    <div class="row">
+      <button class="btn" id="cartridge-auto-install">Auto-Install Cartridge (Windows)</button>
+      <button class="btn ghost" id="cartridge-launch">Launch Cartridge</button>
+      <button class="btn ghost" id="cartridge-pnp">Plug &amp; Play Setup (All Emulators)</button>
+      <a class="btn ghost" href="https://github.com/BlizzHacker/Cartridge/releases" target="_blank" rel="noopener">Cartridge for Android (APK)</a>
+      <a class="btn ghost" href="https://apps.microsoft.com/detail/9MXC51W17LH4" target="_blank" rel="noopener">Cartridge for Xbox</a>
+    </div>
+    <pre id="cartridge-status-result" role="status" style="margin-top:8px;"></pre></div>
+    <div class="card"><h3>Emulator Hub</h3>
+    <p>Find an emulator, check its setup guide, then add your games. Install buttons install on the
+    <b>ROMarr host</b>. Use the upstream downloads on a different gaming device.</p>
+    <p class="help">Free and noncommercial projects are included. Each project keeps its own terms.
+    Experimental projects and forks can have limited compatibility. A catalog entry is not a gameplay test.</p>
+    <div class="row"><select id="emu-mode" aria-label="Catalog"><option value="projects">Emulators and tools</option>
+    <option value="cores">RetroArch cores</option><option value="resources">Sources and references</option></select>
+    <select id="emu-host" aria-label="Emulator device"><option value="">All devices</option><option value="android">Android</option><option value="linux">Linux</option><option value="windows">Windows</option><option value="macos">macOS</option></select>
+    <input id="emu-search" type="search" placeholder="Search name, system, license or source" aria-label="Search emulators">
+    <button class="btn" id="emu-find">Search</button></div>
+    <p><a href="https://emulation.gametechwiki.com/index.php/Main_Page" target="_blank" rel="noopener">Emulation General Wiki</a>
+    · <a href="https://docs.libretro.com/" target="_blank" rel="noopener">RetroArch setup and core guides</a>
+    · <a href="#hub">ROM Hub plugins for Minerva, Internet Archive and other sources</a></p>
+    <div id="emu-count" role="status"></div><div class="row"><button class="btn ghost" id="emu-prev">Previous</button>
+    <button class="btn ghost" id="emu-next">Next</button><button class="btn ghost" id="core-config">Prepare RetroArch folders</button></div>
+    <pre id="core-config-result" role="status"></pre></div>
+    <div id="emu-cards" class="pgrid"></div>
+    <div class="card"><h3>Inspect a file with your security lab</h3>
+      <p class="help">Enter a file path visible to ROMarr and MWM. Arkana copies the selected
+      file to your configured analysis lab. Follow its job in MWM.</p>
+      <div class="row"><input id="lab-path" placeholder="Full path to the file">
+      <button class="btn ghost" data-inspect="mwm">Inspect with MWM</button>
+      <button class="btn ghost" data-inspect="arkana">Send to Arkana</button></div>
+      <pre id="lab-result" role="status"></pre></div>`;
+  const load=async()=>{
+    const serial=++request;
+    $('#emu-count').textContent='Loading catalog…';
+    try{
+      const d=await j('/api/v1/emulators'+(mode==='cores'?'/cores':mode==='resources'?'/resources':'')+'?q='+encodeURIComponent(query)+'&host_platform='+encodeURIComponent(hostPlatform)+'&offset='+offset);
+      if(!current()||serial!==request)return;
+      if(d.error)throw new Error(d.error);
+      $('#emu-count').textContent=d.total+' matches · '+d.available+' catalog entries · showing '+(d.total?offset+1:0)+'–'+Math.min(offset+d.items.length,d.total)+' · snapshot '+d.verified_date;
+      $('#emu-prev').disabled=offset===0;$('#emu-next').disabled=offset+d.items.length>=d.total;
+      $('#emu-cards').innerHTML=d.items.map(item=>mode==='resources'?`<div class="card">
+        <h3>${esc(item.name)}</h3><p class="help">${esc(item.category)}</p><p>${esc(item.description||'')}</p>
+        <div class="row">${item.url?'<a class="btn ghost" href="'+esc(item.url)+'" target="_blank" rel="noopener">Open resource</a>':'<span class="help">Link not verified yet.</span>'}
+        ${item.category==='source'?'<a class="btn ghost" href="#hub">Find ROM Hub plugins</a>':''}</div>
+        <p class="help">External resource. Availability, access and terms are set by its operator.</p></div>`:mode==='cores'?`<div class="card">
+        <h3>${esc(item.name)}</h3><p>${esc(item.systems)}</p><p class="help">${esc(item.description)}</p>
+        <p>${esc(item.license)} · ${item.installed?'Installed':'Not installed'}</p>
+        <p class="help">${item.firmware.length+' firmware entries. Required files are checked before setup; game compatibility still depends on the core.'}</p>
+        <div class="row"><button class="btn" data-core="${esc(item.id)}">Install host core</button>
+        <button class="btn ghost" data-ready="${esc(item.id)}">Check firmware</button>
+        <a class="btn ghost" href="${esc(item.source)}" target="_blank" rel="noopener">Core details</a></div>
+        <pre data-assets="${esc(item.id)}" role="status"></pre></div>`:`<div class="card">
+        <h3>${esc(item.name)}</h3><p>${esc(item.systems)}</p><p class="help">${esc(item.description||'')}</p>
+        <p class="help">${esc(item.license||'See upstream terms')} · ${esc(item.provider||'website')}${item.fork?' · fork':''}</p>
+        <p class="help">${item.installed.length?'Installed '+esc(item.installed.join(', ')):'Open the setup guide or check a host release.'}</p>
+        <div class="row"><a class="btn ghost" href="${esc(item.website)}" target="_blank" rel="noopener">Source / downloads</a>
+        <a class="btn ghost" href="${esc(item.guide)}" target="_blank" rel="noopener">Setup guide</a>
+        ${item.managed_releases?`<button class="btn" data-release="${esc(item.id)}">Check release</button><button class="btn ghost" data-forks="${esc(item.id)}">Browse forks</button>`:''}</div>
+        ${item.flatpak?'<p><a href="'+esc(item.flatpak)+'" target="_blank" rel="noopener">Flatpak for Linux / SteamOS</a></p>':''}
+        <div data-assets="${esc(item.id)}" role="status"></div><div data-fork-list="${esc(item.id)}"></div></div>`).join('');
+      document.querySelectorAll('[data-release]').forEach(button=>button.onclick=async()=>{
+        button.disabled=true;
+        const id=button.dataset.release, output=document.querySelector('[data-assets="'+id+'"]');
+        output.textContent='Checking the project release…';
+        try{
+          const release=await j('/api/v1/emulators/release?id='+encodeURIComponent(id));
+          if(!current()||serial!==request)return;
+          if(release.error)throw new Error(release.error);
+          const assets=(release.assets||[]).filter(a=>a.installable);
+          output.innerHTML='<p>'+esc((release.tag||'')+(release.note?' · '+release.note:''))+'</p>'
+            +(assets.length?assets.map((a,i)=>'<p><button class="mini" data-install="'+i+'">Install '+esc(a.name)+'</button> · '+Math.ceil(a.bytes/1048576)+' MB</p>').join('')
+              :'<p class="help">No publisher-SHA-256 portable build matches this host. Open Source / downloads for other packages.</p>');
+          output.querySelectorAll('[data-install]').forEach(install=>install.onclick=async()=>{
+            const a=assets[Number(install.dataset.install)];
+            install.disabled=true;
+            const status=document.createElement('p');status.role='status';status.textContent='Downloading, verifying and scanning…';output.append(status);
+            try{
+              const result=await j('/api/v1/emulators/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,asset:a.name,sha256:a.sha256})});
+              if(!current()||serial!==request)return;
+              if(result.error)throw new Error(result.error);
+              status.textContent='Installed in '+result.path+'. Open the setup guide and add your game folders.';
+            }catch(error){if(current()&&serial===request)status.textContent=error.message;}
+            finally{if(current())install.disabled=false;}
+          });
+        }catch(error){if(current()&&serial===request)output.textContent=error.message;}
+        finally{if(current())button.disabled=false;}
+      });
+      document.querySelectorAll('[data-forks]').forEach(button=>{
+        let next=1;
+        button.onclick=async()=>{
+          button.disabled=true;
+          const output=document.querySelector('[data-fork-list="'+button.dataset.forks+'"]');
+          try{
+            const result=await j('/api/v1/emulators/forks?id='+encodeURIComponent(button.dataset.forks)+'&page='+next);
+            if(!current()||serial!==request)return;
+            if(result.error)throw new Error(result.error);
+            output.insertAdjacentHTML('beforeend','<p>'+result.items.map(x=>'<a href="'+esc(x.website)+'" target="_blank" rel="noopener">'+esc(x.repo)+'</a>').join('<br>')+'</p>');
+            next++;button.textContent=result.has_next?'More forks':'All returned forks shown';
+            button.disabled=!result.has_next;
+          }catch(error){if(current()&&serial===request){output.textContent=error.message;button.disabled=false;}}
+          if(current()&&button.textContent==='More forks')button.disabled=false;
+        };
+      });
+      document.querySelectorAll('[data-core],[data-ready]').forEach(button=>button.onclick=async()=>{
+        button.disabled=true;
+        const id=button.dataset.core||button.dataset.ready, output=document.querySelector('[data-assets="'+id+'"]');
+        output.textContent=button.dataset.core?'Downloading and checking the official buildbot core…':'Checking firmware files…';
+        try{
+          const result=await j('/api/v1/emulators/cores/'+(button.dataset.core?'install':'readiness')+(button.dataset.core?'':'?id='+encodeURIComponent(id)),
+            button.dataset.core?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})}:undefined);
+          if(!current()||serial!==request)return;
+          output.textContent=JSON.stringify(result,null,2);
+        }catch(error){if(current()&&serial===request)output.textContent=error.message;}
+        finally{if(current())button.disabled=false;}
+      });
+    }catch(error){if(current()&&serial===request)$('#emu-count').textContent=error.message;}
+  };
+  const search=()=>{query=$('#emu-search').value;offset=0;load();};
+  $('#emu-find').onclick=search;
+  $('#emu-search').onkeydown=e=>{if(e.key==='Enter')search();};
+  $('#emu-mode').onchange=()=>{mode=$('#emu-mode').value;$('#emu-host').disabled=mode!=='projects';search();};
+  $('#emu-host').onchange=()=>{hostPlatform=$('#emu-host').value;search();};
+  $('#emu-prev').onclick=()=>{offset=Math.max(0,offset-60);load();};
+  $('#emu-next').onclick=()=>{offset+=60;load();};
+  $('#core-config').onclick=async()=>{
+    const result=await j('/api/v1/emulators/cores/configure',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    if(current())$('#core-config-result').textContent=JSON.stringify(result,null,2);
+  };
+  $('#cartridge-auto-install').onclick=async()=>{
+    const out=$('#cartridge-status-result');out.textContent='Downloading and verifying Cartridge Player…';
+    try{
+      const res=await j('/api/v1/cartridge/install',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      if(current())out.textContent=JSON.stringify(res,null,2);
+    }catch(err){if(current())out.textContent='Install error: '+err.message;}
+  };
+  $('#cartridge-launch').onclick=async()=>{
+    const out=$('#cartridge-status-result');out.textContent='Launching Cartridge Player…';
+    try{
+      const res=await j('/api/v1/cartridge/launch',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      if(current())out.textContent=JSON.stringify(res,null,2);
+    }catch(err){if(current())out.textContent='Launch error: '+err.message;}
+  };
+  $('#cartridge-pnp').onclick=async()=>{
+    const out=$('#cartridge-status-result');out.textContent='Configuring Plug & Play emulators and system paths…';
+    try{
+      const res=await j('/api/v1/emulators/plug-and-play',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      if(current())out.textContent=JSON.stringify(res,null,2);
+    }catch(err){if(current())out.textContent='Plug & Play error: '+err.message;}
+  };
+  document.querySelectorAll('[data-inspect]').forEach(button=>button.onclick=async()=>{
+    const inspectVersion=++inspection;
+    button.disabled=true;
+    const output=$('#lab-result');output.textContent='Contacting your lab…';
+    try{
+      const result=await j('/api/v1/security/inspect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:$('#lab-path').value,engine:button.dataset.inspect})});
+      if(current()&&inspectVersion===inspection)output.textContent=JSON.stringify(result,null,2);
+    }catch(error){if(current()&&inspectVersion===inspection)output.textContent=error.message;}
+    finally{if(current())button.disabled=false;}
+  });
+  await load();
+};
+
 // --- Metadata --------------------------------------------------------------
 RENDER.metadata=async()=>{
   const version=pageVersion;
@@ -6011,10 +6818,99 @@ async function requestGame(g){
 // Radarr calls this Manual Import and it exists for the same reason: somebody
 // arrives with a library already on disk, and telling them to re-download
 // everything ROMarr could have adopted is absurd.
+// Reports keep claims separate from scanner evidence and require review before publishing.
+RENDER.reports=async()=>{
+  clearTimeout(RENDER.reports._timer);
+  const version=pageVersion,run=(RENDER.reports._runId||0)+1;RENDER.reports._runId=run;
+  const current=()=>activePage==='reports'&&pageVersion===version&&RENDER.reports._runId===run;
+  let selected='';
+  const data=await j('/api/v1/file-reports').catch(()=>null);
+  if(!current())return;
+  if(!data||data.error){$('#page').innerHTML='<div class="card">Could not read reports. Try again.</div>';return;}
+  const labels={'queued':'Waiting for scan','scanning':'Scanning a private copy','interrupted':'Scan interrupted — report again','antivirus-test-fixture':'Antivirus test signature reported (EICAR)','detection-reported':'Scanner reported a detection','reputation-flagged':'Hash reputation flagged','no-detections':'No detections from completed checks','needs-review':'Needs review / scanner unavailable','review-failed':'Review could not finish'};
+  $('#page').innerHTML='<div class="card"><h3>Report a file</h3><p>Found something suspicious or something that is not a game? Report it here. ROMarr scans a private snapshot; it leaves the original in place until you choose quarantine.</p>'
+    +'<p class="help">A user report is a claim. Scanner evidence is recorded with the file hash. No detections is not a guarantee of safety, and antivirus cannot prove that a file is a playable game. Configure scanners in <a href="#media">Media Management</a>.</p>'
+    +'<div class="field"><label for="report-file">File path inside your library</label><input id="report-file" placeholder="snes/My game.sfc" maxlength="2000"><small>Use a relative path, not a web link or a path to your settings. If antivirus already removed the file, describe the alert in the help form below; do not restore it just to make a report.</small></div>'
+    +'<div class="field"><label for="report-category">What seems wrong?</label><select id="report-category"><option value="malware">Malware or virus concern</option><option value="not-a-game">Not a game</option><option value="unwanted-file">Unwanted or nuisance file</option><option value="false-positive">Possible scanner false positive</option></select></div>'
+    +'<div class="field"><label for="report-notes">What did you notice? (kept locally)</label><textarea id="report-notes" maxlength="2000" placeholder="For example, my scanner showed a warning, or this opened as a document."></textarea></div><button class="btn" id="report-send">Report and scan</button></div>'
+    +'<div class="card" style="margin-top:16px"><h3>Local reports</h3><p class="help">Reports stay on this server. Nothing is posted to GitHub automatically. Quarantine moves a reviewed file out of the library; restore refuses to overwrite an existing file.</p><div id="report-list"></div></div>'
+    +'<div class="card" id="issue-form" style="margin-top:16px"><h3>Ask for help or suggest an improvement</h3><p class="help">Tell us what you expected and where you got stuck. You do not need to diagnose the problem. Review the text and remove passwords, API keys and private paths before publishing.</p>'
+    +'<div class="field"><label for="issue-title">Issue title</label><input id="issue-title" maxlength="180" placeholder="What went wrong, or what would help?"></div><div class="field"><label for="issue-body">Details to share</label><textarea id="issue-body" maxlength="3000" rows="6" placeholder="Your install method, the steps you tried, and the exact error help us reproduce it."></textarea></div>'
+    +'<div class="help" id="issue-evidence"></div><div id="issue-result" role="status"></div><button class="btn ghost" id="issue-review">Review on GitHub</button>'
+    +(data.direct_github?'<div style="margin-top:12px"><label><input type="checkbox" id="issue-confirm"> I reviewed this text and want to publish it to BlizzHacker/romarr.</label><p><button class="btn" id="issue-submit">Submit to GitHub</button></p></div>':'<p class="help">GitHub opens with your draft. Sign in there and press Submit when you are ready. ROMarr does not need your GitHub password.</p>')+'</div>';
+  let items=data.items||[],lastReportRows=null;
+  const paint=rows=>{
+    items=rows;
+    const serialized=JSON.stringify(rows);
+    if(serialized===lastReportRows)return;
+    lastReportRows=serialized;
+    const focused=document.activeElement?.closest('#report-list button[data-action]');
+    const focus=focused?{id:focused.dataset.id,action:focused.dataset.action}:null;
+    $('#report-list').innerHTML=rows.length?rows.map(r=>'<div style="padding:14px 0;border-top:1px solid var(--line)"><b>'+esc(r.file)+'</b><p>'+esc(labels[r.status]||r.status)+(r.quarantined?' · Quarantined':'')+(r.action_conflict?' · Move conflict — bytes preserved for manual review':'')+'</p>'
+      +'<div class="help">'+esc(r.category)+' · '+esc(r.created)+'<br>File fingerprint (SHA-256): <code style="overflow-wrap:anywhere;white-space:normal">'+esc(r.sha256||'Not computed yet')+'</code></div>'
+      +(r.action_detail?'<p class="help">'+esc(r.action_detail)+'</p>':'')
+      +(r.notes?'<details class="help"><summary>Your notes (kept locally)</summary><p>'+esc(r.notes)+'</p></details>':'')
+      +(r.scanners||[]).map(x=>'<p class="help">'+esc(x.engine)+': '+esc(x.status)+' '+esc((x.signatures||[]).join(', '))+' '+esc(x.detail||'')+'</p>').join('')
+      +'<div class="row" style="flex-wrap:wrap"><button class="btn ghost" data-action="share" data-id="'+r.id+'">Prepare GitHub report</button>'
+      +(r.sha256&&!r.action_conflict&&r.status!=='scanning'&&r.status!=='queued'?'<button class="btn ghost" data-action="'+(r.quarantined?'restore':'quarantine')+'" data-id="'+r.id+'">'+(r.quarantined?'Restore file':'Quarantine file')+'</button>':'')+'</div></div>').join(''):'<p class="help">No reports yet. You can also use the form below for a general issue.</p>';
+    if(focus){
+      const buttons=Array.from($('#report-list').querySelectorAll('button[data-action]'));
+      const target=buttons.find(b=>b.dataset.id===focus.id&&b.dataset.action===focus.action)||buttons.find(b=>b.dataset.id===focus.id);
+      if(target)target.focus({preventScroll:true});
+      else{$('#report-list').tabIndex=-1;$('#report-list').focus({preventScroll:true});}
+    }
+  };
+  let refreshId=0;
+  const refresh=async()=>{
+    const attempt=++refreshId;clearTimeout(RENDER.reports._timer);
+    const d=await j('/api/v1/file-reports').catch(()=>null);
+    if(!current()||attempt!==refreshId)return;
+    if(d&&!d.error)paint(d.items||[]);
+    clearTimeout(RENDER.reports._timer);
+    if(items.some(r=>r.status==='queued'||r.status==='scanning'))RENDER.reports._timer=setTimeout(refresh,1500);
+  };
+  paint(items);
+  if(items.some(r=>r.status==='queued'||r.status==='scanning'))RENDER.reports._timer=setTimeout(refresh,1500);
+  $('#report-send').onclick=async()=>{
+    const b=$('#report-send');b.disabled=true;
+    const r=await j('/api/v1/file-reports/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:$('#report-file').value,category:$('#report-category').value,notes:$('#report-notes').value})}).catch(()=>({error:'Report could not be sent'}));
+    if(!current())return;b.disabled=false;
+    if(r.error)toast(r.error);else{toast('Report saved locally. Review the scanner results below.');refresh();}
+  };
+  $('#report-list').onclick=async e=>{
+    const b=e.target.closest('button[data-action]');if(!b)return;
+    const r=items.find(x=>x.id===b.dataset.id);if(!r)return;
+    if(b.dataset.action==='share'){
+      selected=r.id;$('#issue-title').value='File report: '+r.file.split('/').pop();
+      $('#issue-body').value='Please review this file report. What I noticed: ';
+      $('#issue-evidence').textContent='The selected report will include its file name, SHA-256, category, review status and scanner signatures. Local notes and absolute paths are excluded.';
+      $('#issue-form').scrollIntoView({block:'start'});return;
+    }
+    if(b.dataset.action==='quarantine'&&!confirm('Move '+r.file+' to quarantine? This does not delete it.'))return;
+    b.disabled=true;
+    const x=await j('/api/v1/file-reports/'+b.dataset.action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:r.id})}).catch(()=>({error:'Action could not finish'}));
+    if(!current())return;
+    if(x.error){toast(x.error);b.disabled=false;}else refresh();
+  };
+  const publish=async direct=>{
+    if(direct&&!$('#issue-confirm').checked){toast('Review and confirm the text first.');return;}
+    const r=await j('/api/v1/support/github',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:$('#issue-title').value,body:$('#issue-body').value,report_id:selected,confirm:direct})}).catch(()=>({error:'Could not prepare the issue'}));
+    if(!current())return;
+    if(r.error){toast(r.error);return;}
+    const a=document.createElement('a');a.href=r.url;a.target='_blank';a.rel='noopener noreferrer';a.className='btn ghost';a.textContent=r.mode==='submitted'?'Open submitted issue':'Open your GitHub draft';$('#issue-result').replaceChildren(a);a.click();
+    toast(r.mode==='submitted'?'Issue submitted. Thank you for helping improve ROMarr.':'Your draft is ready on GitHub. Review it before submitting.');
+  };
+  $('#issue-review').onclick=()=>publish(false);
+  if($('#issue-submit'))$('#issue-submit').onclick=()=>publish(true);
+};
+
 // The optional guide uses the same editors and connection checks as Settings.
 const SETUP={step:0,mode:'organize',initialized:false};
 RENDER.setup=async()=>{
+  const version=typeof pageVersion==='number'?pageVersion:null;
+  const current=()=>version===null||(version===pageVersion&&activePage==='setup');
   const state=await j('/api/v1/setup/status').catch(()=>null);
+  if(!current())return;
   if(!state||state.error){
     $('#page').innerHTML='<div class="card"><h3>Setup Guide</h3><p class="help">We could not read your setup. Refresh this page to try again.</p></div>';
     return;
@@ -6028,10 +6924,11 @@ RENDER.setup=async()=>{
   const action=(id,label)=>'<button class="btn ghost" id="'+id+'">'+label+'</button>';
   let content='';
   if(active===0){
-    content='<h3>Welcome to ROMarr</h3><p class="help">Choose what you want to do first. You can change your mind and add more connections later.</p>'
+    content='<h3>Welcome to ROMarr</h3><p class="help">Let’s get one game into your library. Choose a starting point; you can add more connections later.</p>'
       +'<div class="pick"><button data-setup-mode="organize" aria-pressed="'+(SETUP.mode==='organize')+'">I already have ROMs<small>Connect a folder or library, preview existing files, and check what is missing. No indexer or download client needed.</small></button>'
       +'<button data-setup-mode="download" aria-pressed="'+(SETUP.mode==='download')+'">Find and download games<small>Connect your library, a download client, and a search source.</small></button></div>'
-      +'<p class="help" style="margin-top:16px">ROMarr organizes and acquires files. You play them in a library frontend or emulator of your choice.</p>';
+      +'<p class="help" style="margin-top:16px"><b>ROMarr finds, checks and organizes games.</b> Your emulator plays them. <b>RomM</b> is an optional library frontend with playback support for supported systems. If you already use Sonarr or Radarr, the search-and-import workflow will feel familiar.</p>';
+    content+='<p><a class="btn ghost" href="#libraries">I already use RomM — connect my library</a></p><p class="help">New to emulators? Start with one system and a game file you already have. You can use this guide without an indexer, plugins or a RomM server.</p>';
   }else if(active===1){
     content='<h3>Where should your ROMs live?</h3><p class="help">Use a plain folder, or connect RomM, Gaseous, Retrom, or another supported library. Your existing files stay in place when you add a library.</p>'
       +added(state.libraries)
@@ -6039,14 +6936,22 @@ RENDER.setup=async()=>{
       +'<p class="help">Choose the path ROMarr can see, such as <code>/roms</code>. If you use Docker, mount your ROM folder into the container first. Use <b>Test</b> in the form to check the path before saving.</p>'
       +'<p class="help">You can preview files in <a href="#manualimport">Manual Import</a> before copying them into your library. Review the platform and destination first. DAT-verified single files can use the canonical name; multi-file disc sets keep their referenced filenames.</p>';
   }else if(active===2){
-    content='<h3>Choose what downloads your files</h3><p class="help">Use qBittorrent for torrents, or SABnzbd/NZBGet for Usenet. ROMarr hands your chosen release to that app, then imports it when the download finishes.</p>'
-      +added(state.download_clients)+action('setup-client','Add a download client')
-      +'<p class="help">Enter the address ROMarr can reach. In separate Docker containers, <code>localhost</code> points back to ROMarr; use your download client’s container name or server address. Press <b>Test</b> before saving.</p>'
-      +'<p class="help">Your finished-download folder must also be readable by ROMarr. Different paths on the two apps can be connected later under <a href="#media">Media Management → Remote path mappings</a>.</p>';
+    content='<h3>Choose what downloads your files</h3><p class="help">Download on the ROMarr host, or connect an app you already run. Choose the protocol your source provides.</p>'
+      +added(state.download_clients)+'<div class="row">'
+      +action('setup-usenet','Built-in Usenet')+action('setup-torrent','Standalone torrents')
+      +action('setup-direct','Direct HTTP')+action('setup-hub-client','ROM Hub')
+      +action('setup-client','Connect an existing client')+'</div>'
+      +'<p class="help"><b>Usenet:</b> enter your provider’s NNTP server and login in Built-in Usenet. If you use SABnzbd or NZBGet, configure the provider in that app, then connect it here. Add your Newznab search source in the next step.</p>'
+      +'<p class="help"><b>Standalone torrents and Direct HTTP</b> use MDM. Install that engine from <a href="#clients">Download Clients</a> first if needed. The ROM Hub client works with supported plugins from <a href="#hub">Plugins</a>.</p>'
+      +'<p class="help">Press <b>Test</b> before saving. For an external client, enter the address ROMarr can reach; <code>localhost</code> in a separate Docker container points back to ROMarr.</p>'
+      +'<p class="help">Choose a writable finished-download folder visible to ROMarr. External clients with different paths can use <a href="#media">Media Management → Remote path mappings</a>.</p>';
   }else if(active===3){
-    content='<h3>Where should ROMarr search?</h3><p class="help">An indexer lists available releases. Connect an existing Prowlarr instance, or add a Torznab/Newznab source directly. A download client alone does not provide search results.</p>'
-      +added(state.indexers)+'<div class="row">'+action('setup-prowlarr','Connect Prowlarr')+action('setup-indexer','Add another indexer')+'</div>'
-      +'<p class="help">Use the source’s address and API key, then press <b>Test</b>. ROM Hub plugins are another optional way to add supported sources; you can explore those next.</p>';
+    content='<h3>Where should ROMarr search?</h3><p class="help">For Usenet, a <b>Newznab indexer</b> finds NZB release listings. Your provider supplies the files, and your download client retrieves them. A provider login alone does not add search results.</p>'
+      +added(state.indexers)+'<div class="row">'+action('setup-newznab','Add a Usenet indexer')
+      +action('setup-prowlarr','Connect Prowlarr')+action('setup-indexer','Other indexers')+'</div>'
+      +'<p class="help">Use the indexer’s URL and API key, then press <b>Test</b>. Prowlarr is optional if you want to manage several indexers. Torrent sources use Torznab; you can use Usenet without a torrent indexer.</p>'
+      +'<p class="help">Game coverage varies. In <a href="#search">Interactive Search</a>, try one title your source lists before adding a large Wanted list. No results and a failed download need different checks.</p>'
+      +'<p class="help"><a href="#hub">ROM Hub plugins</a> offer other supported sources, including direct downloads. Configure a ROM Hub client and an enabled searchable plugin. Availability and access requirements depend on the source.</p>';
   }else if(active===4){
     content='<h3>Add confidence and more sources</h3><p class="help">Both of these are optional. You can start with your existing files and return later.</p>'
       +'<h4>Verify with DATs</h4><p class="help">A No-Intro or Redump DAT is a checklist of known file hashes. It lets ROMarr verify a dump and compare your collection with a complete set.</p>'
@@ -6057,13 +6962,15 @@ RENDER.setup=async()=>{
       +'<a class="btn ghost" href="#hub">Browse ROM Hub plugins</a>'
       +(!state.hub_available?'<p class="help">ROM Hub is not available in this installation. The Plugins page explains how to add it; your folder and indexer setup can still work.</p>':'');
   }else{
-    content='<h3>Choose your first small task</h3><p class="help">Start with one game so you can see each step. You can reopen this guide from <b>Settings → Setup Guide</b> whenever you need it.</p>'
+    content='<h3>Choose your first small task</h3><p class="help">You’re ready to try one small task. Finishing this guide saves your choices; check History after your first import to confirm it worked. You can reopen this guide from <b>Settings → Setup Guide</b> whenever you need it.</p>'
       +(SETUP.mode==='organize'
         ?'<p><a class="btn" href="#manualimport">Preview existing ROMs</a></p><p class="help">Manual Import shows what ROMarr recognizes before you import. For missing games and DAT comparison, open <a href="#collections">Collections</a>. Exact duplicate cleanup starts with an audit under <a href="#stats">Stats</a>.</p>'
         :'<p><a class="btn" href="#search">Preview a game search</a></p><p class="help">Add New finds a game and its releases before you choose one. Follow its progress in <a href="#queue">Queue</a>. If you prefer to start with files you already have, use <a href="#manualimport">Manual Import</a>.</p>')
       +'<h4 style="margin-top:22px">Want a dedicated player?</h4><p class="help">Cartridge is an optional companion for a RomM library. Choose the version for your device; ROMarr works without it.</p>'
       +'<div class="row" style="flex-wrap:wrap"><a class="btn ghost" href="https://github.com/BlizzHacker/romarr/releases/download/v1.8.0/Cartridge-Windows-Portable-0.2.0-x64.exe" target="_blank" rel="noopener">Cartridge for Windows</a><a class="btn ghost" href="https://apps.microsoft.com/detail/9MXC51W17LH4" target="_blank" rel="noopener">Cartridge for Xbox</a></div>'
-      +'<p class="help">Need help? <a href="https://github.com/BlizzHacker/romarr/issues" target="_blank" rel="noopener">Open a GitHub issue</a> with your ROMarr version, what you expected, and the relevant error. Remove passwords and API keys from logs.</p>';
+      +'<h4 style="margin-top:22px">Mobile App Beta &amp; Community</h4><p class="help">We are looking for 12 testers for the official ROMarr Android release on Google Play, and you can connect with the community on Discord or back ROMarr on Open Collective.</p>'
+      +'<div class="row" style="flex-wrap:wrap"><a class="btn ghost" href="https://play.google.com/apps/internaltest/4700888732790045566" target="_blank" rel="noopener">📲 Join Android Beta on Google Play</a><a class="btn ghost" href="https://discord.gg/ywNFceuAd" target="_blank" rel="noopener noreferrer">Join ROMarr Discord</a><a class="btn ghost" href="https://opencollective.com/romarr" target="_blank" rel="noopener noreferrer">Support on Open Collective</a></div>'
+      +'<p class="help">Stuck? You do not need to know the technical terms. Tell us the last step you reached. <a href="https://github.com/BlizzHacker/romarr/issues" target="_blank" rel="noopener">Open a GitHub issue</a> with your ROMarr version, what you expected, and the relevant error. Remove passwords and API keys from logs.</p>';
   }
   $('#page').innerHTML='<div class="card" style="max-width:900px"><div class="row" style="justify-content:space-between"><span class="help">Setup Guide</span><button class="btn ghost" id="setup-dismiss">Set up later</button></div>'
     +'<div class="row" style="flex-wrap:wrap;gap:6px;margin:12px 0 24px">'+order.map((step,n)=>
@@ -6088,10 +6995,15 @@ RENDER.setup=async()=>{
   document.querySelectorAll('[data-setup-mode]').forEach(btn=>btn.onclick=()=>{
     SETUP.mode=btn.dataset.setupMode;RENDER.setup();});
   const bind=(id,fn)=>{const button=$('#'+id);if(button)button.onclick=fn;};
-  const saved=()=>RENDER.setup();
+  const saved=()=>{if(current())RENDER.setup();};
   bind('setup-folder',()=>editItem('library',{type:'folder',name:'My ROMs',path:state.library_path,is_default:true},saved));
   bind('setup-library',()=>addItem('library',saved));
   bind('setup-client',()=>addItem('downloadclient',saved));
+  bind('setup-usenet',()=>editItem('downloadclient',{type:'builtin_nzb'},saved));
+  bind('setup-torrent',()=>editItem('downloadclient',{type:'mdm_torrent'},saved));
+  bind('setup-direct',()=>editItem('downloadclient',{type:'mdm_http'},saved));
+  bind('setup-hub-client',()=>editItem('downloadclient',{type:'hub'},saved));
+  bind('setup-newznab',()=>editItem('indexer',{type:'newznab'},saved));
   bind('setup-prowlarr',()=>editItem('indexer',{type:'prowlarr'},saved));
   bind('setup-indexer',()=>addItem('indexer',saved));
   bind('setup-dats',async()=>{
@@ -6155,12 +7067,12 @@ RENDER.getstarted=async()=>{
 
   $('#page').innerHTML=
     '<div class="card"><h3>What ROMarr is</h3><p><a class="btn" href="#setup">Open the Setup Guide</a></p>'
-    +'<p class="help">ROMarr is the acquisition and automation layer: it '
-    +'searches your indexers, grabs the best release, checks it against a '
-    +'No-Intro or Redump DAT, and files it into your library. '
-    +'<b>It is not an emulator and not a game launcher.</b> Something else '
-    +'plays the ROM — ROMarr makes sure the right file is in the right place '
-    +'for it.</p>'
+    +'<p class="help">ROMarr helps you find, check and organize games. '
+    +'Start with files you already have, or connect a search source and a download client. '
+    +'Optional DAT catalogues compare your files with known checksums.</p>'
+    +'<p class="help"><b>Your emulator plays the games.</b> RomM is an optional '
+    +'library frontend with playback for supported systems. You can also use a plain folder. '
+    +'If you use Sonarr or Radarr, the search-and-import workflow will feel familiar.</p>'
     +'<div style="font-family:ui-monospace,monospace;font-size:12.5px;'
     +'background:var(--bg);border:1px solid var(--line);border-radius:6px;'
     +'padding:14px;overflow-x:auto;line-height:1.9">'
@@ -6176,8 +7088,8 @@ RENDER.getstarted=async()=>{
        'Prowlarr, or Torznab/Newznab indexers added directly under '
        +'<a href="#indexers">Indexers</a>. This is where releases are found.')
     +step(2,'A download client',clientOk,
-       'qBittorrent for torrents, SABnzbd or NZBGet for usenet. Set under '
-       +'<a href="#clients">Download Clients</a>.')
+       'Built-in Usenet, standalone MDM torrents/direct HTTP, ROM Hub, or an external '
+       +'qBittorrent/SABnzbd/NZBGet client. Choose under <a href="#clients">Download Clients</a>.')
     +step(3,'A library',libOk,
        'Where ROMs are filed and what serves them. RomM, Gaseous, Retrom, or '
        +'a plain folder that Batocera, ES-DE, EmuDeck or LaunchBox reads. '
@@ -6523,6 +7435,14 @@ RENDER.manualimport=async()=>{
       ? '<span class="pill" style="background:var(--bad);color:#2a0b0b">bad dump</span>'
       : '<span class="pill" title="Not in your DAT. Often perfectly fine.">unknown</span>';
 
+  // The bytes' opinion when it contradicts the platform. A warning, never a
+  // refusal: shown on the scan row and again on the import result, because
+  // the operator may have picked the other platform after the scan.
+  const headerPill=x=>x.header_says
+    ? '<br><span class="pill" style="background:var(--warn);color:#2a1c05" title="'
+      +esc(x.header_detail||'')+'">header says '+esc(x.header_says)+'</span>'
+    : '';
+
   async function adopt(row, force){
     const btn=row.querySelector('.mi-go');
     const st=row.querySelector('.mi-st');
@@ -6535,9 +7455,9 @@ RENDER.manualimport=async()=>{
 
     if(d.ok){
       const one=d.imported[0]||{};
-      st.innerHTML=one.forced
+      st.innerHTML=(one.forced
         ? '<span style="color:var(--warn)">imported (forced)</span>'
-        : '<span style="color:var(--ok)">imported</span>';
+        : '<span style="color:var(--ok)">imported</span>')+headerPill(d);
       btn.remove();
       row.querySelector('.mi-pf').disabled=true;
       return;
@@ -6576,7 +7496,7 @@ RENDER.manualimport=async()=>{
            +'<td>'+esc(x.filename)+'</td>'
            +'<td><select class="mi-pf">'+opts(x.platform)+'</select></td>'
            +'<td class="help" style="margin:0">'+esc(x.reason)+'</td>'
-           +'<td>'+(x.hollow?'<span class="pill" style="background:var(--bad);color:#2a0b0b" title="'+esc(x.hollow)+'">EMPTY FILE</span><br>':'')+verdict(x.verdict)+(x.header_says?'<br><span class="pill" style="background:var(--warn);color:#2a1c05" title="'+esc(x.header_detail||'')+'">header says '+esc(x.header_says)+'</span>':'')+'</td>'
+           +'<td>'+(x.hollow?'<span class="pill" style="background:var(--bad);color:#2a0b0b" title="'+esc(x.hollow)+'">EMPTY FILE</span><br>':'')+verdict(x.verdict)+headerPill(x)+'</td>'
            +'<td><button class="btn mi-go">Import</button></td>'
            +'<td class="mi-st help" style="margin:0"></td></tr>').join('')
          +'</tbody></table>'
@@ -6646,9 +7566,21 @@ RENDER.tasks=async()=>{
 
 let LOG_TIMER=null;
 RENDER.update=async()=>{
+  const viewVersion=typeof pageVersion==='number'?pageVersion:null;
   const d=await j('/api/v1/update').catch(()=>null);
+  if((typeof activePage==='string'&&activePage!=='update')
+      ||(viewVersion!==null&&pageVersion!==viewVersion))return;
   if(!d){$('#page').innerHTML='<div class="panel-note panel-warn">Could not read update status.</div>';return;}
-  const inst=d.install||{}, st=d.settings||{};
+  const inst=d.install||{}, st=d.settings||{}, verdict=updateVerdict(d.check_status);
+  const check=d.check_status||{}, nightly=check.channel==='nightly';
+  const validSha=sha=>typeof sha==='string'&&/^[0-9a-f]{40}$/i.test(sha);
+  const runningLabel=nightly&&validSha(check.running_revision)
+    ?'Nightly · '+check.running_revision.slice(0,8):(d.running_version||'unknown');
+  const latestLabel=nightly
+    ?(validSha(check.latest_revision)?check.latest_revision.slice(0,8):'—')
+    :(d.latest_version||'—');
+  const latestTitle=nightly?'Latest Nightly revision'
+    :(verdict.state==='available'||verdict.state==='current'?'Latest on GitHub':'Last known release');
   const kindLabel={git:'git checkout (self-update possible)',
     docker:'container image (updates come from the host)',
     none:'unknown install shape'}[inst.kind]||inst.kind;
@@ -6659,20 +7591,23 @@ RENDER.update=async()=>{
   $('#page').innerHTML=
     '<div class="card"><h3>This install</h3>'
     +'<div class="st">'
-    +'<div><b>'+esc(d.running_version)+'</b><span>Running</span></div>'
-    +'<div><b>'+esc(d.latest_version||'—')+'</b><span>Latest on GitHub</span></div>'
-    +'<div><b>'+(d.update_available?'<span style="color:var(--warn)">yes</span>':'no')+'</b><span>Update available</span></div>'
+    +'<div><b>'+esc(runningLabel)+'</b><span>Running</span></div>'
+    +'<div><b>'+esc(latestLabel)+'</b><span>'+esc(latestTitle)+'</span></div>'
+    +'<div><b>'+(verdict.state==='available'?'<span style="color:var(--warn)">yes</span>':esc(verdict.label))+'</b><span>Update available</span></div>'
     +'</div>'
     +'<p class="help">Install shape: <b>'+esc(kindLabel)+'</b>'
     +(inst.branch?' — branch <code>'+esc(inst.branch)+'</code> at <code>'+esc(inst.commit||'')+'</code>':'')+'</p>'
+    +buildIdentityLine(d.build)
+    +'<p class="help">Update check: '+esc(verdict.note)+'</p>'
     +'</div>'
     +'<div class="card"><h3>Automatic updates</h3>'
     +'<p class="help">Settings live under Settings → General; this page shows and acts. '
-    +'Auto-update waits until nothing is downloading, then fetches, fast-forwards '
-    +'and restarts. A container install cannot update itself — the host pulls the new image.</p>'
+    +'Check now only checks for updates. Automatic application depends on this installation\'s verified capability; '
+    +'a Docker image must be updated through its host deployment.</p>'
     +'<table><tbody>'
     +'<tr><td>Daily update check</td><td>'+badge(st.update_check)+'</td></tr>'
-    +'<tr><td>Auto-apply ROMarr updates</td><td>'+badge(st.auto_update)+'</td></tr>'
+    +'<tr><td>Auto-apply ROMarr updates</td><td>'+badge(st.auto_update)
+    +' <span class="help">'+esc(autoApplyDetail(st,inst))+'</span></td></tr>'
     +'<tr><td>Channel</td><td>'+esc(st.update_channel||'stable')+'</td></tr>'
     +'<tr><td>Auto-update ROM Hub plugins</td><td>'+badge(st.auto_update_plugins)+'</td></tr>'
     +'</tbody></table>'
@@ -6683,9 +7618,14 @@ RENDER.update=async()=>{
     +'</div>'
     +'<div id="up-msg" style="margin-top:10px"></div>'
     +'</div>'
+    +'<div class="card"><h3>Choose a release channel</h3><p class="help">Stable is the regular release. RC is the last testing stage before release; Beta is for wider testing; Alpha is the earliest preview. Each also includes more stable releases. Nightly follows main. Alpha, Beta, RC and PR previews require a deliberate update.</p>'
+    +'<div class="row" style="flex-wrap:wrap"><label for="up-channel">Channel</label><select id="up-channel">'+[['stable','Stable'],['rc','Release candidate'],['beta','Beta'],['alpha','Alpha'],['nightly','Nightly']].map(([value,label])=>'<option value="'+value+'"'+(value===(st.update_channel||'stable')?' selected':'')+'>'+label+'</option>').join('')+'</select><button class="btn ghost" id="up-channel-save">Save and check</button><button class="btn ghost" id="up-releases">Browse releases</button></div><div id="up-release-list" class="help"></div></div>'
+    +'<div class="card"><h3>Try a pull request</h3><p class="help">This runs a contributor’s code on your own installation. Review the author, diff and checks first. A clean source install can apply a passing PR that fast-forwards its current build; divergent branches need a separate preview build. Docker and bundled apps use separately built packages.</p>'
+    +'<div class="row" style="flex-wrap:wrap"><button class="btn ghost" id="up-pr-list">Find open PRs</button><select id="up-pr-choices" aria-label="Open pull requests" style="max-width:100%"><option value="">Choose a PR</option></select><label for="up-pr-number">PR number</label><input id="up-pr-number" type="number" min="1" max="999999" style="max-width:130px"><button class="btn ghost" id="up-pr-inspect">Inspect PR</button></div><div id="up-pr-result" style="overflow-wrap:anywhere"></div>'
+    +(d.preview?'<div class="panel-note"><b>Active preview: PR #'+esc(String(d.preview.number))+'</b> · '+esc(d.preview.head.slice(0,12))+'<p>Automatic updates are disabled. Your private configuration backup is retained separately; restoring code does not erase current settings.</p><button class="btn ghost" id="up-pr-restore">Restore previous code</button></div>':'')+'</div>'
     +((d.docker_guidance||[]).length
       ?'<div class="card"><h3>How to update this container</h3><p class="help">'
-       +'ROMarr runs from an image, so the update happens on the host:</p><pre style="font:12px/1.6 ui-monospace,Menlo,monospace;color:var(--dim)">'
+       +'ROMarr runs from an image. Verify the original host deployment before changing it:</p><pre style="font:12px/1.6 ui-monospace,Menlo,monospace;color:var(--dim)">'
        +esc(d.docker_guidance.join('\n'))+'</pre></div>'
       :'')
     +(plugins.length
@@ -6723,6 +7663,63 @@ RENDER.update=async()=>{
     await run('ApplyUpdate',()=>cmd('ApplyUpdate'))(e);
   };
   if($('#up-plugins'))$('#up-plugins').onclick=run('PluginUpdate',()=>cmd('PluginUpdate'));
+  const currentUpdate=()=>activePage==='update'&&(viewVersion===null||pageVersion===viewVersion);
+  $('#up-channel-save').onclick=async e=>{
+    e.target.disabled=true;const channel=$('#up-channel').value;
+    try{
+      const saved=await j('/api/v1/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({update_channel:channel})});
+      if(saved.error)throw Error(saved.error);
+      const result=await cmd('UpdateCheck');if(!currentUpdate())return;
+      say(result.message||result.error||'Channel saved',!!result.error);go('update');
+    }catch(error){if(currentUpdate()){say(error.message,true);e.target.disabled=false;}}
+  };
+  $('#up-releases').onclick=async e=>{
+    const channel=$('#up-channel').value;if(channel==='nightly'){say('Nightly follows main by commit, rather than release tags. Use Check now.');return;}
+    e.target.disabled=true;
+    try{
+      const result=await j('/api/v1/update/releases?channel='+encodeURIComponent(channel));if(!currentUpdate())return;
+      if(result.error)throw Error(result.error);
+      $('#up-release-list').innerHTML=(result.items||[]).map(r=>'<p><a href="'+esc(r.url)+'" target="_blank" rel="noopener">'+esc(r.tag)+'</a> · '+esc(r.stage)+'</p>').join('')||'No recent releases in this channel.';
+    }catch(error){if(currentUpdate())say(error.message,true);}finally{if(currentUpdate())e.target.disabled=false;}
+  };
+  $('#up-pr-list').onclick=async e=>{
+    e.target.disabled=true;
+    try{
+      const result=await j('/api/v1/update/prs');if(!currentUpdate())return;if(result.error)throw Error(result.error);
+      const choices=$('#up-pr-choices');choices.replaceChildren(new Option('Choose a PR',''));
+      for(const pr of result.items||[])choices.add(new Option('#'+pr.number+' · '+pr.title,String(pr.number)));
+      if(!(result.items||[]).length)say('There are no open PRs. You can still inspect a specific open PR number.');
+    }catch(error){if(currentUpdate())say(error.message,true);}finally{if(currentUpdate())e.target.disabled=false;}
+  };
+  $('#up-pr-choices').onchange=e=>{$('#up-pr-number').value=e.target.value;};
+  const previewPost=(path,payload)=>j('/api/v1/update/pr'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  $('#up-pr-inspect').onclick=async e=>{
+    const number=Number($('#up-pr-number').value);if(!Number.isInteger(number)||number<1||number>999999){say('Enter a valid PR number.',true);return;}
+    e.target.disabled=true;
+    try{
+      const pr=await previewPost('',{number});if(!currentUpdate())return;if(pr.error)throw Error(pr.error);
+      $('#up-pr-result').innerHTML='<h4><a href="'+esc(pr.url)+'" target="_blank" rel="noopener">#'+pr.number+' '+esc(pr.title)+'</a></h4><p>Author: '+esc(pr.author)+' · '+(pr.draft?'Draft':pr.checks_passed?'Checks passed':'Checks not ready')+'</p><p>Exact head: <code>'+esc(pr.head)+'</code><br>Base: <code>'+esc(pr.base)+'</code></p>'
+        +(pr.checks||[]).map(c=>'<p class="help">'+esc(c.name)+': '+esc(c.conclusion||c.status)+'</p>').join('')
+        +'<p class="help">'+esc(pr.build_guidance)+'</p>'
+        +(inst.can_apply&&pr.checks_passed&&!pr.draft?'<label for="up-pr-ack">Type APPLY PR #'+pr.number+' to confirm running this code:</label><input id="up-pr-ack" autocomplete="off" style="max-width:100%;margin:8px 0"><button class="btn" id="up-pr-apply">Back up settings and apply this revision</button>':'<p class="help">In-app application is unavailable for this install or these checks. Use an isolated build or a verified native package.</p>');
+      if($('#up-pr-apply'))$('#up-pr-apply').onclick=async event=>{
+        event.target.disabled=true;
+        try{
+          const result=await previewPost('/apply',{number:pr.number,head:pr.head,base:pr.base,confirm:true,acknowledgement:$('#up-pr-ack').value});
+          if(!currentUpdate())return;
+          say(result.message||result.error||(result.ok?'Preview worker launched. Wait for restart and health checks.':'Preview not applied'),!result.ok);
+          if(result.ok)setTimeout(()=>{if(currentUpdate())go('update');},3000);
+        }catch(error){if(currentUpdate())say(error.message,true);}finally{if(currentUpdate())event.target.disabled=false;}
+      };
+    }catch(error){if(currentUpdate())say(error.message,true);}finally{if(currentUpdate())e.target.disabled=false;}
+  };
+  if($('#up-pr-restore'))$('#up-pr-restore').onclick=async e=>{
+    if(!confirm('Restore the previous code? Current settings are kept. The private configuration backup remains available.'))return;
+    e.target.disabled=true;
+    try{const result=await previewPost('/restore',{confirm:true,backup_id:d.preview.backup_id});if(currentUpdate())say(result.message||result.error||'Restore worker launched',!result.ok);}
+    catch(error){if(currentUpdate())say(error.message,true);}finally{if(currentUpdate())e.target.disabled=false;}
+  };
+
 };
 
 RENDER.logs=async()=>{
@@ -6787,6 +7784,14 @@ function paintTheme(){
   });
   const custom=$('.sw.pick'); if(custom) custom.classList.toggle('on',!preset);
   const pick=$('#accent-pick'); if(pick) pick.value=accent;
+  const fav=document.querySelector('link[rel="icon"]');
+  if(fav&&accent){
+    const svg=document.querySelector('#brand .brand-icon');
+    if(svg){
+      const raw=svg.outerHTML.replace(/var\\(--accent[^)]*\\)/g,accent);
+      fav.href='data:image/svg+xml;utf8,'+encodeURIComponent(raw);
+    }
+  }
 }
 function bindTheme(){
   document.documentElement.addEventListener('themechange',paintTheme);
@@ -6841,17 +7846,54 @@ async function refreshCounts(){
 """
 
 
+BRAND_ICON_PATHS = (
+    '<path d="M40 12C40 6.5 44.5 2 50 2H102C108.6 2 114 7.4 114 14V58.5'
+    'C119.8 64.2 123 72.1 123 80.5C123 97.9 108.9 112 91.5 112C84.8 112 '
+    '78.5 109.9 73.4 106.3L63.8 114.2C60.1 117.2 54.6 116.8 51.3 113.3'
+    'C48.1 109.8 48.2 104.3 51.6 101L56.2 96.6H29V102C29 105.3 26.3 108 '
+    '23 108H19C15.7 108 13 105.3 13 102V89.2L4.2 83.2C1.6 81.4 0 78.4 0 '
+    '75.2V36C0 29.9 4.5 24.8 10.4 24C12.2 18.8 17.1 15 23 15H26.4C29.1 '
+    '10.3 34.1 7 40 7V12Z" fill="#0E141D" stroke="#2B3D54" stroke-width="2.5"/>'
+    '<rect x="8" y="31" width="14" height="44" rx="5" fill="#E5E9F0"/>'
+    '<rect x="13" y="37" width="8" height="38" rx="3" fill="#3B5270"/>'
+    '<rect x="19" y="22" width="15" height="53" rx="6" fill="#E5E9F0"/>'
+    '<rect x="25" y="29" width="9" height="46" rx="3" fill="#3B5270"/>'
+    '<rect x="31" y="15" width="16" height="60" rx="6" fill="#E5E9F0"/>'
+    '<rect x="37" y="23" width="10" height="52" rx="3" fill="#3B5270"/>'
+    '<rect x="44" y="8" width="62" height="68" rx="9" fill="var(--accent, #75adff)"/>'
+    '<rect x="42" y="25" width="8" height="4.5" rx="2.2" fill="#0E141D"/>'
+    '<rect x="42" y="34" width="8" height="4.5" rx="2.2" fill="#0E141D"/>'
+    '<rect x="42" y="43" width="8" height="4.5" rx="2.2" fill="#0E141D"/>'
+    '<rect x="100" y="25" width="8" height="4.5" rx="2.2" fill="#0E141D"/>'
+    '<rect x="100" y="34" width="8" height="4.5" rx="2.2" fill="#0E141D"/>'
+    '<rect x="100" y="43" width="8" height="4.5" rx="2.2" fill="#0E141D"/>'
+    '<path d="M53 75V62C53 59.8 54.8 58 57 58H78" stroke="#0E141D" '
+    'stroke-width="3.2" stroke-linecap="round"/>'
+    '<rect x="54" y="17" width="42" height="36" rx="6" fill="#0E141D"/>'
+    '<path d="M66 23H69V26H66V23ZM81 23H84V26H81V23ZM69 26H72V29H69V26Z'
+    'M78 26H81V29H78V26ZM66 29H84V32H66V29ZM63 32H69V35H63V32ZM72 32H78'
+    'V35H72V32ZM81 32H87V35H81V32ZM60 35H90V41H60V35ZM60 41H63V47H60V41Z'
+    'M66 41H84V44H66V41ZM87 41H90V47H87V41ZM66 44H69V47H66V44ZM81 44H84'
+    'V47H81V44ZM69 47H74V50H69V47ZM76 47H81V50H76V47Z" fill="#F8FAFC"/>'
+    '<path d="M8 71L23 81H68L64 89H25V101H18V85L8 78V71Z" fill="#E5E9F0"/>'
+    '<circle cx="91" cy="79" r="24" fill="#0E141D" stroke="#2B3D54" stroke-width="2"/>'
+    '<path d="M74 94L57 109" stroke="#0E141D" stroke-width="15" stroke-linecap="round"/>'
+    '<path d="M74 94L58 108" stroke="#E5E9F0" stroke-width="9" stroke-linecap="round"/>'
+    '<circle cx="91" cy="79" r="19.5" fill="#0E141D" stroke="#E5E9F0" stroke-width="5.5"/>'
+    '<path d="M81.5 79.5L88 86L101 72" stroke="var(--accent, #75adff)" '
+    'stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>'
+)
+
+BRAND_ICON_SVG = (
+    '<svg class="brand-icon" xmlns="http://www.w3.org/2000/svg" '
+    f'viewBox="0 0 128 116" fill="none" aria-hidden="true">{BRAND_ICON_PATHS}</svg>'
+)
+
 FAVICON_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
-    '<rect x="8" y="6" width="48" height="52" rx="6" fill="#12141a" '
-    'stroke="#f0a92c" stroke-width="4"/>'
-    '<path d="M16 6v14h32V6" fill="#1b1f2a" stroke="#f0a92c" stroke-width="3"/>'
-    '<rect x="16" y="28" width="32" height="18" rx="3" fill="#f0a92c"/>'
-    '<rect x="20" y="50" width="4" height="8" fill="#f0a92c"/>'
-    '<rect x="28" y="50" width="4" height="8" fill="#f0a92c"/>'
-    '<rect x="36" y="50" width="4" height="8" fill="#f0a92c"/>'
-    '<rect x="44" y="50" width="4" height="8" fill="#f0a92c"/>'
-    '</svg>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 116" '
+    'fill="none" data-legacy-accent="#f0a92c">'
+    + BRAND_ICON_PATHS.replace("var(--accent, #75adff)", "#75adff")
+    + '</svg>'
 )
 
 FAVICON_LINK = '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
@@ -6862,12 +7904,72 @@ def favicon_svg() -> str:
     return FAVICON_SVG
 
 
+
+def web_manifest() -> str:
+    """Return constant install metadata; no user or server settings are exposed."""
+    return json.dumps({"id": "/", "name": "ROMarr", "short_name": "ROMarr",
+                       "description": "Manage your ROMarr server. Requires a connection to your server.",
+                       "start_url": "/", "scope": "/", "display": "standalone",
+                       "background_color": "#12141a", "theme_color": "#12141a",
+                       "icons": [{"src": f"/app-icon-{size}.png", "sizes": f"{size}x{size}",
+                                  "type": "image/png", "purpose": "any"} for size in (192, 512)]})
+
+
+def service_worker() -> str:
+    """Install support only: never intercept requests or persist authenticated data."""
+    return "self.addEventListener('install', () => self.skipWaiting());\nself.addEventListener('activate', event => event.waitUntil(self.clients.claim()));\n"
+
+
+@lru_cache(maxsize=2)
+def app_icon(size: int) -> bytes:
+    """Draw the cartridge brand as a PNG using the standard library."""
+    if size not in (192, 512):
+        raise ValueError("Unsupported app icon size")
+    rows = bytearray()
+    for y in range(size):
+        rows.append(0)
+        for x in range(size):
+            px, py = x * 64 // size, y * 64 // size
+            cartridge = 12 <= px < 52 and 8 <= py < 56
+            label = 18 <= px < 46 and 28 <= py < 44
+            contact = 50 <= py < 56 and any(a <= px < a + 4 for a in (20, 28, 36, 44))
+            color = (242, 163, 60) if label or contact else ((43, 50, 64) if cartridge else (18, 20, 26))
+            rows.extend(color)
+    def chunk(kind, data):
+        """Encode one checksummed PNG chunk."""
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(bytes(rows))) + chunk(b'IEND', b''))
+
+
+APP_HEAD = ('<link rel="manifest" href="/manifest.webmanifest">'
+            '<meta name="theme-color" content="#12141a">')
+APP_BOOT = """
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('/service-worker.js', {scope:'/'}).catch(() => {});
+}
+let installPrompt;
+window.addEventListener('beforeinstallprompt', event => {
+  event.preventDefault(); installPrompt=event;
+  document.getElementById('install-app').hidden=false;
+});
+document.getElementById('install-app').addEventListener('click', async () => {
+  if (!installPrompt) return;
+  const prompt=installPrompt; installPrompt=null;
+  document.getElementById('install-app').hidden=true;
+  await prompt.prompt();
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt=null; document.getElementById('install-app').hidden=true;
+});
+"""
+
 def page() -> str:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>ROMarr</title><meta name="viewport" content="width=device-width,initial-scale=1">
-{FAVICON_LINK}<style>{CSS}</style><script>{THEME_BOOT}</script></head><body>
+{FAVICON_LINK}{APP_HEAD}<style>{CSS}</style><script>{THEME_BOOT}</script></head><body>
 <input id="sidebar-native-toggle" type="checkbox" aria-label="Toggle navigation" aria-controls="rail">
-<nav id="rail" aria-label="Main navigation"><div id="brand">ROM<span>arr</span></div>
+<nav id="rail" aria-label="Main navigation"><div id="brand">{BRAND_ICON_SVG}ROM<span>arr</span></div>
 <button id="sidebar-close" type="button" aria-label="Close navigation">×</button>
 <div id="navwrap">{_nav_html()}</div>
 {_theme_control_html()}</nav>
@@ -6876,13 +7978,12 @@ def page() -> str:
 <div id="main">
   <div id="top"><label id="sidebar-menu-native" for="sidebar-native-toggle">☰</label>
   <button id="sidebar-menu" type="button" aria-label="Open navigation"
-    aria-controls="rail" aria-expanded="false">☰</button><h1>Games</h1><input id="search" placeholder="Filter…" autocomplete="off"
-    aria-label="Filter games">
+    aria-controls="rail" aria-expanded="false">☰</button><h1>Games</h1><button id="install-app" class="btn ghost" type="button" hidden>Install app</button><input id="search" aria-label="Filter current page" placeholder="Filter…" autocomplete="off">
     <button id="palette-btn" class="btn ghost" type="button" aria-haspopup="dialog"
       style="margin-inline-start:auto;padding:6px 12px;font-size:12.5px">Search everything <kbd>Ctrl K</kbd></button></div>
   <div class="page" id="page"></div>
 </div>
-<script>{JS}</script></body></html>"""
+<script>{JS}</script><script>{APP_BOOT}</script></body></html>"""
 
 
 # ------------------------------------------------------------ the door in --
@@ -6915,9 +8016,10 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
 .box{width:100%;max-width:390px;background:var(--surface);
   border:1px solid var(--line);border-radius:var(--r-lg);padding:30px;
   box-shadow:var(--shadow-2),var(--edge)}
-.box h1{display:flex;gap:0;font-size:26px;font-weight:700;letter-spacing:-.03em;
+.box h1{display:flex;align-items:center;gap:0;font-size:26px;font-weight:700;letter-spacing:-.03em;
   justify-content:center;margin-bottom:6px}
 .box h1 span{color:var(--accent-text)}
+.box h1 .brand-icon{width:36px;height:33px;margin-right:10px}
 .box .sub{text-align:center;color:var(--dim);font-size:13px;margin-bottom:24px}
 .box label{display:block;font-size:10.5px;font-weight:600;color:var(--dim);
   margin:15px 0 6px;text-transform:uppercase;letter-spacing:.08em}
@@ -7010,7 +8112,7 @@ def login_page(*, claimed: bool, totp: bool = False,
 <meta name="viewport" content="width=device-width,initial-scale=1">
 {FAVICON_LINK}<style>{CSS}{LOGIN_CSS}</style><script>{THEME_BOOT}</script></head><body>
 <form class="box" id="f" autocomplete="on">
-  <h1>ROM<span>arr</span></h1>
+  <h1>{BRAND_ICON_SVG}ROM<span>arr</span></h1>
   <div class="sub">{title}</div>
   {sso_button}
   {fields}
@@ -7217,7 +8319,7 @@ def link_page() -> str:
 <meta name="referrer" content="no-referrer">
 {FAVICON_LINK}<style>{CSS}{LOGIN_CSS}{LINK_CSS}</style></head><body>
 <div class="box" id="box">
-  <h1>ROM<span>arr</span></h1>
+  <h1>{BRAND_ICON_SVG}ROM<span>arr</span></h1>
   <div class="sub">Checking this invitation&hellip;</div>
 </div>
 <script>{LINK_JS}</script></body></html>"""

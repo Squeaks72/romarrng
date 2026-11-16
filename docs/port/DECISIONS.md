@@ -43,7 +43,7 @@
 
 ## Unpacking (item 7)
 
-* `is_archive_name` / `MAX_ARCHIVE_DEPTH` / `_import_nested` ported onto upstream's `import_rom`
+* `is_archive_name` ported onto upstream's `import_rom` (`MAX_ARCHIVE_DEPTH` / `_import_nested` dropped for upstream's nested-ZIP support in v1.9.0)
   (which has `platform_folders`; ROMarrNG's `folder_name`/`switch_index`/`route_switch_catalog` do not
   exist upstream and were not added). Single-archive directory unwrapping and digital set names also
   use `is_archive_name` so `.tar.gz` is handled everywhere `.zip` is.

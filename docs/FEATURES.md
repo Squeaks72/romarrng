@@ -20,6 +20,8 @@ DAT checksums distinguish **verified**, **bad dump** and **unknown**. Every memb
 
 ## Collections and existing set torrents
 
+![Collections 1G1R comparison and set torrent planner](img/collections.png)
+
 **Collections** compares a loaded DAT with the selected library/platform. You can review missing entries and apply the available region/1G1R policy. A DAT describes a set; it does not supply downloads.
 
 For an existing qBittorrent set torrent, selective acquisition first previews matched files and sidecars. ROMarr changes file priorities for a batch within your staging budget, verifies downloaded data before importing, and saves progress. Completion or cancellation restores the original torrent priorities. The workflow does not delete the source torrent or its original downloaded data. Account for those source files separately from the staging budget.
@@ -85,6 +87,8 @@ CAPTCHAs, access challenges and blocked downloads can stop a fetch. The client r
 
 ## Notifications
 
+![Notification providers in Settings -> Connections](img/connect.png)
+
 **Settings → Connections** configures notifications such as Discord and generic webhooks. Use **Test** before saving. A failed test reports the endpoint's HTTP status and available response detail. A 403 can be an upstream permission, webhook or access-policy problem; copying ROMarr settings cannot grant access the endpoint refuses.
 
 Do not post webhook URLs in bug reports: the URL may contain the credential. A successful test confirms that test's delivery, not that all future messages will be accepted.
@@ -127,3 +131,15 @@ Release grabs use the ID returned by search so clients do not need indexer downl
 - [Federation protocol](FEDERATION-PROTOCOL.md)
 - [Dated test evidence and known gaps](PROOF.md)
 - [Roadmap and community requests](../ROADMAP.md)
+
+### Real-Debrid and Prowlarr magnet redirects
+
+When Prowlarr returns a download-proxy URL that redirects to a magnet,
+ROMarr resolves it locally before handing the magnet to Real-Debrid.
+Only the configured Prowlarr origin is fetched; redirects to another HTTP
+origin are refused. Prowlarr credentials stay on the ROMarr-to-Prowlarr
+connection, and the magnet is validated before handoff.
+
+Direct magnets continue to work. If the proxy returns an actual torrent file
+instead, this magnet-only Real-Debrid path reports that clearly; use a client
+with torrent-file upload support for that result.

@@ -196,3 +196,243 @@ def test_audit_exact_duplicates_include_copier_header_bytes(tmp_path):
     state = _wait_done(svc)
     assert state["scanned"] == 2
     assert state["duplicates"] == []
+
+
+def test_audit_and_quarantine_work_with_custom_platform_folders(tmp_path):
+    """Issue #154: audit, duplicate quarantine, and restore honor platform_folders."""
+    import hashlib
+    import zlib
+    from romarr.dat import DatIndex
+
+    body = b"CUSTOMFOLDER"
+    xml = ('<datafile><header><name>Custom Folder Audit</name></header>'
+           '<game name="Game (USA)">'
+           '<rom name="Game.smc" size="' + str(len(body)) + '" crc="'
+           + f"{zlib.crc32(body) & 0xFFFFFFFF:08x}" + '" md5="'
+           + hashlib.md5(body).hexdigest() + '" sha1="'
+           + hashlib.sha1(body).hexdigest() + '"/></game></datafile>')
+    svc = _svc(tmp_path)
+    svc.store.update_settings({"platform_folders": {"snes": "Nintendo - Super Nintendo"}})
+    index = DatIndex()
+    index.add(parse_dat(xml))
+    svc.dats = index
+
+    shelf = tmp_path / "lib" / "Nintendo - Super Nintendo"
+    shelf.mkdir(parents=True)
+    (shelf / "Game (USA).smc").write_bytes(body)
+    (shelf / "Copy.smc").write_bytes(body)
+
+    svc.audit_library("snes")
+    state = _wait_done(svc)
+    assert state["scanned"] == 2
+    assert len(state["duplicates"]) == 1
+    moved = svc.quarantine_duplicates("snes", [{"file": state["duplicates"][0]["file"]}])
+    assert moved["ok"], moved
+    assert not (shelf / moved["entries"][0]["original"]).exists()
+    restored = svc.restore_duplicate(moved["manifest_id"], moved["entries"][0]["id"])
+    assert restored["ok"]
+    assert (shelf / moved["entries"][0]["original"]).read_bytes() == body
+
+
+def test_audit_keeps_library_root_snapshot_if_library_changes_mid_audit(tmp_path, monkeypatch):
+    """Changing svc.library mid-audit must not raise ValueError on path.relative_to."""
+    import hashlib
+    import zlib
+    import romarr.dat as dat_mod
+    from romarr.dat import DatIndex
+
+    body = b"SNAPSHOTTEST"
+    xml = ('<datafile><header><name>Snapshot Audit</name></header>'
+           '<game name="Good (USA)">'
+           '<rom name="Good.smc" size="' + str(len(body)) + '" crc="'
+           + f"{zlib.crc32(body) & 0xFFFFFFFF:08x}" + '" md5="'
+           + hashlib.md5(body).hexdigest() + '" sha1="'
+           + hashlib.sha1(body).hexdigest() + '"/></game></datafile>')
+    svc = _svc(tmp_path)
+    index = DatIndex()
+    index.add(parse_dat(xml))
+    svc.dats = index
+
+    shelf = tmp_path / "lib" / "snes"
+    shelf.mkdir(parents=True)
+    (shelf / "Good.smc").write_bytes(body)
+    (shelf / "Dup.smc").write_bytes(body)
+    (shelf / "Bad.smc").write_bytes(b"WRONGBYTES12")
+
+    real_hash_file = dat_mod.hash_file
+    relocated = tmp_path / "other-lib"
+    relocated.mkdir(parents=True)
+
+    def mutate_library_on_hash(path, **kwargs):
+        """Swap svc.library to a sibling directory while audit is running."""
+        svc.library = relocated
+        return real_hash_file(path, **kwargs)
+
+    monkeypatch.setattr(dat_mod, "hash_file", mutate_library_on_hash)
+    out = svc.audit_library("snes")
+    assert "error" not in out
+    state = _wait_done(svc)
+    assert state["status"] == "done"
+    assert state["scanned"] == 3
+    assert state["verified"] == 2
+    assert state["bad"] == 1
+    assert len(state["duplicates"]) == 1
+
+
+def _zip_dat_index(entries):
+    import hashlib
+    import zlib
+    from romarr.dat import DatIndex, parse_dat
+    rows = []
+    for name, body in entries:
+        rows.append(
+            f'<game name="{name}"><rom name="{name}" size="{len(body)}" '
+            f'crc="{zlib.crc32(body) & 0xFFFFFFFF:08x}" '
+            f'md5="{hashlib.md5(body).hexdigest()}" '
+            f'sha1="{hashlib.sha1(body).hexdigest()}"/></game>')
+    index = DatIndex()
+    index.add(parse_dat('<datafile><header><name>zip test</name></header>'
+                        + ''.join(rows) + '</datafile>'))
+    return index
+
+
+def _run_zip_audit(tmp_path, members, dat_entries, filename="game.zip", platform_slug="snes"):
+    import zipfile
+    svc = _svc(tmp_path)
+    svc.dats = _zip_dat_index(dat_entries)
+    shelf = tmp_path / "lib" / platform_slug
+    shelf.mkdir(parents=True)
+    with zipfile.ZipFile(shelf / filename, "w") as archive:
+        for name, data in members:
+            archive.writestr(name, data)
+    out = svc.audit_library(platform_slug)
+    assert "error" not in out
+    return _wait_done(svc)
+
+
+def test_zip_audit_hashes_rom_member_with_member_suffix(tmp_path):
+    body = b"A" * 16 + b"ROM-CONTENT"
+    state = _run_zip_audit(tmp_path, [("Game.nes", body)],
+                           [("Game.nes", body[16:])], platform_slug="nes")
+    assert (state["scanned"], state["verified"], state["bad"], state["unknown"]) == (1, 1, 0, 0)
+    # The old behavior hashed the ZIP container and did not match the ROM DAT.
+    import zipfile
+    archive_path = tmp_path / "lib" / "nes" / "game.zip"
+    from romarr.dat import hash_file
+    assert _zip_dat_index([("Game.nes", body[16:])]).lookup(**hash_file(archive_path)).status == "unknown"
+
+
+def test_zip_audit_does_not_call_mixed_rom_bundle_verified(tmp_path):
+    good, unknown = b"GOOD-ONE", b"UNLISTED-LONGER"
+    state = _run_zip_audit(tmp_path, [("One.smc", good), ("Two.smc", unknown)],
+                           [("One.smc", good)])
+    assert (state["verified"], state["bad"], state["unknown"]) == (0, 0, 1)
+
+
+def test_zip_audit_requires_disc_tracks_named_by_cue(tmp_path):
+    cue = b'FILE "missing.bin" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:00:00\n'
+    state = _run_zip_audit(tmp_path, [("Game.cue", cue)], [("Game.cue", cue)])
+    assert state["verified"] == state["bad"] == 0
+    assert state["unknown"] == 1
+
+
+def test_zip_audit_unsafe_member_is_unknown_even_when_its_size_matches_dat(tmp_path):
+    body = b"ROM-DATA"
+    state = _run_zip_audit(tmp_path, [("../Game.smc", body)],
+                           [("Game.smc", body)])
+    assert state["verified"] == state["bad"] == 0
+    assert state["unknown"] == 1
+
+
+def test_zip_audit_crc_failure_is_unknown(tmp_path):
+    import struct
+    import zipfile
+    from romarr.audit_archive import audit_zip
+    from romarr.dat import DatIndex
+    from romarr.platforms import resolve
+
+    path = tmp_path / "broken.zip"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("Game.smc", b"ROM-DATA-CONTENT")
+    with zipfile.ZipFile(path) as archive:
+        info = archive.getinfo("Game.smc")
+        offset = info.header_offset
+        with path.open("r+b") as handle:
+            handle.seek(offset + 26)
+            name_len, extra_len = struct.unpack("<HH", handle.read(4))
+            handle.seek(offset + 30 + name_len + extra_len)
+            byte = handle.read(1)
+            handle.seek(-1, 1)
+            handle.write(bytes([byte[0] ^ 1]))
+    verdict = audit_zip(path, resolve("snes"), DatIndex())
+    assert verdict.status == "unknown"
+
+
+def test_zip_container_size_never_causes_bad_dump_verdict(tmp_path):
+    import zipfile
+    from romarr.audit_archive import audit_zip
+    from romarr.dat import DatIndex
+    from romarr.platforms import resolve
+
+    path = tmp_path / "unknown.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("Unknown.smc", b"UNLISTED-ROM")
+    # The ZIP's compressed size is a known DAT ROM size; its member is not.
+    known = b"K" * path.stat().st_size
+    dats = _zip_dat_index([("Known.smc", known)])
+    assert dats.lookup(**__import__("romarr.dat", fromlist=["hash_file"]).hash_file(path)).status == "bad-dump"
+    assert audit_zip(path, resolve("snes"), dats).status == "unknown"
+
+
+def test_archive_rom_platform_audits_container_not_members(tmp_path):
+    import zipfile
+    svc = _svc(tmp_path)
+    shelf = tmp_path / "lib/arcade"; shelf.mkdir(parents=True)
+    path = shelf / "set.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("chip.bin", b"chip fixture")
+    svc.dats = _zip_dat_index([("set.zip", path.read_bytes())])
+    svc.audit_library("arcade")
+    assert _wait_done(svc)["verified"] == 1
+
+
+def test_zip_directory_budget_checked_before_member_index(tmp_path, monkeypatch):
+    import struct
+    from romarr import audit_archive
+    path = tmp_path / "huge.zip"
+    path.write_bytes(struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 10001, 10001, 0, 0, 0))
+    calls = []
+    def forbidden(*args):
+        calls.append(args)
+        raise AssertionError("ZipFile constructed before metadata budget check")
+    monkeypatch.setattr(audit_archive.zipfile, "ZipFile", forbidden)
+    assert audit_archive.audit_zip(path, None, None).status == "unknown"
+    assert calls == []
+
+
+def test_zip_repeated_name_cannot_hide_unverified_member(tmp_path):
+    import pytest
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        state = _run_zip_audit(tmp_path, [("Game.smc", b"bad"), ("Game.smc", b"good")], [("Game.smc", b"good")])
+    assert state["unknown"] == 1 and state["verified"] == 0
+
+
+def test_zip_large_sheet_stays_unknown_with_bounded_read(tmp_path, monkeypatch):
+    from romarr import audit_archive
+    monkeypatch.setattr(audit_archive, "MAX_SHEET_BYTES", 32)
+    cue = b'FILE "track.bin" BINARY\n' + b" " * 100
+    state = _run_zip_audit(tmp_path, [("Game.cue", cue), ("track.bin", b"track")], [("Game.cue", cue), ("track.bin", b"track")], platform_slug="psx")
+    assert state["unknown"] == 1
+
+
+def test_zip_sheet_reference_requires_exact_relative_member(tmp_path):
+    cue = b'FILE "missing/track.bin" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:00:00\n'
+    state = _run_zip_audit(tmp_path, [("Game.cue", cue), ("track.bin", b"track")], [("Game.cue", cue), ("track.bin", b"track")], platform_slug="psx")
+    assert state["unknown"] == 1 and state["verified"] == 0
+
+
+def test_complete_disc_set_accepts_both_archive_separator_styles(tmp_path):
+    for index, prefix in enumerate(("disc/", "disc" + chr(92))):
+        cue = b'FILE "track.bin" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:00:00\n'
+        state = _run_zip_audit(tmp_path / str(index), [(prefix+"Game.cue", cue), (prefix+"track.bin", b"track")], [("Game.cue", cue), ("track.bin", b"track")], platform_slug="psx")
+        assert state["verified"] == 1 and state["unknown"] == 0
