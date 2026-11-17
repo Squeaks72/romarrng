@@ -1522,25 +1522,33 @@ RENDER.hub=async()=>{
             :'Install and enable a search source below, then use Set up ROM Hub downloads to choose a download folder.')
           +'</div>';
 
+    const solverNote=hs.available===false ? '' :
+      (hs.flaresolverr_configured
+        ? '<div class="panel-note" style="border-left:3px solid var(--ok)"><b>FlareSolverr configured.</b> Cloudflare-challenged sources (GameFAQs, ModDB, CurseForge web) can fall back automatically through your host solver. Configure in <a href="#general">Settings &rarr; General</a>.</div>'
+        : '<div class="panel-note"><b>Optional FlareSolverr support:</b> Set a FlareSolverr URL in <a href="#general">Settings &rarr; General</a> to unlock Cloudflare-protected sources like GameFAQs and ModDB alongside open APIs (StrategyWiki, Modrinth, Thunderstore, GameBanana, Nexus Mods, GitHub, YouTube).</div>');
+
     const items=d.items||[];
     const facets=(d.facets&&d.facets.capabilities)||[];
     const chips=facets.map(([name,n])=>
       '<span class="chip'+(cap===name?' on':'')+'" data-cap="'+esc(name)+'">'
       +esc(name)+'<span class="n">'+n+'</span></span>').join('');
+    const quickFilters=[['guides','Guides & FAQs'],['tutorials','Video Tutorials'],['mods','Mods & Addons'],['bots','Bots & Tools'],['github','Open-Source Repos']].map(([kw,label])=>
+      '<button type="button" class="chip'+(q===kw?' on':'')+'" data-quick="'+esc(kw)+'" aria-pressed="'+(q===kw?'true':'false')+'">'+esc(label)+'</button>').join('');
 
-    p.innerHTML='<div class="card"><h3>Add game sources with ROM Hub</h3>'
-      +'<p>ROM Hub brings extra game sources into ROMarr. Pick a source below, install it, and enable it. Some sources need an account or key; their project pages explain what to enter.</p>'
-      +'<p class="help">To use a source in Interactive Search, add a ROM Hub download client and choose a writable download folder. You can keep Prowlarr alongside it, or use plugins on their own.</p>'
+    p.innerHTML='<div class="card"><h3>Add game, mod, guide, bot &amp; repo sources with ROM Hub</h3>'
+      +'<p>ROM Hub brings ROMs, <b>game mods</b> (CurseForge, ModDB, Nexus Mods, Modrinth, Thunderstore, GameBanana), <b>guides &amp; FAQs</b> (GameFAQs, StrategyWiki, Game Manuals), <b>video tutorials</b> (YouTube), and <b>open-source games &amp; bots</b> (GitHub) into ROMarr. Pick a source below, install it, and enable it.</p>'
+      +'<p class="help">To download files through Interactive Search, add a ROM Hub download client and choose a writable download folder. Eight of the eleven new community plugins require zero API keys.</p>'
       +'<div class="row"><button class="btn" id="hub-connect">Set up ROM Hub downloads</button>'
       +'<a class="btn ghost" href="https://github.com/BlizzHacker/rom-hub" target="_blank" rel="noopener">Plugin catalogue and help</a>'
       +'<button class="btn ghost" id="hub-search">Search for a Game</button></div></div>'
-      +acqNote+sandboxNote+'<div class="card"><h3>Plugins'
+      +acqNote+sandboxNote+solverNote+'<div class="card"><h3>Plugins'
       +'<span class="help" style="margin-left:10px">'+items.length+' of '+(d.total||0)+'</span></h3>'
       +'<div class="cat-bar">'
       +'<input id="pq" placeholder="Search plugins by name, author or description…" value="'+esc(q)+'">'
       +'<span class="chip'+(inst==='1'?' on':'')+'" data-inst="1">Installed</span>'
       +'<span class="chip'+(inst==='0'?' on':'')+'" data-inst="0">Available</span>'
       +chips+'</div>'
+      +'<div class="cat-bar" style="margin-top:6px"><span class="help" style="margin:0 6px 0 0">Explore:</span>'+quickFilters+'</div>'
       +(d.error?'<div class="panel-note panel-warn">'+esc(d.error)+'</div>':'')
       +(actionError?'<div class="panel-note panel-warn">'+esc(actionError)+'</div>':'')
       +'<div class="cat-scroll">'
@@ -1688,24 +1696,38 @@ RENDER.hub=async()=>{
     if($('#exo-dry')) $('#exo-dry').onclick=()=>runExoJob(true);
     if($('#exo-run')) $('#exo-run').onclick=()=>runExoJob(false);
     const qi=$('#pq');
-    let t=null;
-    qi.oninput=()=>{clearTimeout(t);t=setTimeout(async()=>{
+    let t=null, hubLoadSeq=0;
+    const isCurrentHub=ver=>(typeof activePage==='undefined'||activePage==='hub')&&(typeof pageVersion!=='number'||pageVersion===ver);
+    const reloadAndRender=async(afterRender)=>{
+      const seq=++hubLoadSeq;
+      const loadVer=typeof pageVersion==='number'?pageVersion:0;
+      const data=await load();
+      if(!isCurrentHub(loadVer)||seq!==hubLoadSeq) return;
+      render(data);
+      if(afterRender) afterRender();
+    };
+    qi.oninput=()=>{clearTimeout(t);t=setTimeout(()=>{
       q=qi.value.trim();
       const at=qi.selectionStart;
-      render(await load());
-      const n=$('#pq'); n.focus(); n.setSelectionRange(at,at);
+      reloadAndRender(()=>{const n=$('#pq'); if(n){n.focus(); n.setSelectionRange(at,at);}});
     },220);};
 
-    p.querySelectorAll('.chip[data-cap]').forEach(c=>c.onclick=async()=>{
-      cap = cap===c.dataset.cap ? '' : c.dataset.cap; render(await load());});
-    p.querySelectorAll('.chip[data-inst]').forEach(c=>c.onclick=async()=>{
-      inst = inst===c.dataset.inst ? '' : c.dataset.inst; render(await load());});
+    p.querySelectorAll('.chip[data-cap]').forEach(c=>c.onclick=()=>{
+      clearTimeout(t);
+      q = qi.value.trim();
+      cap = cap===c.dataset.cap ? '' : c.dataset.cap; reloadAndRender();});
+    p.querySelectorAll('.chip[data-inst]').forEach(c=>c.onclick=()=>{
+      clearTimeout(t);
+      q = qi.value.trim();
+      inst = inst===c.dataset.inst ? '' : c.dataset.inst; reloadAndRender();});
+    p.querySelectorAll('.chip[data-quick]').forEach(c=>c.onclick=()=>{
+      clearTimeout(t);
+      q = q===c.dataset.quick ? '' : c.dataset.quick; reloadAndRender();});
 
     const iaForm=$('#ia-auth-form');
     const iaClear=$('#ia-auth-clear');
     const iaBtn=iaForm?iaForm.querySelector('button[type="submit"]'):null;
     const setIaBusy=busy=>{if(iaBtn)iaBtn.disabled=busy;if(iaClear)iaClear.disabled=busy;};
-    const isCurrentHub=ver=>(typeof activePage==='undefined'||activePage==='hub')&&(typeof pageVersion!=='number'||pageVersion===ver);
     const submitIaAuth=async(payload,fallbackError,okToast)=>{
       const opVer=typeof pageVersion==='number'?pageVersion:0;
       setIaBusy(true);
@@ -5205,6 +5227,14 @@ RENDER.media=()=>settingsPage('Media Management',
        Comma-separated codes, e.g. <code>de, en</code>. Matches scene markers
        like <code>[T-De]</code> / <code>[T+Eng]</code>; an unmarked
        <code>(Translation)</code> counts as English.</div></div>`
+  +`<div class="field"><label>Preferred languages (1G1R filter)</label>
+     <input type="text" data-k="preferred_languages" data-list="1"
+       placeholder="Optional, e.g. French, English"
+       value="${esc((SETTINGS.preferred_languages||[]).join(', '))}">
+     <div style="color:var(--dim);font-size:11.5px;margin-top:4px">
+       Optional ordered languages (e.g. <code>French, English</code> or <code>fr, en</code>).
+       When set, Collections picks by language priority first then region, omits games
+       with no eligible language/translation, and lists unknown-language titles separately.</div></div>`
   +sel('region_mode','Region list in 1G1R sets',
      [['prefer','Prefer selected regions — keep a title even when no dump matches'],
       ['strict','Only selected regions — omit a title when no dump matches']],
@@ -5808,6 +5838,13 @@ RENDER.general=async()=>{
        How a friend’s server reaches yours. An invitation carries this — without
        it, whoever redeems your invitation has nowhere to call back to. Peering
        is the only feature that needs ROMarr to know its own address.</div></div>`
+  +`<div class="field"><label>FlareSolverr URL (optional, for ROM Hub Cloudflare sites)</label>
+     <input type="text" data-k="flaresolverr_url"
+       value="${esc(SETTINGS.flaresolverr_url||'')}"
+       placeholder="http://localhost:8191">
+     <div style="color:var(--dim);font-size:11.5px;margin-top:4px">
+       Used host-side by ROM Hub plugins (such as GameFAQs, ModDB, and CurseForge web)
+       when an upstream site serves a Cloudflare challenge.</div></div>`
   +chk('auto_import','Import completed downloads automatically',SETTINGS.auto_import)
   +`<div class="field"><label>Protocol</label>
      <select data-k="protocol">
@@ -7180,6 +7217,11 @@ RENDER.collections=async()=>{
        +'value="'+esc((SETTINGS.translation_langs||['en']).join(', '))+'" '
        +'style="width:110px;padding:6px 8px;background:var(--bg);color:var(--fg);'
        +'border:1px solid var(--line);border-radius:6px" title="Comma-separated codes, e.g. de, en">'
+       +'<label class="help" style="margin:0;margin-left:8px">Preferred languages</label>'
+       +'<input id="cpreflangs" placeholder="Optional: French, English" '
+       +'value="'+esc((SETTINGS.preferred_languages||[]).join(', '))+'" '
+       +'style="width:170px;padding:6px 8px;background:var(--bg);color:var(--fg);'
+       +'border:1px solid var(--line);border-radius:6px" title="Optional ordered languages, e.g. French, English. Empty disables language filtering.">'
        +'</div>'
       :'<div class="empty-cat"><b>No DAT loaded</b>'
        +'Point DAT_PATH at a directory of No-Intro or Redump DATs. Without one '
@@ -7332,20 +7374,36 @@ RENDER.collections=async()=>{
   enhancePlatformSelect($('#cplat'));
   const planBtn=$('#cplan');
   if(!planBtn) return;
+  let cplanSeq=0;
   planBtn.onclick=async()=>{
     const out=$('#cres');
+    const seq=++cplanSeq;
+    const planVer=typeof pageVersion==='number'?pageVersion:0;
     out.innerHTML='<div class="empty">Planning…</div>';
     const ex=[...document.querySelectorAll('.cex')].filter(c=>c.checked)
-      .map(c=>c.value).join(',');
-    const q='dat='+encodeURIComponent($('#cdat').value)
-      +'&platform='+encodeURIComponent($('#cplat').value)
-      +'&onegame='+($('#c1g1r').checked?'1':'0')
-      +'&regions='+encodeURIComponent($('#cregions').value.trim())
-      +'&region_mode='+($('#cstrict').checked?'strict':'prefer')
-      +'&translation_policy='+encodeURIComponent($('#ctrans').value)
-      +'&translation_langs='+encodeURIComponent($('#ctranslangs').value.trim())
-      +'&exclude='+encodeURIComponent(ex);
+      .map(c=>c.value);
+    const previewPolicy={
+      dat:$('#cdat').value,
+      platform:$('#cplat').value,
+      one_game_one_rom:$('#c1g1r').checked,
+      regions:($('#cregions').value.trim()||'').split(',').filter(Boolean),
+      region_mode:$('#cstrict').checked?'strict':'prefer',
+      translation_policy:$('#ctrans').value,
+      translation_langs:($('#ctranslangs').value.trim()||'').split(',').map(s=>s.trim()).filter(Boolean),
+      preferred_languages:($('#cpreflangs').value.trim()||'').split(',').map(s=>s.trim()).filter(Boolean),
+      exclude:ex,
+    };
+    const q='dat='+encodeURIComponent(previewPolicy.dat)
+      +'&platform='+encodeURIComponent(previewPolicy.platform)
+      +'&onegame='+(previewPolicy.one_game_one_rom?'1':'0')
+      +'&regions='+encodeURIComponent(previewPolicy.regions.join(','))
+      +'&region_mode='+previewPolicy.region_mode
+      +'&translation_policy='+encodeURIComponent(previewPolicy.translation_policy)
+      +'&translation_langs='+encodeURIComponent(previewPolicy.translation_langs.join(','))
+      +'&preferred_languages='+encodeURIComponent(previewPolicy.preferred_languages.join(','))
+      +'&exclude='+encodeURIComponent(previewPolicy.exclude.join(','));
     const d=await j('/api/v1/collection/plan?'+q).catch(()=>({error:'plan failed'}));
+    if((typeof activePage!=='undefined'&&activePage!=='collections')||(typeof pageVersion==='number'&&pageVersion!==planVer)||seq!==cplanSeq) return;
     if(d.error){out.innerHTML='<div class="panel-note panel-warn">'+esc(d.error)+'</div>';return;}
     const c=d.counts;
     const tile=(n,label,colour)=>'<div style="flex:1;min-width:110px;padding:10px 12px;'
@@ -7359,9 +7417,12 @@ RENDER.collections=async()=>{
       +tile(c.bad,'bad dumps','var(--bad)')
       +tile(c.excluded,'excluded by policy','var(--dim)')
       +((c.region_omitted||0)?tile(c.region_omitted,'omitted — no dump in your regions','var(--dim)'):'')
+      +((c.language_omitted||0)?tile(c.language_omitted,'omitted — language not in preference','var(--dim)'):'')
+      +((c.unknown_language||0)?tile(c.unknown_language,'unknown language (not counted)','var(--dim)'):'')
       +'</div>'
       +'<p class="help">'+esc(d.dat)+(d.dat_version?' ('+esc(d.dat_version)+')':'')
       +' — region order '+esc((d.policy.regions||[]).join(' → '))
+      +((d.policy.preferred_languages||[]).length?' · preferred languages '+esc(d.policy.preferred_languages.join(' → ')):'')
       +(d.policy.region_mode==='strict'?' (strict: titles without a matching-region dump are omitted)':'')+'.</p>'
       +'<div class="row"><button class="btn" id="cstart">Request '+c.missing
       +' missing</button>'
@@ -7390,21 +7451,22 @@ RENDER.collections=async()=>{
           +clones+'</td></tr>';
       }).join('')+'</tbody></table>'
       +(d.titles.length>300?'<p class="help">Showing the first 300 of '
-        +d.titles.length+'.</p>':'');
+        +d.titles.length+'.</p>':'')
+      +((d.unknown_language_titles||[]).length
+        ?'<details style="margin-top:14px"><summary class="help" style="margin:0;cursor:pointer">'
+         +'Unknown language metadata ('+d.unknown_language_titles.length+' games — not counted as missing)</summary>'
+         +'<table style="margin-top:8px"><thead><tr><th>Title</th><th>Status</th><th>Note</th></tr></thead><tbody>'
+         +d.unknown_language_titles.slice(0,200).map(u=>
+           '<tr><td>'+esc(u.name)+'</td><td><span class="pill">'+esc(u.status||'missing')+'</span></td><td class="help" style="margin:0">'+esc(u.why||'')+'</td></tr>'
+         ).join('')+'</tbody></table></details>':'');
 
     $('#cstart').onclick=async e=>{
       e.target.disabled=true; e.target.textContent='Queueing…';
       const r=await j('/api/v1/collection/start',{method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({dat:$('#cdat').value,
-          platform:$('#cplat').value,
-          per_pass:parseInt($('#cpp').value,10)||5,
-          one_game_one_rom:$('#c1g1r').checked,
-          regions:($('#cregions').value.trim()||'').split(',').filter(Boolean),
-          region_mode:$('#cstrict').checked?'strict':'prefer',
-          translation_policy:$('#ctrans').value,
-          translation_langs:($('#ctranslangs').value.trim()||'').split(',').map(s=>s.trim()).filter(Boolean),
-          exclude:ex.split(',').filter(Boolean)})});
+        body:JSON.stringify({
+          ...previewPolicy,
+          per_pass:parseInt($('#cpp').value,10)||5})});
       toast(r.error?r.error:('Queued '+(r.queued||0)+' titles'));
       e.target.disabled=false; e.target.textContent='Request missing';
       drawBatches();

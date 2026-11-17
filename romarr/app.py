@@ -581,6 +581,10 @@ class ROMarr:
         self.store.settings["_prowlarr_url"] = e.get("PROWLARR_URL", "")
         self.store.settings["_qbit_url"] = e.get("QBITTORRENT_URL", "")
         self.store.settings["_romm_url"] = e.get("ROMM_URL", "")
+        hub.configure_flaresolverr(
+            str(self.store.settings.get("flaresolverr_url")
+                or e.get("ROM_HUB_FLARESOLVERR_URL", "") or "")
+        )
 
         # The headless RetroArch stream server, if the operator runs one. It is
         # what plays the machines EmulatorJS has no core for -- PS2, GameCube,
@@ -946,6 +950,10 @@ class ROMarr:
                                   "read": 0, "stage": "counting", "library": "",
                                   "limit_reached": False}
             ok, total, shelf, failures = True, 0, [], []
+            # Set when a library's count failed and its read stopped at
+            # LIBRARY_MAX: the rows read are then a lower bound, so the
+            # total is published as unknown (a dash) rather than as a number.
+            total_unknown = False
             # Accumulated beside the total, because the total on its own is
             # the bug: a library that catalogues streamed entries answers
             # `count()` with the two categories added together, and every
@@ -1040,6 +1048,7 @@ class ROMarr:
                         if callable(close):
                             close()
                     continue
+                count_failed = False
                 try:
                     split = library_counts(backend)
                     total += int(split.get("total") or 0)
@@ -1060,11 +1069,18 @@ class ROMarr:
                     self._count_split = {"total": total, "on_disk": on_disk,
                                          "catalogued": catalogued}
                 except Exception as err:
-                    ok = False
-                    failures.append(f"{label}: {err.__class__.__name__}")
-                    reasons[label] = _read_failure(err)
-                    log.warning("library count refresh failed for %s: %s",
+                    # The count is a summary, not the read. A slow server-side
+                    # count (issue #216: RomM's filtered total took 6-10 s on
+                    # a 28k library) used to flag a read that went on to fetch
+                    # every game as incomplete. Carry on with the paged read;
+                    # if it finishes, its length is the total and the split
+                    # is reported as unknown rather than guessed.
+                    count_failed = True
+                    on_disk = catalogued = None
+                    log.warning("library count refresh failed for %s: %s; "
+                                "using the games read as the total",
                                 label, err.__class__.__name__)
+                read_before = len(shelf)
                 try:
                     # The WHOLE library, in pages, published progressively.
                     # This used to stop at one 200-row page, which made a
@@ -1091,6 +1107,11 @@ class ROMarr:
                             break
                     if offset >= self.LIBRARY_MAX:
                         self._library_scan["limit_reached"] = True
+                    if count_failed:
+                        if offset >= self.LIBRARY_MAX:
+                            total_unknown = True
+                        else:
+                            total += len(shelf) - read_before
                 except Exception as err:
                     ok = False
                     failures.append(f"{label}: {err.__class__.__name__}")
@@ -1102,6 +1123,8 @@ class ROMarr:
             self._library_scan.update(running=False, finished=time.monotonic(),
                                       stage="complete" if ok else "error")
             if shelf or ok:
+                if total_unknown:
+                    total = None
                 self._count_cache = (total, time.monotonic())
                 self._count_split = {"total": total, "on_disk": on_disk,
                                      "catalogued": catalogued}
@@ -4778,6 +4801,16 @@ class ROMarr:
         from .collections import normalise_lang
         translation_langs = tuple(dict.fromkeys(
             normalise_lang(c) for c in translation_langs if str(c).strip()))
+        raw_pref_langs = (
+            policy_kw["preferred_languages"]
+            if policy_kw.get("preferred_languages") is not None
+            else self.store.settings.get("preferred_languages") or ()
+        )
+        if isinstance(raw_pref_langs, str):
+            raw_pref_langs = [c for c in raw_pref_langs.split(",")
+                              if c.strip()]
+        preferred_languages = tuple(dict.fromkeys(
+            normalise_lang(c) for c in raw_pref_langs if str(c).strip()))
         region_mode = str(policy_kw.get("region_mode")
                           or self.store.settings.get("region_mode")
                           or "prefer").lower()
@@ -4789,6 +4822,7 @@ class ROMarr:
             translation_langs=translation_langs,
             region_mode=region_mode if region_mode in ("prefer", "strict")
             else "prefer",
+            preferred_languages=preferred_languages,
         )
         plan = build_plan(dat, self._present_titles(platform), policy)
         return {
@@ -4801,6 +4835,7 @@ class ROMarr:
                        "exclude": sorted(policy.exclude),
                        "translation_policy": policy.translation_policy,
                        "translation_langs": list(policy.translation_langs),
+                       "preferred_languages": list(policy.preferred_languages),
                        "region_mode": policy.region_mode},
             "titles": [
                 {"name": t.name, "parent": t.parent, "status": t.status,
@@ -4809,6 +4844,12 @@ class ROMarr:
                  "outside_preference": t.outside_preference,
                  "translation": t.is_translation}
                 for t in plan.titles
+            ],
+            "unknown_language_titles": [
+                {"name": t.name, "parent": t.parent, "status": t.status,
+                 "why": t.chosen_because,
+                 "outside_preference": t.outside_preference}
+                for t in plan.unknown_language_titles
             ],
         }
 
@@ -7796,7 +7837,7 @@ class ROMarr:
             if sub_path.startswith("/api/heartbeat"):
                 payload = {
                     "SYSTEM": {
-                        "version": getattr(self, "VERSION", "1.10.1"),
+                        "version": VERSION,
                         "romm_version": "5.1.0-romarr",
                         "arch": "x86_64",
                         "os": "Linux"
@@ -9456,9 +9497,19 @@ def make_handler(service: ROMarr):
                     translation_langs=[
                         c for c in query.get("translation_langs", [""])[0]
                         .split(",") if c] or None,
+                    preferred_languages=(
+                        [c for c in query.get("preferred_languages", [""])[0]
+                         .split(",") if c.strip()]
+                        if ("preferred_languages" in query
+                            or "preferred_languages=" in (route.query or ""))
+                        else None),
                     region_mode=query.get("region_mode", [""])[0] or None,
-                    exclude=[e for e in query.get("exclude", [""])[0].split(",")
-                             if e] if "exclude" in query else None))
+                    exclude=(
+                        [e for e in query.get("exclude", [""])[0].split(",")
+                         if e]
+                        if ("exclude" in query
+                            or "exclude=" in (route.query or ""))
+                        else None)))
             if route.path == "/api/v1/collection":
                 return self._json(200, service.collection_status())
             if route.path == "/api/v1/collection/source":
@@ -9820,6 +9871,7 @@ def make_handler(service: ROMarr):
                                                       else "landlock" if confined
                                                       else "none"),
                                         "archive_org_auth": hub.archive_org_auth_status(),
+                                        "flaresolverr_configured": bool(hub.flaresolverr_url()),
                                         "searchable_plugins": searchable,
                                         # The Plugins page says out loud what
                                         # enabling a plugin now does: its
@@ -9981,6 +10033,10 @@ def make_handler(service: ROMarr):
                     regions=body.get("regions") or None,
                     translation_policy=body.get("translation_policy") or None,
                     translation_langs=body.get("translation_langs") or None,
+                    preferred_languages=(
+                        body.get("preferred_languages")
+                        if body.get("preferred_languages") is not None
+                        else None),
                     region_mode=body.get("region_mode") or None,
                     exclude=body.get("exclude")
                     if body.get("exclude") is not None else None))
@@ -10957,6 +11013,8 @@ def make_handler(service: ROMarr):
                 try:
                     with service._lock:
                         updated = service.store.update_settings(body)
+                        if "flaresolverr_url" in body:
+                            hub.configure_flaresolverr(str(updated.get("flaresolverr_url") or ""))
                 except ValueError as exc:
                     return self._json(400, {"error": str(exc)})
                 if any(str(k).startswith("oidc") or k == "_oidc_client_secret"
