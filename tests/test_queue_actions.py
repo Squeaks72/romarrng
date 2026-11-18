@@ -198,9 +198,6 @@ const pageEl = {{ innerHTML: '' }};
 const qImportEl = {{ onclick: null }};
 const $ = sel => sel === '#page' ? pageEl : sel === '#q-import' ? qImportEl : null;
 const esc = s => String(s ?? '');
-// Fork helpers the queue renderer calls (defined outside RENDER.queue).
-const gameHref = () => '#';
-const progressCell = () => '';
 const document = {{ querySelectorAll: () => [] }};
 const RENDER = {{}};
 const j = async () => ({{ items: {json.dumps(rows)} }});
@@ -753,9 +750,6 @@ const qImportEl = {{ onclick: null }};
 const qRefreshEl = {{ disabled: false, onclick: null }};
 const $ = sel => sel === '#page' ? pageEl : sel === '#q-import' ? qImportEl : sel === '#q-refresh' ? qRefreshEl : null;
 const esc = s => String(s ?? '');
-// Fork helpers the queue renderer calls (defined outside RENDER.queue).
-const gameHref = () => '#';
-const progressCell = () => '';
 const document = {{ hidden: false, querySelectorAll: () => [] }};
 const window = {{}};
 const activePage = 'queue';
@@ -894,9 +888,6 @@ const planBtn = {{ dataset: {{ qplan: '0' }}, onclick: null }};
 const dummyEl = {{ value: '', onchange: null, onclick: null, checked: false }};
 const $ = sel => sel === '#page' ? pageEl : sel === '#q-import' ? qImportEl : dummyEl;
 const esc = s => String(s ?? '');
-// Fork helpers the queue renderer calls (defined outside RENDER.queue).
-const gameHref = () => '#';
-const progressCell = () => '';
 const document = {{
   hidden: false,
   querySelectorAll: sel => sel === '[data-qplan]' ? [planBtn] : [],

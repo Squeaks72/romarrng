@@ -164,16 +164,16 @@ def test_no_romm_library_means_a_clear_409_not_a_crash(tmp_path):
         service.soundtrack_game("1")
 
 
-def test_game_detail_carries_the_rom_id_for_the_card(env):
+def test_targets_carry_source_qualified_rom_ids_for_the_picker(env):
     _, service, *_ = env
-    assert service.game_detail("snes", "42")["rom_id"] == "42"
-    assert service.game_detail("snes", "", "Not Owned")["rom_id"] == ""
+    assert service.soundtrack_targets()["games"][0]["id"].endswith(":42")
+    assert all(row["name"] != "Not Owned" for row in service.soundtrack_targets()["games"])
 
 
 def test_the_database_sits_beside_the_data_file(env, tmp_path):
     _, service, *_ = env
     service.soundtrack_store()
-    assert (tmp_path / "romarr-soundtracks.db").exists()
+    assert len(list(tmp_path.glob("romarr-soundtracks-*.db"))) == 1
 
 
 def test_write_token_uses_the_write_scope_and_prefers_a_configured_api_token():
@@ -292,6 +292,6 @@ def test_music_library_not_configured_or_missing_is_a_400(env, tmp_path):
     assert call(base, "/api/v1/soundtracks/library/add", {"id": "42", "album": "x"})[0] == 400
 
 
-def test_the_music_library_defaults_to_the_documented_mount(env):
+def test_the_music_library_is_disabled_until_explicitly_configured(env):
     _, service, *_ = env
-    assert service.music_library_root() == "/music-library"
+    assert service.music_library_root() == ""

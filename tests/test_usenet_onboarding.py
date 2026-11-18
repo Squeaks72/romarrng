@@ -59,26 +59,34 @@ const addItem=(kind,afterSave)=>opened.push({kind,afterSave});
     run_js(harness + script + checks)
 
 
-def test_no_results_explains_source_checks_before_download_failures():
-    """Empty results offer usable source checks (fork: shared release table, Interactive Search lives in Add New)."""
-    start = ui.JS.index("async function renderReleases(")
-    script = ui.JS[start:ui.JS.index("\n}\n", start) + 3]
+def test_no_results_explains_source_checks_before_download_failures_and_guards_searches():
+    """Empty results offer usable source checks; older searches cannot overwrite newer ones."""
+    script = ui.JS[ui.JS.index("RENDER.search=async()=>{"):ui.JS.index("RENDER.missing=")]
     harness = r"""
-const assert=require('assert'),pending=[];
+const assert=require('assert'),RENDER={},nodes={},PLATFORMS=[],pending=[];
+let pageVersion=1,activePage='search';
+const $=selector=>nodes[selector]||(nodes[selector]={innerHTML:'',value:'',disabled:false});
+const document={querySelectorAll:()=>[]};
+const enhancePlatformSelect=()=>{},toast=()=>{},refreshCounts=()=>{};
 const esc=x=>String(x??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const j=url=>new Promise(resolve=>pending.push({url,resolve}));
 """
     checks = r"""
 (async()=>{
- const out={innerHTML:'',querySelectorAll:()=>[]};
- const run=renderReleases(out,'Example Game','snes');
- assert(out.innerHTML.includes('Searching enabled sources'));
- pending[0].resolve({items:[],found:0,accepted:0});await run;
- const guidance=out.innerHTML;
+ await RENDER.search();$('#s-name').value='Example Game';$('#s-plat').value='snes';
+ const older=$('#s-go').onclick(),newer=$('#s-go').onclick();
+ pending[1].resolve({items:[],found:0,accepted:0});await newer;
+ const guidance=$('#s-out').innerHTML;
  assert(guidance.includes('No releases returned'));
  assert(guidance.includes('No download was started'));
  assert(guidance.includes('Newznab indexer'));
  for(const page of ['indexers','queue','history','hub'])assert(guidance.includes('href="#'+page+'"'));
+ pending[0].resolve({error:'older result'});await older;
+ assert.equal($('#s-out').innerHTML,guidance);
+ const leaving=$('#s-go').onclick();
+ activePage='library';pageVersion++;$('#s-out').innerHTML='New page';
+ pending[2].resolve({error:'late response'});await leaving;
+ assert.equal($('#s-out').innerHTML,'New page');
  assert(pending.every(item=>item.url.startsWith('/api/v1/release?')));
 })().catch(error=>{console.error(error);process.exitCode=1;});
 """
@@ -138,7 +146,6 @@ const page={innerHTML:'',querySelector:()=>null};
 const $=selector=>selector==='#page'?page:{value:''};
 const esc=x=>String(x??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const num=x=>String(x),bindLibraryChips=()=>{};
-const fmt=x=>String(x??0),pickerHtml=()=>'';
 const setTimeout=()=>1,clearTimeout=()=>{};
 let response;
 const j=async()=>response;
@@ -172,7 +179,6 @@ const LIB={platform:'',genre:'',region:'',decade:'',origin:'',source:'',sort:'',
 const page={innerHTML:'',querySelector:()=>null};
 const $=selector=>selector==='#page'?page:{value:''};
 const esc=x=>String(x??''),num=x=>String(x),bindLibraryChips=()=>{};
-const fmt=x=>String(x??0),pickerHtml=()=>'';
 let pageVersion=1,activePage='library',calls=0,response,deferred;
 const pending=[],cleared=[];
 const setTimeout=(fn,ms)=>{pending.push({fn,ms});return pending.length;};

@@ -403,6 +403,7 @@ def igdb_catalog_config(providers: list[dict]) -> dict | None:
     """The configured IGDB credentials, or None when there are none."""
     return next((cfg for cfg in providers
                  if str(cfg.get("type") or "").lower() == "igdb"
+                 and cfg.get("enable", True)
                  and cfg.get("client_id") and cfg.get("token")), None)
 
 

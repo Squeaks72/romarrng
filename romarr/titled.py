@@ -16,7 +16,7 @@ Two files matter here:
     default.
 
   * ``US.en.json`` and its regional siblings (65-95MB each) -- the same
-    catalogue keyed by eShop product ID, with title IDs, names, descriptions, sizes and
+    catalogue keyed by title ID with names, descriptions, sizes and
     publishers. Heavy: loading one costs seconds of parse time and several
     hundred MB of RAM, which in a 512MB container is not a default. Opt in
     with ``TITLED_NAMES=1`` (region via ``TITLED_REGION``, default
@@ -50,11 +50,10 @@ import logging
 import os
 import re
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
-
-import requests
 
 log = logging.getLogger(__name__)
 
@@ -145,18 +144,12 @@ def _fetch_json(url: str, timeout: int = FETCH_TIMEOUT):
     """GET a JSON document, or None. Network failure is never an exception
     here: TitleDB being down is an operational fact, not a bug in ROMarr."""
     try:
-        # TITLED_RAW is a fixed upstream catalogue host; region/version affect
-        # only its path and cannot choose a destination server.
-        response = requests.get(
-            url, headers={"User-Agent": "romarr", "Accept": "application/json"},
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        return response.json()
-    except (requests.RequestException, ValueError) as exc:
-        # Do not include the request URL or exception payload in logs; source
-        # URLs can include provider credentials or user search data.
-        log.warning("TitleDB fetch failed: %s", exc.__class__.__name__)
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "romarr", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - every failure mode is "no data"
+        log.warning("TitleDB fetch failed for %s: %s", url, exc)
         return None
 
 
@@ -319,7 +312,7 @@ def build_index(cache_dir: Optional[str | Path] = None,
     """
     index = TitleDBIndex()
     versions = fetch_versions(cache_dir)
-    if versions:
+    if isinstance(versions, dict):
         for tid, history in versions.items():
             tid_norm = str(tid).strip().lower()
             if not re.fullmatch(r"[0-9a-f]{16}", tid_norm):
@@ -327,19 +320,17 @@ def build_index(cache_dir: Optional[str | Path] = None,
             index.add(SwitchTitle(
                 title_id=tid_norm,
                 versions=history if isinstance(history, dict) else {}))
-        # TitleDB records patch histories under application IDs as well as
-        # update IDs. Keep the raw application history for lookup and expose
-        # their union under the actual patch ID for acquisition.
         for title in list(index.by_id.values()):
             if title.kind != "base":
                 continue
             patch_id = f"{int(title.title_id, 16) + 0x800:016x}"
-            existing = index.by_id.get(patch_id)
+            existing = index.lookup_by_id(patch_id)
             history = dict(existing.versions) if existing else {}
-            history.update({v: date for v, date in title.versions.items()
-                            if str(v).isdigit() and int(v) > 0})
+            for value, date in title.versions.items():
+                if re.fullmatch(r"[0-9]{1,10}", str(value)) and 0 < int(value) <= 0xFFFFFFFF:
+                    history.setdefault(str(value), date)
             if history:
-                index.add(SwitchTitle(title_id=patch_id, versions=history))
+                index.add(SwitchTitle(patch_id, versions=history))
         log.info("TitleDB: indexed %d Switch title IDs", len(index))
     else:
         log.warning("TitleDB: versions.json unavailable; Switch validation "
@@ -374,18 +365,15 @@ def load_names_into(index: TitleDBIndex,
     for tid, row in data.items():
         if not isinstance(row, dict):
             continue
+        # Region catalogues are keyed by eShop product ID; the row carries the title ID.
         tid_norm = str(row.get("id") or tid).strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{16}", tid_norm):
-            continue
-        if not isinstance(row, dict):
-            continue
-        if tid_norm in seen:
+        if not re.fullmatch(r"[0-9a-f]{16}", tid_norm) or tid_norm in seen:
             continue
         seen.add(tid_norm)
         name = str(row.get("name") or "").strip()
         try:
             size = max(0, int(row.get("size") or 0))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             size = 0
         existing = index.by_id.get(tid_norm)
         title = SwitchTitle(
@@ -401,8 +389,8 @@ def load_names_into(index: TitleDBIndex,
         index.add(title)
         if name:
             named += 1
-    index.names_loaded = True
-    index.region = region
+    index.names_loaded = named > 0
+    index.region = region if named else ""
     log.info("TitleDB: %d titles named from %s", named, region)
     return named
 
@@ -484,4 +472,3 @@ def validate_switch_rom(filename: str, title_id: Optional[str] = None,
                          + ("" if (index and index.names_loaded) else
                             " and no names are loaded for a name search"))
     return result
-

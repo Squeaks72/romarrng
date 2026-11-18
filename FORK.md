@@ -24,26 +24,25 @@ It is not a GitHub fork, and nothing from it goes back upstream: no PRs and no i
 
 ## What the fork carries
 
-Ported from the original romarrng onto upstream (Nov 2026):
+Upstream 1.11.0 (Nov 2026) adopted most of the fork's earlier work: soundtracks, the
+Switch Updates & DLC report and attach, wishlist monitoring and game pages, download
+progress, compressed TAR imports, NTSC/PAL and per-console formats, and plugin start-up
+hardening. Those are now upstream's versions; the fork's own copies were dropped.
+What the fork still carries on top of upstream:
 
-- Soundtracks: soundtrack sources, a music library root, a RomM write token, the
-  `/api/v1/soundtracks/*` API, and the Soundtracks page and game-page card
 - Extras: DLC, update, manual (and patch/hack/mod/demo/translation/prototype) cards on the game page,
   filled from indexer torrents, the Internet Archive, a pasted link or an uploaded file, through RomM's
   upload API; see docs/EXTRAS.md
-- Switch Updates & DLC report: gap map and badge, ignore-DLC setting, update and DLC
-  files attached into the game folder, TitleDB loaded on first use
-- Unpacking for tar-family archives (nested archives now use upstream's nested-ZIP support)
-- Monitoring and wishlist store; lookup, add, monitor and game-detail endpoints; IGDB
-  catalogue search
-- UI: Add New merged with Interactive Search, the game page, a search palette (Ctrl K),
-  a searchable platform picker, and queue progress with ETA
-- NTSC/PAL video standard, preferred formats per console, whole-word title matching
-- Plugin confinement without Landlock, through a setuid uid-10001 launcher
+- A global search palette (Ctrl K or "/") over library games, Wanted, pages and settings,
+  with "search for it to add it" handing off to Add New
+- The library is re-read from the server hourly by default (`ROMARR_LIBRARY_REFRESH_SECONDS`)
 
 ## Conflict policy
 
 When upstream adds functionality that overlaps something the fork carries, upstream
 wins: the fork's version is dropped, not merged alongside upstream's. The fork keeps
 only work that has no counterpart upstream. For example, upstream's saved-region fix
-(#139) replaced the fork's `_region_names` helper in Nov 2026.
+(#139) replaced the fork's `_region_names` helper in Nov 2026. In Nov 2026 upstream 1.11.0 likewise
+replaced the fork's soundtracks, Switch report, monitoring/game page, Add New/Interactive
+Search merge, platform picker, queue ETA, tar unpacking, video-standard/format preferences
+and the Landlock/setuid plugin launcher.

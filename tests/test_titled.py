@@ -37,8 +37,8 @@ def _index():
     index.add(SwitchTitle(
         title_id=MARIO_BASE, name="Super Mario Odyssey",
         versions={"65536": "2017-10-27"}))
-    # A DLC and an update of BotW: same application family, different low 13 bits.
-    index.add(SwitchTitle(title_id="01007ef00011f001",
+    # A DLC and an update of BotW: the same 0x2000-wide application family.
+    index.add(SwitchTitle(title_id=f"{int(BOTW_BASE, 16) + 0x1001:016x}",
                           versions={"65536": "2017-11-30"}))
     index.add(SwitchTitle(title_id=BOTW_BASE[:13] + "800",
                           versions={"196608": "2018-02-01"}))
@@ -87,7 +87,7 @@ def test_kind_comes_from_the_id_alone():
     """Base, DLC and update are arithmetic on the low 13 bits -- no
     database needed, which is the point."""
     assert classify_tid(BOTW_BASE) == "base"
-    assert classify_tid("01007ef00011f001") == "dlc"
+    assert classify_tid(f"{int(BOTW_BASE, 16) + 0x1001:016x}") == "dlc"
     assert classify_tid(BOTW_BASE[:13] + "800") == "update"
 
 
@@ -110,7 +110,7 @@ def test_case_and_0x_prefix_are_tolerated():
 
 
 def test_base_tid_of_groups_a_family():
-    assert base_tid_of("01007ef00011f001") == BOTW_BASE
+    assert base_tid_of(f"{int(BOTW_BASE, 16) + 0x1001:016x}") == BOTW_BASE
     assert base_tid_of(BOTW_BASE[:13] + "800") == BOTW_BASE
     assert base_tid_of("garbage") == ""
 
@@ -134,7 +134,7 @@ def test_lookup_misses_cleanly():
 
 
 def test_family_of_returns_base_dlc_and_update():
-    family = _index().family_of("01007ef00011f001")
+    family = _index().family_of(f"{int(BOTW_BASE, 16) + 0x1001:016x}")
     assert [t.title_id for t in family["base"]] == [BOTW_BASE]
     assert len(family["dlc"]) == 1
     assert len(family["update"]) == 1
@@ -170,7 +170,7 @@ def test_validate_accepts_an_explicit_title_id():
 
 def test_a_dlc_id_verifies_as_dlc():
     result = validate_switch_rom(
-        "DLC [01007EF00011F001].nsp", index=_index())
+        f"DLC [{int(BOTW_BASE,16)+0x1001:016X}].nsp", index=_index())
     assert result["valid"] and result["kind"] == "dlc"
 
 
@@ -209,23 +209,6 @@ def test_a_long_digit_run_is_not_mistaken_for_a_title_id():
     # The 16-digit window inside the run must NOT be extracted as an ID.
     result2 = validate_switch_rom("1234567890123456789012.nsp", index=_index())
     assert result2["status"] != "verified"
-
-
-def test_real_titledb_product_keys_and_patch_histories(monkeypatch):
-    from romarr import titled
-    monkeypatch.setattr(titled, "fetch_versions", lambda _: {
-        BOTW_BASE: {"65536": "2017", "196608": "2018"},
-        BOTW_BASE[:13] + "800": {"131072": "2017"}})
-    monkeypatch.setattr(titled, "_load_cached_or_fetch", lambda *args: {
-        "70010000000025": {"id": BOTW_BASE.upper(), "name": "Zelda", "size": "bad"},
-        "70010000096817": {"id": BOTW_BASE.upper(), "name": "Zelda Switch 2 Edition"},
-        "70050000000183": {"id": "01007EF00011F001", "name": "Expansion", "size": 1}})
-    index = titled.build_index(with_names=True)
-    assert index.lookup_by_id(BOTW_BASE).name == "Zelda"
-    assert index.lookup_by_id(BOTW_BASE).size == 0
-    patch = index.lookup_by_id(BOTW_BASE[:13] + "800")
-    assert {int(v) for v in patch.versions} == {65536, 131072, 196608}
-    assert len(index.family_of("01007ef00011f001")["dlc"]) == 1
 
 
 def test_a_nup_is_a_library_file_for_rename_and_collections():

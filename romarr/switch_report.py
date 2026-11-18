@@ -1,150 +1,167 @@
-"""Which Switch games are missing updates or DLC -- switch-library-manager's job.
+"""Read-only Switch update/DLC gaps from local filename tags and TitleDB metadata.
 
-The library is read from disk, not from RomM: a dump's file name carries its
-title ID and version (`Game [01007960049A0800][v131072][Update].nsz`), which is
-what TitleDB is keyed by. RomM owns the metadata; this only answers "what is
-newer than what I have".
-
-TitleDB's ``versions.json`` knows every update a title has ever had, but only
-the DLC that received a version; the full add-on list comes from a region names
-file (see titled.py, ``TITLED_NAMES=1``). Without it the report still covers
-updates, and says its DLC column is incomplete rather than claiming "no DLC".
-
-Switch 2 titles are mostly absent from TitleDB. Those report ``unknown``, which
-is the honest answer, not "current".
+Files are never opened,
+imported, renamed or extracted. Unknown metadata and incomplete scans stay visible.
 """
-
 from __future__ import annotations
 
+import os
 import re
-from dataclasses import dataclass, field
+import stat
+import time
+from collections import defaultdict
 from pathlib import Path
 
+from .file_reports import _PinnedLibrary
 from .titled import TitleDBIndex, base_tid_of, classify_tid
 
-_TID = re.compile(r"(?<![0-9A-Fa-f])([0-9A-Fa-f]{16})(?![0-9A-Fa-f])")
-_VER = re.compile(r"\[v(\d+)\]", re.I)
-_SKIP = {"3dboxes", "covers", "screenshots", "manuals", "media", "images",
-         "soundtrack", "walkthrough"}
-_EXT = {".nsp", ".nsz", ".xci", ".xcz", ".nup"}
+_EXTENSIONS = {".nsp", ".nsz", ".xci", ".xcz", ".nup"}
+_TID = re.compile(r"[\[(]([0-9a-f]{16})[\])]", re.I)
+_VERSION = re.compile(r"\[v([0-9]+)\]", re.I)
+_SKIP = {"covers", "images", "screenshots", "manuals", "media", "3dboxes", "soundtracks", "soundtrack"}
+MAX_ENTRIES = 100_000
+MAX_DEPTH = 24
+SCAN_SECONDS = 3.0
 
 
-@dataclass
-class Dump:
-    tid: str
-    kind: str          # base | update | dlc
-    version: int
-    file: str
-
-
-@dataclass
-class FolderScan:
-    """One game as it sits on disk: a folder, or a loose file."""
-
-    name: str
-    path: str
-    dumps: list[Dump] = field(default_factory=list)
-
-
-def _dump_for(file: Path) -> Dump | None:
-    if file.suffix.lower() not in _EXT:
+def _dump(name: str, relative: str) -> dict | None:
+    """Parse a supported filename without treating extension words as formats."""
+    if Path(name).suffix.lower() not in _EXTENSIONS:
         return None
-    m = _TID.search(file.name)
-    if not m:
+    matches = _TID.findall(name)
+    if len(matches) != 1 or classify_tid(matches[0]) not in ("base", "update", "dlc"):
         return None
-    tid = m.group(1).upper()
-    kind = classify_tid(tid)
-    if kind not in ("base", "update", "dlc"):
+    version = _VERSION.search(name)
+    value = None
+    if version and len(version.group(1)) <= 10:
+        number = int(version.group(1))
+        if number <= 0xFFFFFFFF:
+            value = number
+    return {"tid": matches[0].lower(), "kind": classify_tid(matches[0]),
+            "version": value, "file": relative}
+
+
+def scan_folder(root: Path, *, deadline: float | None = None, max_entries: int = MAX_ENTRIES) -> dict:
+    """Walk pinned directories without following links, quarantine or internal data."""
+    root = Path(root)
+    result = {"dumps": [], "examined": 0, "skipped_links": 0, "warnings": [], "complete": True}
+    deadline = deadline if deadline is not None else time.monotonic() + SCAN_SECONDS
+    if not root.exists() and not root.is_symlink():
+        return result
+    try:
+        with _PinnedLibrary(root) as pins:
+            identity = pins.root_id
+        pending = [("", 0)]
+        while pending:
+            if time.monotonic() >= deadline or result["examined"] >= max_entries:
+                result["complete"] = False
+                result["warnings"].append("scan limit reached")
+                break
+            relative, depth = pending.pop()
+            if depth > MAX_DEPTH:
+                result["complete"] = False
+                result["warnings"].append("directory depth limit reached")
+                continue
+            frame, children = [], []
+            try:
+                # Closing per directory bounds descriptors even on very large libraries.
+                with _PinnedLibrary(root, expected=identity) as pins:
+                    descriptor, folder, _ = pins.parent((relative + "/" if relative else "") + ".scan")
+                    with os.scandir(folder if pins.windows else descriptor) as entries:
+                        for entry in entries:
+                            if result["examined"] >= max_entries or time.monotonic() >= deadline:
+                                result["complete"] = False
+                                break
+                            result["examined"] += 1
+                            if entry.name.startswith(".") or entry.name.casefold() in _SKIP:
+                                continue
+                            observed = entry.stat(follow_symlinks=False)
+                            if stat.S_ISLNK(observed.st_mode) or getattr(observed, "st_file_attributes", 0) & 0x400:
+                                result["skipped_links"] += 1
+                                continue
+                            member = str(Path(relative) / entry.name).replace("\\", "/")
+                            if stat.S_ISDIR(observed.st_mode):
+                                children.append((member, depth + 1))
+                            elif stat.S_ISREG(observed.st_mode):
+                                dump = _dump(entry.name, member)
+                                if dump:
+                                    frame.append(dump)
+                    pins.validate()
+                result["dumps"].extend(frame)
+                pending.extend(children)
+            except (OSError, ValueError):
+                result["complete"] = False
+                result["warnings"].append("directory unavailable or changed during scan")
+    except (OSError, ValueError):
+        result["complete"] = False
+        result["warnings"].append("root unavailable, changed or linked")
+    if not result["complete"] and not result["warnings"]:
+        result["warnings"].append("scan limit reached")
+    result["warnings"] = sorted(set(result["warnings"]))
+    return result
+
+
+def _latest(title) -> int | None:
+    """Keep missing or malformed version histories unknown instead of guessing zero."""
+    if title is None or not isinstance(title.versions, dict):
         return None
-    v = _VER.search(file.name)
-    return Dump(tid, kind, int(v.group(1)) if v else 0, file.name)
+    versions = [int(value) for value in title.versions
+                if re.fullmatch(r"[0-9]{1,10}", str(value)) and int(value) <= 0xFFFFFFFF]
+    return max(versions) if versions else None
 
 
-def scan_folder(root: Path) -> list[FolderScan]:
-    """Read every game under a platform folder (e.g. /roms/switch)."""
-    out: list[FolderScan] = []
-    if not root.is_dir():
-        return out
-    for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-        if entry.name.startswith(".") or entry.name.lower() in _SKIP:
-            continue
-        files = ([p for p in entry.rglob("*") if p.is_file()]
-                 if entry.is_dir() else [entry])
-        dumps = [d for d in (_dump_for(f) for f in files) if d]
-        if dumps:
-            name = entry.name if entry.is_dir() else entry.stem
-            out.append(FolderScan(name=name, path=str(entry), dumps=dumps))
-    return out
-
-
-def analyse(scan: FolderScan, index: TitleDBIndex | None,
-            platform: str = "switch") -> list[dict]:
-    """One row per base title found in a folder."""
-    groups: dict[str, list[Dump]] = {}
-    for d in scan.dumps:
-        base = base_tid_of(d.tid) or d.tid
-        groups.setdefault(base.upper(), []).append(d)
-    rows = []
-    for base, dumps in groups.items():
-        have_base = [d for d in dumps if d.kind == "base"]
-        updates = [d for d in dumps if d.kind == "update"]
-        dlcs = {d.tid for d in dumps if d.kind == "dlc"}
-        installed = max([d.version for d in updates] + [d.version for d in have_base] + [0])
-        row = {"game": scan.name, "path": scan.path, "base_tid": base,
-               "base_present": bool(have_base), "installed_version": installed,
-               "latest_version": None, "update": "unknown",
-               "dlc_installed": len(dlcs), "dlc_total": None, "dlc_missing": [],
-               "dlc_complete_list": False, "name": ""}
-        # Switch 2 files here are `.nup` upgrade packs. Many carry a Switch 1
-        # title ID, so TitleDB's Switch 1 update history would be compared with
-        # a different product and report a gap that is not real. No Switch 2
-        # version database exists to check against, so say "unknown".
-        if index is not None and platform != "switch-2":
-            update_tid = base[:-3] + "800"
-            ut = index.lookup_by_id(update_tid)
-            bt = index.lookup_by_id(base)
-            if bt is not None and bt.name:
-                row["name"] = bt.name
-            if ut is not None and ut.versions:
-                latest = ut.latest_version
-                row["latest_version"] = latest
-                row["update"] = "current" if installed >= latest else (
-                    "outdated" if updates or installed else "missing")
-            elif bt is not None and bt.versions:
-                row["latest_version"] = bt.latest_version or None
-                row["update"] = "current" if bt.latest_version <= installed else "outdated"
-            fam = index.family_of(base).get("dlc", [])
-            if fam:
-                total = {t.title_id.upper() for t in fam}
-                row["dlc_total"] = len(total | dlcs)
-                row["dlc_complete_list"] = bool(index.names_loaded)
-                missing = [t for t in fam if t.title_id.upper() not in dlcs]
-                row["dlc_missing"] = [{"tid": t.title_id.upper(), "name": t.name}
-                                      for t in sorted(missing, key=lambda t: t.title_id)]
-            elif index.names_loaded:
-                row["dlc_total"] = len(dlcs)
-                row["dlc_complete_list"] = True
-        rows.append(row)
-    return rows
-
-
-def report(roots: dict[str, Path], index: TitleDBIndex | None) -> dict:
+def report(roots: dict[str, Path], index: TitleDBIndex | object | None) -> dict:
+    """Group loose/foldered files by application family and compare known metadata."""
+    deadline = time.monotonic() + SCAN_SECONDS
+    scans = {slug: scan_folder(path, deadline=deadline) for slug, path in roots.items()}
+    groups = defaultdict(list)
+    for slug, scan in scans.items():
+        for dump in scan["dumps"]:
+            groups[(slug, base_tid_of(dump["tid"]))].append(dump)
+    # An empty local shelf never triggers a large metadata download.
+    index = index() if groups and callable(index) else (None if callable(index) else index)
+    families = defaultdict(list)
+    if index is not None:
+        for title in index.by_id.values():
+            if title.kind == "dlc":
+                families[base_tid_of(title.title_id)].append(title)
     items = []
-    for slug, root in roots.items():
-        for scan in scan_folder(root):
-            for row in analyse(scan, index, slug):
-                row["platform"] = slug
-                items.append(row)
-    gaps = [i for i in items if i["update"] in ("missing", "outdated") or i["dlc_missing"]]
-    return {
-        "items": items,
-        "summary": {
-            "games": len(items),
-            "update_gaps": sum(1 for i in items if i["update"] in ("missing", "outdated")),
-            "dlc_gaps": sum(len(i["dlc_missing"]) for i in items),
-            "games_with_gaps": len(gaps),
-            "unknown_to_titledb": sum(1 for i in items if i["update"] == "unknown"),
-            "dlc_lists_complete": bool(index and index.names_loaded),
-            "titledb_titles": len(index) if index else 0,
-        },
-    }
+    for (slug, base), dumps in sorted(groups.items()):
+        bases = [dump for dump in dumps if dump["kind"] == "base"]
+        updates = [dump for dump in dumps if dump["kind"] == "update"]
+        addons = {dump["tid"] for dump in dumps if dump["kind"] == "dlc"}
+        known_versions = [dump["version"] for dump in updates + bases if dump["version"] is not None]
+        installed = max(known_versions) if known_versions else None
+        base_title = index.lookup_by_id(base) if index is not None and slug != "switch-2" else None
+        update_title = index.lookup_by_id(f"{int(base, 16) + 0x800:016x}") if index is not None and slug != "switch-2" else None
+        latest = _latest(update_title)
+        if latest is None:
+            latest = _latest(base_title)
+        state = "unknown"
+        if latest is not None:
+            if installed is not None:
+                state = "current" if installed >= latest else ("outdated" if updates else "missing")
+            elif not updates and latest > 0:
+                state = "missing"
+        catalog = families.get(base, []) if slug != "switch-2" else []
+        missing = [{"tid": title.title_id.upper(), "name": title.name}
+                   for title in sorted(catalog, key=lambda title: title.title_id) if title.title_id.lower() not in addons]
+        named_scope = bool(base_title and base_title.region and index and index.names_loaded)
+        first = (bases or dumps)[0]["file"]
+        items.append({"platform": slug, "base_tid": base.upper(),
+                      "game": Path(first).parts[0] if len(Path(first).parts) > 1 else Path(first).stem,
+                      "name": base_title.name if base_title else "", "base_present": bool(bases),
+                      "installed_version": installed, "latest_version": latest, "update": state,
+                      "files": sorted(dump["file"] for dump in dumps),
+                      "dlc_installed": len(addons), "dlc_missing": missing,
+                      "dlc_total": len({title.title_id.lower() for title in catalog} | addons) if named_scope else None,
+                      "dlc_complete_list": False,
+                      "catalog_region": index.region if index and index.names_loaded and slug != "switch-2" else ""})
+    return {"items": items, "scans": {slug: {key: value for key, value in scan.items() if key != "dumps"} for slug, scan in scans.items()},
+            "summary": {"games": len(items),
+                        "update_gaps": sum(row["update"] in ("missing", "outdated") for row in items),
+                        "dlc_gaps": sum(len(row["dlc_missing"]) for row in items),
+                        "games_with_gaps": sum(row["update"] in ("missing", "outdated") or bool(row["dlc_missing"]) for row in items),
+                        "unknown_to_titledb": sum(row["update"] == "unknown" for row in items),
+                        "dlc_lists_complete": False, "titledb_titles": len(index) if index is not None else 0,
+                        "scan_complete": all(scan["complete"] for scan in scans.values())}}

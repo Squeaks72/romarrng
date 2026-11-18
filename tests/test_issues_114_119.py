@@ -340,13 +340,6 @@ def test_issue_118_hub_search_filters_collection_paths(monkeypatch):
     fake_root.broker = fake_broker
     fake_broker.fetcher = fake_fetcher_mod
     fake_root.dispatcher = fake_disp
-    fake_host = types.ModuleType("rom_hub.broker.host")
-    fake_host.PluginProcess = object
-    fake_broker.host = fake_host
-    monkeypatch.setitem(sys.modules, "rom_hub.broker.host", fake_host)
-    # Confinement has its own tests (test_plugin_*); this one is about filtering.
-    monkeypatch.setattr(hub, "_install_plugin_runtime_hardening", lambda *a: None)
-    monkeypatch.setattr(hub, "_unsandboxed", lambda: False)
 
     monkeypatch.setitem(sys.modules, "rom_hub", fake_root)
     monkeypatch.setitem(sys.modules, "rom_hub.registry", fake_registry)
@@ -354,6 +347,9 @@ def test_issue_118_hub_search_filters_collection_paths(monkeypatch):
     monkeypatch.setitem(sys.modules, "rom_hub.broker.fetcher", fake_fetcher_mod)
     monkeypatch.setitem(sys.modules, "rom_hub.dispatcher", fake_disp)
 
+    # Search plumbing, not confinement: hosts without pyseccomp refuse plugins
+    # unless the operator opts in, so opt in explicitly here.
+    monkeypatch.setenv("ROMARR_ALLOW_UNSANDBOXED_PLUGINS", "1")
     rows, err = hub.search("game", platform="ps2", limit=25)
     assert err == ""
     # Only Game 2 (PS2) survives; Mega Drive and TI-82 are filtered out!

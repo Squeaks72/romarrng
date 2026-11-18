@@ -120,8 +120,6 @@ class WantedItem:
     # `attempts` it drives the re-search backoff, so a title that has failed
     # for months is retried weekly rather than hourly.
     searched_at: str = ""
-    # Like Sonarr/Radarr: an unmonitored entry stays on the list but is skipped
-    # by the missing-search sweep and the RSS watcher until it is monitored.
     monitored: bool = True
 
 
@@ -233,22 +231,18 @@ class SeerrRequest:
 # Defaults are spelled out here rather than scattered through the UI so a fresh
 # install and a configured one disagree about nothing.
 DEFAULT_SETTINGS: dict[str, Any] = {
+    "soundtrack_sources": "zophar,archive",
+    "music_library_root": "",
     # How a friend's server reaches this one, e.g. https://romarr.example.com.
     # Peering is the only feature that needs ROMarr to know its own address:
     # an invitation carries it, and without one the friend who redeems the
     # invitation has nowhere to call back to.
     "public_url": "",
-    # Where *your browser* reaches RomM, for "Open in RomM" links. Empty falls
-    # back to the library connection address, which may be an address only the
-    # server can reach.
-    "romm_public_url": "",
-    # Switch DLC title ids (16 hex digits) the Updates & DLC report should stop
-    # asking about, e.g. an expansion you do not want.
-    "ignored_dlc": [],
     # Optional host-side FlareSolverr base URL (e.g. http://localhost:8191)
     # used by ROM Hub's broker/downloader when an allowed HTTPS source answers
     # with a Cloudflare challenge. Never passed to untrusted plugin code.
     "flaresolverr_url": "",
+    "romm_public_url": "",
     # --- OpenID Connect sign-in (Authentik or any OIDC IdP) ---
     # Off until an issuer + client id exist. Distinct from forward-auth SSO
     # (sso.py), which believes a reverse proxy's headers; this makes ROMarr
@@ -272,13 +266,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Confidential-client secret, if the IdP issued one. Underscore prefix
     # marks it a credential so it is masked out of any settings response.
     "_oidc_client_secret": "",
-    # Which sources a game page's Soundtrack card searches, comma separated.
-    # Zophar's Domain and the Internet Archive; KHInsider and the rest are
-    # behind bot challenges and are only ever linked, never scraped.
-    "soundtrack_sources": "zophar,archive",
-    # Where a regular music library is mounted (read-only) for "Use an album
-    # from your music library" on a game's Soundtrack card. ROMarr only reads it.
-    "music_library_root": "/music-library",
     # Read ROM hashes from the library server so netplay can match on bytes.
     # Daily and at startup; off only if you never want the traffic.
     "hash_index": True,
@@ -321,13 +308,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # "prefer" keeps a title even when no dump matches the region list (the
     # historical fallback); "strict" treats the list as an allowlist.
     "region_mode": "prefer",
-    # "ntsc" | "pal" | "" -- see profiles.ReleaseProfile.video_standard.
-    "video_standard": "",
-    "video_standard_strict": False,
-    # {platform slug: [extension, ...]} best first; see ReleaseProfile.formats.
-    "preferred_formats": {},
     "rename_on_import": True,
     "prefer_hardlinks": False,
+    "switch_attach_extras": True,   # file Switch updates/DLC in <game>/update|dlc
     "retain_downloads_after_import": True,
     "overwrite_existing": False,
     # Profile: for ROMs the meaningful axis is region and revision, not
@@ -346,6 +329,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "preferred_terms": [],
     "excluded_terms": [],
     "required_terms": [],
+    "ignored_dlc": [],
+    "video_standard": "",
+    "video_standard_strict": False,
+    "preferred_formats": {},
     "platform_profiles": {},         # slug -> {min_size_mb, max_size_mb, ...}
     "protocol": "torrent",       # torrent | usenet
     # Remote path mappings, the same concept Radarr and Sonarr expose.

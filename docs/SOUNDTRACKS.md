@@ -1,12 +1,12 @@
 # Soundtracks
 
-ROMarr can find a game's soundtrack and put it into RomM's **Jukebox**, from the game page. This
+ROMarr can find a game's soundtrack and put it into RomM's **Jukebox**, from the **Soundtracks** page. This
 is a port of the standalone `romm-soundtracks` tool, built into ROMarr so there is one app and no
 second process to run. It is being ported in phases; this page describes phases 1 to 3.
 
 ## What phase 1 does
 
-Open a game that is in your RomM library. The **Soundtrack** card shows:
+Open **Library → Soundtracks**, select the library and then a game in it. The **Soundtrack** card shows:
 
 * how many soundtrack files RomM holds for the game, and how many of those ROMarr added;
 * **Search for a soundtrack**: ranked candidates from Zophar's Domain and the Internet Archive
@@ -37,7 +37,7 @@ used is the library entry's URL.
 
 `soundtrack_sources` (comma separated, default `zophar,archive`) picks which sources the Search
 button queries. It can be edited through the settings API; there is no page for it yet.
-`music_library_root` (default `/music-library`) is the read-only music folder phase 3 searches.
+`music_library_root` (default empty; explicitly configure a read-only folder such as `/music-library`) is the read-only music folder phase 3 searches.
 
 ## HTTP API
 
@@ -58,7 +58,7 @@ never do.
 
 Phase 2 and 3 routes are listed in their own sections below.
 
-Data lives in `romarr-soundtracks.db` beside the ROMarr data file (`ROMARR_DATA`), in tables
+Data lives in `romarr-soundtracks.db` beside the ROMarr data file (`ROMARR_DATA`), in source-isolated tables
 `sound` and `journal` keyed by RomM game id, the same names the standalone tool used. Phase 2 adds
 `merges` and `dup_scan`; `sound` gained a `title` column (older databases are upgraded in place).
 
@@ -69,7 +69,7 @@ stored soundtracks are identical.
 
 * **Scan for duplicates** runs in the background. It reads RomM's library, groups games whose
   soundtrack file names and sizes match, then **streams the real bytes from RomM and compares them
-  by SHA-1** (names included). Only sets that match byte for byte are listed; a set whose bytes
+  by SHA-256** (names included). Only sets that match byte for byte are listed; a set whose bytes
   differ is never offered. The result is kept until the next scan.
 * Pick the game to **keep** and press **Merge**. The merge re-reads and re-hashes the kept copy and
   each other copy first and **refuses any copy that differs**, leaving it alone. Only the
@@ -103,7 +103,7 @@ once, so run it when you want to tidy up, not on a schedule.
 On the game page, **Use an album from your music library** searches a music folder and uploads an
 album's audio into the game's soundtrack, for fan-made albums no source site has.
 
-* The folder is the `music_library_root` setting (default `/music-library`). Mount your music
+* The folder is the `music_library_root` setting (default empty; explicitly configure a read-only folder such as `/music-library`). Mount your music
   share there **read-only**. ROMarr only reads it: nothing is written, renamed or linked inside it.
 * A folder that holds audio is an album (up to four levels below the root). `CD1`/`CD2`/`Disc 1`
   style folders roll up into the album above them, and their names are folded into the file names
@@ -172,3 +172,19 @@ The phase 2 and 3 calls add: `GET /api/roms?limit=500&offset=&with_files=true` (
 and `GET /api/roms/{id}/files/{file_id}/content/{file_name}` (the stored bytes of one file; the
 `file_id` is the one `soundtracks/metadata` returns, which is assumed to be the ROM file's id).
 None of this has been tried against a live RomM; the tests use a loopback fake.
+
+## Source identity and safety in ROMarr
+
+The library and game selectors are explicit on the Soundtracks page. The targets endpoint (`GET /api/v1/soundtracks/targets`) returns stable `library-token:game-id` selectors. Use that selector as `id` on game/search/download/undo/library-add/torrent endpoints. A bare numeric id remains compatible with one unambiguous library; ambiguous ids are refused. Duplicate listing uses `GET /api/v1/soundtracks/dups?library=token`; a duplicate scan posts `{library:token}`. Merge keep/drop and unmerge ids use qualified selectors. Cross-library merges are refused.
+
+Each configured library identity has a separate `romarr-soundtracks-<token>.db` beside ROMARR_DATA. Job locks, watches and destructive journals cannot cross these databases. Old unscoped `romarr-soundtracks.db` files are left untouched because the owning server cannot be proven. Changing the configured server or stable library id creates another scope; review old state rather than reassigning it to a different server.
+
+Album files are opened through pinned directory and file handles, validated against the selected object identity and copied into private temporary snapshots before upload. Source files are not renamed or deleted. ZIP metadata is bounded before ZipFile construction using the shared ZIP64/central-directory checks. Redirects are limited and every target must remain an approved HTTPS source; connections resolve and validate public addresses and connect directly to those addresses while checking the original TLS name. Environment proxies are not used for these source requests. Configured RomM servers can be private addresses and use their own operator-selected URL; authenticated write requests do not follow redirects.
+
+A maximum of four soundtrack jobs runs per library at once. Source metadata is limited to8MiB, each source stream/temporary audio file to6GiB, source streams with a30minute budget checked between chunks (socket read timeouts also apply) and ZIPs to10000members. Folder/track listings have limits. Large operations still need free private temporary disk space. These limits are safety boundaries, not claims that every remote operation is instantaneous.
+
+Upload receipts are matched to the bytes later read from RomM before a file becomes undoable. Undo verifies the saved source identity, file name, byte hash and size before deletion and refuses changed content. RomM does not provide a transaction spanning a remote upload and a local journal write, or an atomic compare-and-delete promise: interruption can leave uploaded files needing manual review, and concurrent server-side changes should be paused during destructive cleanup. Unknown ownership is never guessed to make an undo succeed.
+
+Soundtrack torrent watches are bound to the download-client identity as well as the library. Existing unbound watches are not automatically imported. Stopping a watch leaves the torrent seeding. The music library is disabled until an explicit root is configured in the Soundtrack settings; disabling both catalogue sources is supported. Only use audio you own or are authorized to obtain; no audio is bundled with ROMarr. See [CREDITS.md](../CREDITS.md) for source attribution.
+
+Game selection is bounded to500 rows per response. The targets endpoint accepts `q` and `library` so every matching title in a large library remains reachable without a huge dropdown. Existing enabled antivirus scanning applies to all staged audio uploads, including album, catalogue, torrent and restore uploads; a scan failure or finding blocks the upload.

@@ -26,7 +26,7 @@ Safety rules, kept from the original because they are the point of it:
 Authentication is whatever the RomM library entry already has (see
 `Romm.write_token`); this module never stores, accepts or prints a credential.
 Phases 2 and 3 live at the end of `Soundtracks`: duplicate merge (identical
-stored soundtracks compared by SHA-1, merged and undoable) and albums from a
+stored soundtracks compared by SHA-256, merged and undoable) and albums from a
 read-only music library. Not here yet: 3DS decrypt/held originals. See
 docs/SOUNDTRACKS.md.
 """
@@ -49,6 +49,17 @@ import time
 import unicodedata
 import uuid
 import zipfile
+import collections
+import contextlib
+import socket
+import ipaddress
+import stat
+from urllib.parse import urljoin
+from .file_reports import _open_source, _fd_identity
+from .nested_zip import check_zip_central_directory
+from requests.adapters import HTTPAdapter
+from urllib3.connection import HTTPSConnection
+from urllib3.connectionpool import HTTPSConnectionPool
 from pathlib import Path
 from typing import Callable, Iterator
 from urllib.parse import quote, quote_plus, urlencode, urljoin, urlparse
@@ -196,30 +207,112 @@ def _wait_turn(host: str, gap: float = 1.0) -> None:
         time.sleep(at - now)
 
 
+def library_origin(url: str) -> str:
+    """Canonical configured service identity; never include credentials or queries."""
+    parts = urlparse(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
+        raise ValueError("Invalid RomM library URL")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    return f"{parts.scheme}://{parts.hostname.lower()}:{port}{parts.path.rstrip('/')}"
+
+
 def allowed_url(url: str) -> bool:
-    u = urlparse(url)
-    host = (u.hostname or "").lower()
-    return u.scheme in ("http", "https") and any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    try:
+        u = urlparse(url)
+        host = (u.hostname or "").lower()
+        return (u.scheme == "https" and not u.username and not u.password and not u.fragment
+                and u.port in (None, 443)
+                and any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS))
+    except ValueError:
+        return False
+
+
+def _public_addresses(host, port):
+    """Resolve at connect time and reject every non-public result before connecting."""
+    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
+        raise ValueError("Soundtrack source resolves to a non-public address")
+    return addresses
+
+
+class _PublicHTTPSConnection(HTTPSConnection):
+    def _new_conn(self):
+        # Connect directly to a validated address, retaining original host/SNI and TLS verification.
+        last = None
+        for family, kind, protocol, _, address in _public_addresses(self.host, self.port):
+            sock = socket.socket(family, kind, protocol)
+            try:
+                sock.settimeout(self.timeout)
+                sock.connect(address)
+                return sock
+            except OSError as exc:
+                last = exc
+                sock.close()
+        raise OSError("Soundtrack source connection failed") from last
+
+
+class _PublicHTTPSPool(HTTPSConnectionPool):
+    ConnectionCls = _PublicHTTPSConnection
+
+
+class _SourceAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        super().init_poolmanager(*args, **kwargs)
+        self.poolmanager.pool_classes_by_scheme = dict(self.poolmanager.pool_classes_by_scheme)
+        self.poolmanager.pool_classes_by_scheme["https"] = _PublicHTTPSPool
+
+
+@contextlib.contextmanager
+def _source_response(url):
+    """Follow only a bounded chain of approved, public HTTPS source locations."""
+    with requests.Session() as session:
+        session.trust_env = False
+        session.mount("https://", _SourceAdapter())
+        for hop in range(6):
+            if not allowed_url(url):
+                raise ValueError("download link points outside the supported sources")
+            _wait_turn(urlparse(url).netloc)
+            response = session.get(url, headers={"User-Agent": UA}, stream=True,
+                                   timeout=(10, 60), allow_redirects=False)
+            try:
+                if response.status_code in (301, 302, 303, 307, 308):
+                    if hop == 5 or not response.headers.get("Location"):
+                        raise ValueError("Soundtrack source redirect limit exceeded")
+                    url = urljoin(url, response.headers["Location"])
+                    continue
+                response.raise_for_status()
+                yield response
+                return
+            finally:
+                response.close()
 
 
 def polite_get(url: str, binary: bool = False, gap: float = 1.0):
-    """GET one page, at most one request per second per host."""
-    _wait_turn(urlparse(url).netloc, gap)
-    r = requests.get(url, headers={"User-Agent": UA}, timeout=45)
-    r.raise_for_status()
-    return r.content if binary else r.content.decode("utf-8", "replace")
+    """Fetch bounded source metadata through the same validated redirect transport."""
+    with _source_response(url) as response:
+        chunks, size = [], 0
+        deadline = time.monotonic() + 45
+        for chunk in response.iter_content(65536):
+            size += len(chunk)
+            if size > 8 * 1024 * 1024 or time.monotonic() > deadline:
+                raise ValueError("Soundtrack metadata exceeds size limit")
+            chunks.append(chunk)
+        data = b"".join(chunks)
+        return data if binary else data.decode("utf-8", "replace")
 
 
 def stream(url: str, on_total: Callable[[int], None] | None = None) -> Iterator[bytes]:
-    """Stream one file in 1 MiB chunks. The request itself waits its turn like any other."""
-    if not allowed_url(url):
-        raise ValueError("download link points outside the supported sources")
-    _wait_turn(urlparse(url).netloc)
-    with requests.get(url, headers={"User-Agent": UA}, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        if on_total and r.headers.get("Content-Length", "").isdigit():
-            on_total(int(r.headers["Content-Length"]))
-        yield from r.iter_content(1 << 20)
+    """Stream approved source bytes with a total limit, including plain audio files."""
+    with _source_response(url) as response:
+        if on_total and response.headers.get("Content-Length", "").isdigit():
+            on_total(int(response.headers["Content-Length"]))
+        size = 0
+        deadline = time.monotonic() + 1800
+        for chunk in response.iter_content(1 << 20):
+            size += len(chunk)
+            if size > MAX_ARCHIVE_BYTES or time.monotonic() > deadline:
+                raise ValueError("Soundtrack exceeds transfer limit")
+            yield chunk
 
 
 # ---------------------------------------------------------------- providers --
@@ -319,9 +412,27 @@ def audio_member_name(filename: str) -> str | None:
     return name
 
 
+class _BoundArchive:
+    """Expose an already pinned handle to the shared ZIP metadata validator."""
+    def __init__(self, source):
+        self.source = source
+    def open(self, mode):
+        return contextlib.nullcontext(self.source)
+
+
+@contextlib.contextmanager
+def _audio_zip(path):
+    with _open_source(Path(path).parent, Path(path).name) as source:
+        check_zip_central_directory(_BoundArchive(source), max_members=10000)
+        with zipfile.ZipFile(source) as archive:
+            if sum(info.file_size for info in archive.infolist()) > MAX_ARCHIVE_BYTES:
+                raise ValueError("Soundtrack archive exceeds size limit")
+            yield archive
+
+
 def check_zip(path: str, limit: int = MAX_ARCHIVE_BYTES) -> int:
     """Refuse an archive whose declared contents exceed `limit`; returns how many audio members it holds."""
-    with zipfile.ZipFile(path) as z:
+    with _audio_zip(path) as z:
         infos = [i for i in z.infolist() if not i.is_dir()]
         if sum(i.file_size for i in infos) > limit:
             raise ValueError("archive too large (>6 GB)")
@@ -337,7 +448,7 @@ def iter_zip_audio(path: str, limit: int = MAX_ARCHIVE_BYTES) -> Iterator[tuple[
     off, so a lying header cannot get past the size cap.
     """
     check_zip(path, limit)
-    with zipfile.ZipFile(path) as z:
+    with _audio_zip(path) as z:
         for i in z.infolist():
             name = None if i.is_dir() else audio_member_name(i.filename)
             if name is None:
@@ -425,7 +536,12 @@ class _Multipart:
                      f'Content-Type: application/octet-stream\r\n\r\n').encode("latin-1")
         self.tail = f"\r\n--{self.boundary}--\r\n".encode()
         self.path, self.size = path, size
-        self._fh = None
+        self._source = _open_source(Path(path).parent, Path(path).name)
+        self._fh = self._source.__enter__()
+        self._identity = _fd_identity(self._fh)
+        if self._identity[2] != size:
+            self.close()
+            raise ValueError("Soundtrack source size changed")
         self._stage = 0
 
     def __len__(self) -> int:
@@ -433,13 +549,14 @@ class _Multipart:
 
     def read(self, n: int = -1) -> bytes:
         if self._stage == 0:
-            self._stage, self._fh = 1, open(self.path, "rb")
+            self._stage = 1
             return self.head
         if self._stage == 1:
             b = self._fh.read(1 << 20 if n is None or n < 0 else n)
             if b:
                 return b
-            self._fh.close()
+            if _fd_identity(self._fh) != self._identity:
+                raise ValueError("Soundtrack source changed during upload")
             self._stage = 2
             return self.tail
         return b""
@@ -452,8 +569,9 @@ class _Multipart:
             yield b
 
     def close(self) -> None:
-        if self._fh and not self._fh.closed:
-            self._fh.close()
+        if self._source is not None:
+            context, self._source = self._source, None
+            context.__exit__(None, None, None)
 
 
 class RommApi:
@@ -464,14 +582,25 @@ class RommApi:
     header, and is scrubbed from any text this class raises.
     """
 
-    def __init__(self, base_url: str, token_fn: Callable[[bool], str | None], session: requests.Session | None = None):
+    def __init__(self, base_url: str, token_fn: Callable[[bool], str | None], session: requests.Session | None = None, *, before_upload=None):
         self.base = base_url.rstrip("/")
         self._token_fn = token_fn
+        self.before_upload = before_upload
         self._session = session or requests.Session()
+        self.receipts = {}
+        # Tokens actually sent: a refresh by another job must not leave an
+        # older token, echoed in an error body, unredacted.
+        self._sent_tokens = collections.deque(maxlen=8)
 
     def _redact(self, text: str) -> str:
-        tok = self._token_fn(False) or ""
-        return text.replace(tok, "***") if tok and len(tok) > 6 else text
+        tokens = set(self._sent_tokens)
+        current = self._token_fn(False)
+        if current:
+            tokens.add(current)
+        for tok in sorted(tokens, key=len, reverse=True):
+            if tok and len(tok) > 6:
+                text = text.replace(tok, "***")
+        return text
 
     def _request(self, method: str, path: str, make_body: Callable[[], object] | None = None,
                  headers: dict | None = None, timeout: int = 60, stream: bool = False) -> requests.Response:
@@ -479,22 +608,38 @@ class RommApi:
             tok = self._token_fn(bool(attempt))
             if not tok:
                 raise RommError(401, "ROMarr could not sign in to RomM with the saved library login")
+            self._sent_tokens.append(tok)
             body = make_body() if make_body else None
             try:
-                r = self._session.request(method, self.base + path, data=body, timeout=timeout, stream=stream,
+                r = self._session.request(method, self.base + path, data=body, timeout=timeout, stream=True, allow_redirects=False,
                                           headers={"Authorization": "Bearer " + tok, "User-Agent": UA, **(headers or {})})
             finally:
                 if hasattr(body, "close"):
                     body.close()
             if r.status_code != 401 or attempt:
                 return r
+            r.close()
         return r
 
+    @staticmethod
+    def _error_text(response):
+        try:
+            return response.raw.read(300).decode("utf-8", "replace")
+        finally:
+            response.close()
+
     def json(self, method: str, path: str):
-        r = self._request(method, path)
-        if not r.ok:
-            raise RommError(r.status_code, self._redact(r.text[:300]))
-        return r.json() if r.content else None
+        with self._request(method, path) as response:
+            if not response.ok:
+                raise RommError(response.status_code, self._redact(self._error_text(response)))
+            size, chunks = 0, []
+            for chunk in response.iter_content(65536):
+                size += len(chunk)
+                if size > 16 * 1024 * 1024:
+                    raise ValueError("RomM metadata exceeds size limit")
+                chunks.append(chunk)
+            data = b"".join(chunks)
+            return json.loads(data) if data else None
 
     def rom(self, rom_id: str) -> dict:
         return self.json("GET", f"/api/roms/{int(rom_id)}") or {}
@@ -506,6 +651,15 @@ class RommApi:
 
     def upload(self, rom_id: str, name: str, path: str, size: int) -> None:
         """POST one file as multipart whose part is named after the file, with its name in x-upload-filename too."""
+        if self.before_upload is not None:
+            self.before_upload(path)
+        with _open_source(Path(path).parent, Path(path).name) as source:
+            expected = _fd_identity(source)
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: source.read(1 << 20), b""):
+                digest.update(chunk)
+            if _fd_identity(source) != expected:
+                raise ValueError("Soundtrack source changed before upload")
         boundary = "----romarr" + uuid.uuid4().hex
         # A fresh body per attempt: a retry after a 401 has to start from byte 0.
         r = self._request("POST", f"/api/roms/{int(rom_id)}/soundtracks",
@@ -513,12 +667,14 @@ class RommApi:
                           headers={"x-upload-filename": name, "Content-Type": "multipart/form-data; boundary=" + boundary},
                           timeout=600)
         if r.status_code != 201:
-            raise RommError(r.status_code, self._redact(r.text[:300]))
+            raise RommError(r.status_code, self._redact(self._error_text(r)))
+        r.close()
+        self.receipts[(str(rom_id), name)] = (digest.hexdigest(), expected[2])
 
     def roms_with_files(self) -> Iterator[dict]:
         """Every ROM RomM lists, with its file records, a page at a time (the duplicate scan reads the soundtrack ones)."""
         offset = 0
-        while True:
+        while offset < 500000:
             page = self.json("GET", f"/api/roms?limit=500&offset={offset}&order_by=name&order_dir=asc&with_files=true")
             items = page.get("items", []) if isinstance(page, dict) else (page or [])
             yield from items
@@ -532,7 +688,7 @@ class RommApi:
                           timeout=600, stream=True)
         try:
             if not r.ok:
-                raise RommError(r.status_code, self._redact(r.text[:300]))
+                raise RommError(r.status_code, self._redact(self._error_text(r)))
             yield from r.iter_content(1 << 20)
         finally:
             r.close()
@@ -541,9 +697,11 @@ class RommApi:
         """Remove one registered soundtrack file. A file RomM no longer has counts as already gone."""
         r = self._request("DELETE", f"/api/roms/{int(rom_id)}/soundtracks/{int(file_id)}")
         if r.status_code == 404:
+            r.close()
             return False
         if not r.ok:
-            raise RommError(r.status_code, self._redact(r.text[:300]))
+            raise RommError(r.status_code, self._redact(self._error_text(r)))
+        r.close()
         return True
 
 
@@ -568,6 +726,8 @@ class RommSink:
                 for chunk in data_iter:
                     f.write(chunk)
                     size += len(chunk)
+                    if size > MAX_ARCHIVE_BYTES:
+                        raise ValueError("Soundtrack exceeds size limit")
             try:
                 self.api.upload(self.rom_id, name, tmp, size)
             except RommError as ex:
@@ -611,7 +771,9 @@ def scan_albums(root: str) -> list[dict]:
 
     def walk(d: str, depth: int) -> None:
         try:
-            entries = list(os.scandir(d))
+            entries = list(itertools.islice(os.scandir(d), 10001))
+            if len(entries) > 10000:
+                raise ValueError("Music directory entry limit exceeded")
         except OSError:
             return
         audio = [e for e in entries if e.is_file(follow_symlinks=False) and _is_audio(e.name)]
@@ -634,16 +796,26 @@ def scan_albums(root: str) -> list[dict]:
     return out
 
 
+def _local_fold(s: str) -> str:
+    """Fold local paths and queries without dropping native scripts (ゼルダ stays ゼルダ)."""
+    out = []
+    for char in unicodedata.normalize("NFKC", str(s)).casefold():
+        if not char.isascii() and unicodedata.name(char, "").startswith("LATIN"):
+            char = unicodedata.normalize("NFKD", char)[0]
+        out.append(char)
+    return "".join(out)
+
+
 def search_albums(albums: list[dict], query: str, limit: int = 40) -> list[dict]:
     """Albums whose path holds every word of the query; a match in the album's own folder name ranks first."""
-    words = fold(query).lower().split()
+    words = _local_fold(query).split()
     if not words:
         return []
     hits = []
     for a in albums:
-        hay = fold(a["id"]).lower()
+        hay = _local_fold(a["id"])
         if all(w in hay for w in words):
-            hits.append((sum(w in fold(os.path.basename(a["id"])).lower() for w in words), a))
+            hits.append((sum(w in _local_fold(os.path.basename(a["id"])) for w in words), a))
     hits.sort(key=lambda h: (-h[0], h[1]["id"].lower()))
     return [dict(h[1], name=os.path.basename(h[1]["id"])) for h in hits[:limit]]
 
@@ -687,6 +859,13 @@ def browse_library(root: str, rel: str = "") -> dict:
     return {"path": path, "dirs": dirs, "tracks": audio}
 
 
+class AudioFiles(list):
+    """Track selections retain the pinned root and original object identities."""
+    def __init__(self, entries=(), identities=None):
+        super().__init__(entries)
+        self.identities = identities or {}
+
+
 def collect_album(src: str) -> list[tuple[str, str, int]]:
     """[(file name to store, path, size)] for the audio under `src`.
 
@@ -695,7 +874,8 @@ def collect_album(src: str) -> list[tuple[str, str, int]]:
     since a game's soundtrack is a flat list. A symlink that leads out of the
     album is skipped.
     """
-    out = []
+    out = AudioFiles()
+    root_id = list((os.stat(src).st_dev, os.stat(src).st_ino))
     for dp, dns, fns in os.walk(src):
         dns[:] = sorted(d for d in dns if not d.startswith("."))
         for fn in sorted(fns):
@@ -704,6 +884,11 @@ def collect_album(src: str) -> list[tuple[str, str, int]]:
                 continue
             sub = os.path.relpath(dp, src)
             name = fn if sub == "." else sub.replace(os.sep, " - ") + " - " + fn
+            with _open_source(Path(path).parent, Path(path).name) as source:
+                identity = _fd_identity(source)
+            out.identities[path] = (str(Path(path).parent), list((os.stat(Path(path).parent).st_dev, os.stat(Path(path).parent).st_ino)), identity)
+            if len(out) >= 10000:
+                raise ValueError("Album track limit exceeded")
             out.append((header_safe(safe_name(name)), path, os.path.getsize(path)))
     return out
 
@@ -714,12 +899,14 @@ DDL = """
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS sound(key TEXT PRIMARY KEY, status TEXT, cands TEXT, chosen TEXT, files INT DEFAULT 0,
     dest TEXT, provider TEXT, note TEXT, ts REAL);
-CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY, key TEXT, path TEXT, size INT, ts REAL, undone INT DEFAULT 0);
+CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY, key TEXT, path TEXT, size INT, ts REAL, undone INT DEFAULT 0, sha256 TEXT);
 CREATE TABLE IF NOT EXISTS merges(id INTEGER PRIMARY KEY, drop_id TEXT, keep_id TEXT, drop_title TEXT, keep_title TEXT,
     files TEXT, ts REAL, state TEXT);
+CREATE TABLE IF NOT EXISTS pending(key TEXT, name TEXT, sha256 TEXT, size INT, ts REAL,
+                                   PRIMARY KEY(key, name));
 CREATE TABLE IF NOT EXISTS dup_scan(id INTEGER PRIMARY KEY CHECK (id = 1), ts REAL, groups TEXT);
 CREATE TABLE IF NOT EXISTS watch(id INTEGER PRIMARY KEY, key TEXT, tag TEXT, release TEXT, state TEXT, message TEXT,
-    pct REAL DEFAULT 0, added REAL, updated REAL, seen REAL);
+    pct REAL DEFAULT 0, added REAL, updated REAL, seen REAL, client_id TEXT DEFAULT '');
 """
 
 
@@ -738,13 +925,19 @@ class Soundtracks:
 
     MAX_JOBS = 50
 
-    def __init__(self, db_path: str | os.PathLike, providers: dict | None = None):
+    def __init__(self, db_path: str | os.PathLike, providers: dict | None = None, *, scope: str = ""):
+        self.scope = scope
         self.db_path = Path(db_path)
         self.tmp_dir = str(self.db_path.parent / "soundtracks-tmp")
         self.providers = providers if providers is not None else PROVIDERS
         self._lock = threading.Lock()
         self._jobs: dict[str, dict] = {}
         self._init_db()
+
+    def _check_api(self, api):
+        """A journal can act only on its originally configured service."""
+        if self.scope and (api is None or library_origin(api.base) != self.scope):
+            raise ValueError("Soundtrack journal belongs to a different library")
 
     # -- db --
     def _db(self) -> sqlite3.Connection:
@@ -754,13 +947,27 @@ class Soundtracks:
 
     def _init_db(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(self.db_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            if self.db_path.is_symlink() or not self.db_path.is_file():
+                raise ValueError("Soundtrack database must be a regular private file")
+        else:
+            os.close(descriptor)
+        os.chmod(self.db_path, 0o600)
         c = self._db()
         try:
             c.executescript(DDL)
+            for table, column, declaration in [("journal", "sha256", "TEXT"), ("watch", "client_id", "TEXT DEFAULT ''")]:
+                if column not in {row[1] for row in c.execute("PRAGMA table_info(" + table + ")")}:
+                    c.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + declaration)
             try:
                 c.execute("ALTER TABLE sound ADD COLUMN title TEXT")      # added with phase 2: who holds a soundtrack
             except sqlite3.OperationalError:
                 pass                                                      # already there
+            # No job survives a restart: a merge still 'merging' stopped part-way
+            # through deleting, so offer it for restoration like any partial merge.
+            c.execute("UPDATE merges SET state='partial' WHERE state='merging'")
             c.commit()
         finally:
             c.close()
@@ -788,6 +995,7 @@ class Soundtracks:
 
     # -- status --
     def status(self, game: dict, api: RommApi | None) -> dict:
+        self._check_api(api)
         key = str(game["id"])
         c = self._db()
         try:
@@ -802,10 +1010,11 @@ class Soundtracks:
                 error = f"Could not ask RomM what it holds: {ex.__class__.__name__}"
         else:
             error = "No RomM library is configured"
+        job = self.job_for(key)
         return {"id": key, "title": game.get("name", ""), "tracks": tracks, "track_count": len(tracks) if tracks is not None else None,
                 "undoable": self._journal_count(key), "state": s["status"] if s else "unsearched",
                 "note": (s["note"] if s else "") or "", "provider": (s["provider"] if s else "") or "",
-                "job": self.job_for(key), "watch": self.watch_for(key), "error": error}
+                "job": job, "watch": self.watch_for(key), "error": error}
 
     # -- search --
     def search(self, game: dict, enabled: tuple[str, ...] = ("zophar", "archive"), term: str = "") -> dict:
@@ -835,7 +1044,7 @@ class Soundtracks:
                 "links": manual_links(title, game.get("platform_name", ""))}
 
     # -- torrent watches --
-    def add_watch(self, key: str, tag: str, release: str) -> int:
+    def add_watch(self, key: str, tag: str, release: str, client_id: str = "") -> int:
         """Start watching a torrent (identified by its qBittorrent tag) for this game."""
         now = time.time()
         with self._lock:
@@ -845,21 +1054,27 @@ class Soundtracks:
                           (now, key))
                 cur = c.execute("INSERT INTO watch(key,tag,release,state,message,pct,added,updated,seen) VALUES(?,?,?,?,?,?,?,?,?)",
                                 (key, tag, release[:300], "downloading", "Waiting for the torrent to start", 0.0, now, now, now))
+                c.execute("UPDATE watch SET client_id=? WHERE tag=?", (client_id, tag))
                 c.commit()
                 return int(cur.lastrowid)
             finally:
                 c.close()
 
-    def _set_watch(self, wid: int, **kw) -> None:
+
+    def _set_watch(self, wid: int, **kw) -> bool:
+        """Update a live watch; returns False when it was cancelled meanwhile."""
         with self._lock:
             c = self._db()
             try:
+                if not c.execute("SELECT 1 FROM watch WHERE id=? AND state!='cancelled'", (wid,)).fetchone():
+                    return False
                 for k, v in kw.items():
                     if k not in ("state", "message", "pct", "seen"):
                         raise ValueError(k)
                     c.execute(f"UPDATE watch SET {k}=? WHERE id=?", (v, wid))
                 c.execute("UPDATE watch SET updated=? WHERE id=?", (time.time(), wid))
                 c.commit()
+                return True
             finally:
                 c.close()
 
@@ -891,7 +1106,7 @@ class Soundtracks:
                 c.close()
 
     def process_watches(self, rows: list[dict], resolve: Callable[[str], tuple[dict, RommApi]],
-                        map_path: Callable[[str], str]) -> list[str]:
+                        map_path: Callable[[str], str], *, client_id: str | None = None) -> list[str]:
         """One pass over the watched torrents. `rows` is the client's torrent list for the soundtrack category.
 
         `resolve(key)` returns (game, RommApi) or raises LookupError while the library is still loading.
@@ -899,6 +1114,8 @@ class Soundtracks:
         """
         notes = []
         for w in self.active_watches():
+            if client_id is not None and w.get("client_id") != client_id:
+                continue
             row = next((r for r in rows if w["tag"] in {t.strip() for t in str(r.get("tags") or "").split(",")}), None)
             now = time.time()
             if row is None:
@@ -920,7 +1137,9 @@ class Soundtracks:
                 self._set_watch(w["id"], pct=1.0, seen=now, message="Finished; waiting for the RomM library to load")
                 continue
             path = map_path(str(row.get("content_path") or row.get("save_path") or ""))
-            self._set_watch(w["id"], pct=1.0, seen=now, state="importing", message="Download finished; choosing tracks")
+            if not self._set_watch(w["id"], pct=1.0, seen=now, state="importing",
+                                   message="Download finished; choosing tracks"):
+                continue                                     # cancelled or replaced while resolving
             try:
                 done = self._import_torrent(w, game, api, path, str(row.get("name") or w["release"]))
             except Exception as ex:  # noqa: BLE001 - recorded on the watch, never raised into the scheduler
@@ -948,7 +1167,8 @@ class Soundtracks:
                 hint = "; it only holds archives ROMarr cannot open (rar/7z)"
             self._set_watch(w["id"], state="failed", message=("No audio RomM can play was found in the torrent" + hint)[:300])
             return "no audio"
-        loose = [f for f in files if os.path.splitext(f[0])[1].lower() == ext]
+        loose = AudioFiles([f for f in files if os.path.splitext(f[0])[1].lower() == ext],
+                           getattr(files, "identities", {}))
         zipped = [m for m in members if os.path.splitext(m[0])[1].lower() == ext]
         made, notes = 0, []
         if loose:
@@ -971,11 +1191,13 @@ class Soundtracks:
         """Upload the chosen zip members (name, zip path, member name) through RomM; returns how many were taken."""
         key = str(game["id"])
         job = self._begin_job([key], game["name"], "torrent")
-        sink = RommSink(api, key, self.tmp_dir)
+        sink, journaled, failure = None, False, None
         try:
+            self._require_stable_stem(api, key, "nothing was added")
+            sink = RommSink(api, key, self.tmp_dir)
             for zpath, group in itertools.groupby(sorted(members, key=lambda m: m[1]), key=lambda m: m[1]):
                 wanted = {m[2]: m[0] for m in group}
-                with zipfile.ZipFile(zpath) as z:
+                with _audio_zip(zpath) as z:
                     for info in z.infolist():
                         if info.filename not in wanted:
                             continue
@@ -997,16 +1219,21 @@ class Soundtracks:
             self._set_sound(key, status="downloaded" if made else "found", provider="torrent", title=game["name"],
                             chosen=json.dumps({"provider": "torrent", "id": "torrent:" + name, "title": name}),
                             files=len(api.tracks(key)) if made else 0, note=f"{made} track(s) from a torrent's zip")
+            self._journal_sent(key, sink.sent, api)
+            journaled = True
             job.update(state="done", made=made, pct=1.0, step="Done")
             return made
         except Exception as ex:  # noqa: BLE001
-            job.update(state="error", step="Failed", message=str(ex) if isinstance(ex, ValueError) else ex.__class__.__name__)
+            failure = str(ex) if isinstance(ex, ValueError) else ex.__class__.__name__
             raise
         finally:
-            try:
-                self._journal_sent(key, sink.sent, api)
-            except Exception:  # noqa: BLE001
-                log.warning("could not journal the torrent upload for %s", key)
+            if sink is not None and not journaled:
+                try:
+                    self._journal_sent(key, sink.sent, api)
+                except Exception:  # noqa: BLE001
+                    log.warning("could not journal the torrent upload for %s", key)
+            if failure is not None:                            # terminal only after ownership is recorded
+                job.update(state="error", step="Failed", message=failure)
             job["finished"] = time.time()
 
     # -- jobs --
@@ -1029,6 +1256,7 @@ class Soundtracks:
         A soundtrack another game already holds (same source item) is not fetched
         a second time unless `force` says so: that is how duplicates start.
         """
+        self._check_api(api)
         key = str(game["id"])
         provider, cid = str(cand.get("provider") or ""), str(cand.get("id") or "")
         if provider not in self.providers:
@@ -1049,6 +1277,8 @@ class Soundtracks:
     def _begin_job(self, keys: list[str], title: str, kind: str) -> dict:
         """Register a running job over these games. A game is in at most one running job, so any overlap is refused."""
         with self._lock:
+            if sum(j["state"] == "running" for j in self._jobs.values()) >= 4:
+                raise JobBusy("Four soundtrack jobs are already running; wait for one to finish")
             if any(j["state"] == "running" and set(j["games"]) & set(keys) for j in self._jobs.values()):
                 raise JobBusy("a soundtrack job is already running for this game")
             job = {"id": uuid.uuid4().hex[:12], "game_id": keys[0] if keys else "", "games": list(keys), "kind": kind, "title": title,
@@ -1072,6 +1302,7 @@ class Soundtracks:
         return progress
 
     def _run_download(self, job: dict, game: dict, api: RommApi, cand: dict, fmt: str) -> None:
+        self._check_api(api)
         key = job["game_id"]
         try:
             made, skipped = self._download(job, game, api, cand, fmt)
@@ -1094,10 +1325,7 @@ class Soundtracks:
         picks = pick_downloads(plan["downloads"], fmt)
         if not picks:
             raise ValueError(f"no '{fmt}' download is offered for this item")
-        rom = api.rom(key)
-        if not (rom.get("has_multiple_files") or rom.get("has_nested_single_file")) and not stem_stable(str(rom.get("fs_name") or "")):
-            raise ValueError("moving this ROM into a folder would change the name RomM stores for it (its name ends in a "
-                             "dotted number), which breaks name-based save matching; not downloaded")
+        self._require_stable_stem(api, key, "not downloaded")
         sink = RommSink(api, key, self.tmp_dir)
         made = skipped = 0
         try:
@@ -1125,23 +1353,95 @@ class Soundtracks:
         """
         self._journal_sent(key, sink.sent, api)
 
+    def _track_digest(self, api, key, file_id, name):
+        digest, size = hashlib.sha256(), 0
+        for chunk in api.iter_track(key, file_id, name):
+            size += len(chunk)
+            if size > MAX_ARCHIVE_BYTES:
+                raise ValueError("Stored soundtrack exceeds size limit")
+            digest.update(chunk)
+        return digest.hexdigest(), size
+
     def _journal_sent(self, key: str, names: list[str], api: RommApi) -> None:
+        """Own only uploaded bytes verified against the sender's receipt.
+
+        Each verified track is committed on its own, and repeating a call is
+        harmless. Whatever cannot be verified yet is kept as a pending receipt,
+        so Undo can still claim it once RomM answers.
+        """
+        self._check_api(api)
         if not names:
             return
-        ids = {t["file_name"]: t["file_id"] for t in api.tracks(key)}
+        receipts = getattr(api, "receipts", {})
+        done: set[str] = set()
+        try:
+            tracks = {track["file_name"]: track["file_id"] for track in api.tracks(key)}
+            for name in names:
+                if name not in tracks:
+                    raise ValueError("Uploaded soundtrack could not be verified")
+                expected = receipts.get((str(key), name))
+                actual = self._track_digest(api, key, tracks[name], name)
+                if expected is None or expected != actual:
+                    raise ValueError("Remote soundtrack differs from the upload receipt; review it manually")
+                self._own_track(key, f"romm://{key}/{tracks[name]}/{name}", name, actual)
+                done.add(name)
+        except Exception:
+            self._keep_pending(key, [n for n in names if n not in done], receipts)
+            raise
+
+    def _own_track(self, key: str, path: str, name: str, digest_size: tuple[str, int]) -> None:
+        digest, size = digest_size
         with self._lock:
             c = self._db()
             try:
-                for n in names:
-                    if n in ids:
-                        c.execute("INSERT INTO journal(key,path,size,ts) VALUES(?,?,?,?)",
-                                  (key, f"romm://{key}/{ids[n]}/{n}", 0, time.time()))
+                if not c.execute("SELECT 1 FROM journal WHERE key=? AND path=? AND undone=0", (key, path)).fetchone():
+                    c.execute("INSERT INTO journal(key,path,size,ts,sha256) VALUES(?,?,?,?,?)",
+                              (key, path, size, time.time(), digest))
+                c.execute("DELETE FROM pending WHERE key=? AND name=?", (key, name))
                 c.commit()
             finally:
                 c.close()
 
+    def _keep_pending(self, key: str, names: list[str], receipts: dict) -> None:
+        rows = [(key, name, *receipts[(str(key), name)], time.time())
+                for name in names if (str(key), name) in receipts]
+        if not rows:
+            return
+        with self._lock:
+            c = self._db()
+            try:
+                c.executemany("INSERT OR REPLACE INTO pending(key,name,sha256,size,ts) VALUES(?,?,?,?,?)", rows)
+                c.commit()
+            finally:
+                c.close()
+
+    def _reconcile_pending(self, key: str, api: RommApi) -> None:
+        """Journal earlier uploads whose verification failed, now that RomM answers."""
+        c = self._db()
+        try:
+            rows = c.execute("SELECT name, sha256, size FROM pending WHERE key=?", (key,)).fetchall()
+        finally:
+            c.close()
+        for row in rows:
+            api.receipts[(str(key), row["name"])] = (row["sha256"], row["size"])
+            try:
+                self._journal_sent(key, [row["name"]], api)
+            except (RommError, ValueError, requests.RequestException):
+                log.info("soundtrack upload for %s is still unverified", key)
+
+    @staticmethod
+    def _require_stable_stem(api: RommApi, key: str, outcome: str) -> None:
+        """Refuse an upload that would move a lone ROM whose stored name would change."""
+        rom = api.rom(key)
+        if not (rom.get("has_multiple_files") or rom.get("has_nested_single_file")) \
+                and not stem_stable(str(rom.get("fs_name") or "")):
+            raise ValueError("moving this ROM into a folder would change the name RomM stores for it (its name ends in a "
+                             f"dotted number), which breaks name-based save matching; {outcome}")
+
     def _ensure_idle(self, *keys: str) -> None:
         with self._lock:
+            if sum(j["state"] == "running" for j in self._jobs.values()) >= 4:
+                raise JobBusy("Four soundtrack jobs are already running; wait for one to finish")
             if any(j["state"] == "running" and set(j["games"]) & set(keys) for j in self._jobs.values()):
                 raise JobBusy("a soundtrack job is running for this game")
 
@@ -1166,8 +1466,22 @@ class Soundtracks:
     # -- undo --
     def undo(self, game: dict, api: RommApi) -> dict:
         """Remove exactly what this module added to the game, by the file ids it journaled."""
+        self._check_api(api)
         key = str(game["id"])
-        self._ensure_idle(key)
+        # Registered as a job so a merge or upload cannot start on this game
+        # between reading the journal and the last deletion.
+        job = self._begin_job([key], game.get("name", ""), "undo")
+        try:
+            return self._undo(job, key, api)
+        except Exception as ex:
+            job.update(state="error", step="Failed",
+                       message=api._redact(str(ex)) if isinstance(ex, RommError) else ex.__class__.__name__)
+            raise
+        finally:
+            job["finished"] = time.time()
+
+    def _undo(self, job: dict, key: str, api: RommApi) -> dict:
+        self._reconcile_pending(key, api)
         c = self._db()
         try:
             rows = c.execute("SELECT * FROM journal WHERE key=? AND undone=0", (key,)).fetchall()
@@ -1179,6 +1493,11 @@ class Soundtracks:
                 parts = r["path"][len("romm://"):].split("/", 2) if r["path"].startswith("romm://") else []
                 if len(parts) != 3 or parts[0] != key:
                     continue                                        # not ours to act on
+                current = {str(track["file_id"]): track["file_name"] for track in api.tracks(key)}
+                if parts[1] in current:
+                    if (not r["sha256"] or current[parts[1]] != parts[2]
+                            or self._track_digest(api, key, parts[1], parts[2]) != (r["sha256"], r["size"])):
+                        raise ValueError("Stored soundtrack changed; undo refused to remove it")
                 if api.delete_track(key, parts[1]):
                     removed += 1
                 with self._lock:
@@ -1190,22 +1509,39 @@ class Soundtracks:
                         c.close()
         finally:
             # Committed per file above, so a failure part-way leaves the rest journaled to retry.
-            left = self._journal_count(key)
+            left = self._journal_count(key) + self._pending_count(key)
             self._set_sound(key, status="unsearched" if not left else "downloaded", files=left,
                             note=f"undone: {removed} file(s) removed")
-        return {"removed": removed, "remaining": self._journal_count(key)}
+        unverified = self._pending_count(key)
+        job.update(state="done", made=removed, pct=1.0, step="Done",
+                   message=(f"{unverified} upload(s) could not be verified yet; Undo will retry them" if unverified else ""))
+        result = {"removed": removed, "remaining": self._journal_count(key) + unverified}
+        if unverified:
+            result["unverified"] = unverified
+        return result
+
+    def _pending_count(self, key: str) -> int:
+        c = self._db()
+        try:
+            return int(c.execute("SELECT COUNT(*) FROM pending WHERE key=?", (key,)).fetchone()[0])
+        finally:
+            c.close()
 
 
     # -- phase 2: duplicate soundtracks --
     #
     # Games whose STORED soundtracks are identical. Candidates come from the file
     # lists RomM already has (names and sizes), but nothing is offered or done on
-    # that alone: the bytes are streamed from RomM and compared by SHA-1, names
+    # that alone: the bytes are streamed from RomM and compared by SHA-256, names
     # included, and a copy that differs is refused.
 
     def _hash_track(self, api: RommApi, rom_id: str, track: dict) -> str:
-        h = hashlib.sha1()
+        h = hashlib.sha256()
+        size = 0
         for chunk in api.iter_track(rom_id, track["file_id"], track["file_name"]):
+            size += len(chunk)
+            if size > MAX_ARCHIVE_BYTES:
+                raise ValueError("Stored soundtrack exceeds size limit")
             h.update(chunk)
         return h.hexdigest()
 
@@ -1232,6 +1568,7 @@ class Soundtracks:
                 "merged": merged, "scan": scans[-1] if scans else None}
 
     def start_dup_scan(self, api: RommApi, run_async: bool = True) -> dict:
+        self._check_api(api)
         with self._lock:
             if any(j["kind"] == "dup-scan" and j["state"] == "running" for j in self._jobs.values()):
                 raise JobBusy("a duplicate scan is already running")
@@ -1284,6 +1621,7 @@ class Soundtracks:
 
     def start_merge(self, keep: dict, drops: list[dict], api: RommApi, run_async: bool = True) -> dict:
         """Keep one game's soundtrack and remove the identical copies from the others (through RomM). One job over all of them."""
+        self._check_api(api)
         ids = [str(d["id"]) for d in drops if str(d["id"]) != str(keep["id"])]
         if not ids:
             raise ValueError("choose at least one other game to merge into the one you keep")
@@ -1292,6 +1630,7 @@ class Soundtracks:
         return dict(job)
 
     def _run_merge(self, job: dict, keep: dict, drops: list[dict], api: RommApi) -> None:
+        self._check_api(api)
         progress = self._progress(job)
         problems: list[str] = []
         done = 0
@@ -1389,6 +1728,7 @@ class Soundtracks:
 
     def start_unmerge(self, drop: dict, api: RommApi, run_async: bool = True) -> dict:
         """Give a merged game its own copy back, re-uploaded from the keeper's files after checking them against the merge's hashes."""
+        self._check_api(api)
         did = str(drop["id"])
         c = self._db()
         try:
@@ -1402,15 +1742,16 @@ class Soundtracks:
         return dict(job)
 
     def _run_unmerge(self, job: dict, drop: dict, m: dict, api: RommApi) -> None:
+        self._check_api(api)
         progress = self._progress(job)
         did, kid, want = str(drop["id"]), m["keep_id"], json.loads(m["files"])
-        work = tempfile.mkdtemp(prefix="unmerge-", dir=self._tmp())
+        work = None
         sent: list[str] = []
+        journaled = False
+        failure = None
         try:
-            rom = api.rom(did)
-            if not (rom.get("has_multiple_files") or rom.get("has_nested_single_file")) and not stem_stable(str(rom.get("fs_name") or "")):
-                raise ValueError("moving this ROM into a folder would change the name RomM stores for it (its name ends in a "
-                                 "dotted number), which breaks name-based save matching; not restored")
+            work = tempfile.mkdtemp(prefix="unmerge-", dir=self._tmp())
+            self._require_stable_stem(api, did, "not restored")
             ktracks = {t["file_name"]: t for t in api.tracks(kid)}
             if set(ktracks) != set(want):
                 raise ValueError("the kept soundtrack has changed since the merge; cannot restore a verified copy")
@@ -1418,16 +1759,25 @@ class Soundtracks:
             for i, (name, t) in enumerate(sorted(ktracks.items())):          # fetch and verify everything before touching the game
                 progress(f"Fetching {name} from the kept copy", i / max(len(ktracks), 1) / 2)
                 path = os.path.join(work, f"{i}.bin")
-                h, size = hashlib.sha1(), 0
+                h, size = hashlib.sha256(), 0
                 with open(path, "wb") as f:
                     for chunk in api.iter_track(kid, t["file_id"], name):
+                        size += len(chunk)
+                        if size > MAX_ARCHIVE_BYTES:
+                            raise ValueError("Stored soundtrack exceeds size limit")
                         h.update(chunk)
                         f.write(chunk)
-                        size += len(chunk)
                 if h.hexdigest() != want[name]:
                     raise ValueError("the kept soundtrack has changed since the merge; cannot restore a verified copy")
                 staged.append((name, path, size))
-            existing = {t["file_name"] for t in api.tracks(did)}
+            existing = {t["file_name"]: t for t in api.tracks(did)}
+            # A track already on the game only counts as restored if it is the
+            # recorded copy; anything else is a conflict to review, not overwrite.
+            conflicts = [name for name, _path, _size in staged if name in existing
+                         and self._track_digest(api, did, existing[name]["file_id"], name)[0] != want[name]]
+            if conflicts:
+                raise ValueError(f"{len(conflicts)} track(s) on this game differ from the merged copy "
+                                 f"({', '.join(sorted(conflicts)[:3])}); the merge stays recorded")
             problems = []
             for i, (name, path, size) in enumerate(staged):
                 progress(f"Restoring {name}", 0.5 + i / max(len(staged), 1) / 2)
@@ -1446,6 +1796,8 @@ class Soundtracks:
                 sent.append(up)
             if problems:
                 raise ValueError(f"RomM refused {len(problems)} of the files; the merge stays recorded so you can retry")
+            self._journal_sent(did, sent, api)
+            journaled = True
             with self._lock:
                 c = self._db()
                 try:
@@ -1459,13 +1811,17 @@ class Soundtracks:
         except Exception as ex:  # noqa: BLE001
             msg = api._redact(str(ex)) if isinstance(ex, RommError) else (str(ex) if isinstance(ex, ValueError) else ex.__class__.__name__)
             log.warning("soundtrack unmerge failed: %s", ex.__class__.__name__)
-            job.update(state="error", step="Failed", message=msg)
+            failure = msg
         finally:
-            try:
-                self._journal_sent(did, sent, api)          # what was re-uploaded can be removed again from the game page
-            except Exception:  # noqa: BLE001
-                log.warning("could not journal the restored soundtrack for %s", did)
-            shutil.rmtree(work, ignore_errors=True)
+            if not journaled:
+                try:
+                    self._journal_sent(did, sent, api)      # what was re-uploaded can be removed again from the game page
+                except Exception:  # noqa: BLE001
+                    log.warning("could not journal the restored soundtrack for %s", did)
+            if work is not None:
+                shutil.rmtree(work, ignore_errors=True)
+            if failure is not None:                         # terminal only after ownership is recorded
+                job.update(state="error", step="Failed", message=failure)
             job["finished"] = time.time()
 
     def _tmp(self) -> str:
@@ -1504,6 +1860,7 @@ class Soundtracks:
 
     def start_album(self, game: dict, api: RommApi, root: str, album_id: str, run_async: bool = True) -> dict:
         """Upload an album's audio from the music library into the game's soundtrack. The library is only ever read."""
+        self._check_api(api)
         key = str(game["id"])
         if not root or not os.path.isdir(root):
             raise ValueError("the music library folder is not available; set music_library_root and mount it read-only")
@@ -1517,15 +1874,15 @@ class Soundtracks:
 
     def _run_album(self, job: dict, game: dict, api: RommApi, album_id: str, files: list[tuple[str, str, int]],
                    provider: str = "library") -> None:
+        self._check_api(api)
         key, progress = job["game_id"], self._progress(job)
         origin = "the music library" if provider == "library" else "a torrent"
         sent: list[str] = []
         made = skipped = 0
+        journaled = False
+        failure = None
         try:
-            rom = api.rom(key)
-            if not (rom.get("has_multiple_files") or rom.get("has_nested_single_file")) and not stem_stable(str(rom.get("fs_name") or "")):
-                raise ValueError("moving this ROM into a folder would change the name RomM stores for it (its name ends in a "
-                                 "dotted number), which breaks name-based save matching; nothing was added")
+            self._require_stable_stem(api, key, "nothing was added")
             existing = {t["file_name"] for t in api.tracks(key)}
             for i, (name, path, size) in enumerate(files):
                 progress(f"Adding track {i + 1} of {len(files)}", i / len(files))
@@ -1533,7 +1890,26 @@ class Soundtracks:
                     skipped += 1
                     continue
                 try:
-                    api.upload(key, name, path, size)           # straight from the library file, which is opened read-only
+                    expected = getattr(files, "identities", {}).get(path)
+                    root, root_id, identity = expected if expected else (str(Path(path).parent), None, None)
+                    fd, snapshot = tempfile.mkstemp(prefix="album-", dir=self._tmp())
+                    try:
+                        with os.fdopen(fd, "wb") as destination:
+                            with _open_source(root, os.path.relpath(path, root), root_id) as source:
+                                before = _fd_identity(source)
+                                if identity is not None and before != identity:
+                                    raise ValueError("Selected soundtrack source changed")
+                                copied = 0
+                                for data in iter(lambda: source.read(1 << 20), b""):
+                                    copied += len(data)
+                                    if copied > MAX_ARCHIVE_BYTES:
+                                        raise ValueError("Soundtrack exceeds size limit")
+                                    destination.write(data)
+                                if _fd_identity(source) != before or copied != before[2]:
+                                    raise ValueError("Soundtrack source changed during copy")
+                        api.upload(key, name, snapshot, copied)
+                    finally:
+                        os.unlink(snapshot)
                 except RommError as ex:
                     if ex.status in (401, 403):
                         raise ValueError("RomM refused the upload: the library login needs permission to edit ROMs (roms.write)") from ex
@@ -1549,19 +1925,24 @@ class Soundtracks:
             self._set_sound(key, status="downloaded" if made else "found", files=len(api.tracks(key)) if made else 0,
                             provider=provider, chosen=json.dumps({"provider": provider, "id": album_id, "title": title}),
                             title=game["name"], note=f"{made} track(s) from {origin}, {skipped} skipped (already there or refused)")
+            self._journal_sent(key, sent, api)
+            journaled = True
             job.update(state="done", made=made, skipped=skipped, pct=1.0, step="Done",
                        message=f"Added {made} track{'s' if made != 1 else ''} from {title}"
                                + (f"; {skipped} skipped (already there)" if skipped else ""))
         except Exception as ex:  # noqa: BLE001
             msg = api._redact(str(ex)) if isinstance(ex, RommError) else (str(ex) if isinstance(ex, ValueError) else ex.__class__.__name__)
             log.warning("album upload for %s failed: %s", key, ex.__class__.__name__)
-            job.update(state="error", step="Failed", message=msg)
+            failure = msg
             self._set_sound(key, note=f"album upload failed: {msg}"[:300])
         finally:
-            try:
-                self._journal_sent(key, sent, api)             # also after a failure, so a partial add can be undone
-            except Exception:  # noqa: BLE001
-                log.warning("could not journal the album upload for %s", key)
+            if not journaled:
+                try:
+                    self._journal_sent(key, sent, api)         # also after a failure, so a partial add can be undone
+                except Exception:  # noqa: BLE001
+                    log.warning("could not journal the album upload for %s", key)
+            if failure is not None:                            # terminal only after ownership is recorded
+                job.update(state="error", step="Failed", message=failure)
             job["finished"] = time.time()
 
 
@@ -1587,7 +1968,7 @@ def choose_audio(files: list[tuple[str, str, int]]) -> tuple[list[tuple[str, str
         by_ext.setdefault(os.path.splitext(f[0])[1].lower(), []).append(f)
     for ext in FORMAT_ORDER:
         if by_ext.get(ext):
-            return by_ext[ext], ext
+            return AudioFiles(by_ext[ext], getattr(files, "identities", {})), ext
     return [], ""
 
 
@@ -1601,7 +1982,7 @@ def zip_members(zips: list[str]) -> list[tuple[str, str, str]]:
     for zp in zips:
         try:
             check_zip(zp)
-            with zipfile.ZipFile(zp) as z:
+            with _audio_zip(zp) as z:
                 for i in z.infolist():
                     if i.is_dir() or not audio_member_name(i.filename):
                         continue

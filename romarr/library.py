@@ -14,6 +14,8 @@ details it does handle are the ones that silently corrupt a library:
 from __future__ import annotations
 
 from .import_duplicates import duplicate_reason, stream_sha1
+from .tar_archive import TAR_SUFFIXES, TarSource, is_tar_name
+from .switch_attach import ATTACH_PLATFORMS, attach_dir as switch_attach_dir, is_real_directory_chain
 
 import json
 import logging
@@ -23,7 +25,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import threading
 import tempfile
 import time
@@ -49,14 +50,12 @@ log = logging.getLogger(__name__)
 #: overwhelmingly `.7z` -- 2,621 PlayStation entries, 2,409 PS2, 1,470 Wii --
 #: and an importer that cannot open the format the content ships in supports
 #: the platform on paper only.
-ARCHIVE_SUFFIXES = (".zip", ".7z", ".rar", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2",
-                    ".tar.xz", ".txz")
+ARCHIVE_SUFFIXES = (".zip", ".7z", ".rar") + TAR_SUFFIXES
 
 
-def is_archive_name(name: str) -> bool:
-    """Whether a file name is an archive ROMarr unpacks (compound suffixes included)."""
-    lowered = str(name).lower()
-    return any(lowered.endswith(s) for s in ARCHIVE_SUFFIXES)
+def is_archive_name(name):
+    """Recognize complete archive extensions, including compressed TAR names."""
+    return str(name).lower().endswith(ARCHIVE_SUFFIXES)
 
 #: Handled by the standard library, with no tool to install.
 _STDLIB_ARCHIVES = (".zip",)
@@ -904,7 +903,7 @@ class _DirectorySource(_PathSource):
                 # Read through the set's first volume, never on its own.
                 continue
             relative = entry.relative_to(path).as_posix()
-            if entry not in volume_sets and entry.suffix.lower() not in ARCHIVE_SUFFIXES:
+            if entry not in volume_sets and not is_archive_name(entry.name):
                 if relative in self.members:
                     raise ValueError(f"duplicate source member: {relative}")
                 self.members[relative] = (self, relative)
@@ -1025,7 +1024,7 @@ def _source_for(download: Path, platform: Platform | None = None, *,
             if not single_file.resolve().is_relative_to(download.resolve()):
                 raise ValueError(f"source escapes download directory: {single_file}")
             single_suffix = single_file.suffix.lower()
-            if single_suffix in _STDLIB_ARCHIVES or is_archive_name(single_file.name):
+            if is_archive_name(single_file.name):
                 return _source_for(single_file, platform, staging_budget=staging_budget)
 
     # For MAME, FBNeo and DOSBox the archive IS the ROM: the core opens it and
@@ -1033,7 +1032,7 @@ def _source_for(download: Path, platform: Platform | None = None, *,
     # of a romset and import that, which succeeds and leaves an entry no core
     # can load. Treat it as a plain file.
     if (platform is not None and platform.archive_is_the_rom
-            and download.is_file()):
+            and download.is_file() and not is_tar_name(download.name)):
         return _PathSource(download)
 
     if (download.is_dir()
@@ -1041,6 +1040,8 @@ def _source_for(download: Path, platform: Platform | None = None, *,
                                       and platform.media != "digital"))):
         return _DirectorySource(download)
 
+    if download.is_file() and is_tar_name(download.name):
+        return TarSource(download)
     suffix = download.suffix.lower()
     if download.is_file() and suffix in _STDLIB_ARCHIVES:
         # ZipFile allocates ZipInfo entries during construction. Apply the
@@ -1180,10 +1181,9 @@ def _digital_set_name(download: Path) -> str:
     suffix when `download` is an archive file.
     """
     if download.is_file() and is_archive_name(download.name):
-        lowered = download.name.lower()
-        for ending in sorted(ARCHIVE_SUFFIXES, key=len, reverse=True):
-            if lowered.endswith(ending):
-                return download.name[:-len(ending)]
+        for extension in sorted(ARCHIVE_SUFFIXES, key=len, reverse=True):
+            if download.name.lower().endswith(extension):
+                return download.name[:-len(extension)]
     return download.name
 
 
@@ -1199,45 +1199,6 @@ def platform_dir(library_root: Path, platform: "Platform | str", *,
     if translation:
         base = base / TRANSLATION_SUBDIR
     return base
-
-
-_SWITCH_TID = re.compile(r"(?<![0-9A-Fa-f])([0-9A-Fa-f]{16})(?![0-9A-Fa-f])")
-_SWITCH_MEDIA_DIRS = {"3dboxes", "backcovers", "covers", "miximages", "miximages_v2",
-                      "physicalmedia", "screenshots", "marquees", "videos", "manuals"}
-
-
-def switch_attach_dir(file_name: str, platform_dir: Path) -> Path | None:
-    """Where an update or DLC for a game already on disk belongs, if it is there.
-
-    RomM files extra content by sub-folder name inside the game's own folder
-    (`update/`, `dlc/`). An update dropped loose in the platform folder shows
-    up as a second game, so when the base game's folder exists the file goes
-    inside it. Returns None when the file is not an update/DLC or no folder
-    holds the base game; the caller then keeps its normal destination.
-    """
-    from .titled import base_tid_of, classify_tid
-    m = _SWITCH_TID.search(file_name)
-    if not m:
-        return None
-    tid = m.group(1)
-    kind = classify_tid(tid)
-    if kind not in ("update", "dlc"):
-        return None
-    base = (base_tid_of(tid) or "").upper()
-    if not base or not platform_dir.is_dir():
-        return None
-    try:
-        for entry in platform_dir.iterdir():
-            if not entry.is_dir() or entry.name.startswith(".") \
-                    or entry.name.lower() in _SWITCH_MEDIA_DIRS:
-                continue
-            for f in entry.rglob("*"):
-                if f.is_file() and base in {t.upper() for t in _SWITCH_TID.findall(f.name)
-                                             if (base_tid_of(t) or "").upper() == base}:
-                    return entry / kind
-    except OSError:
-        return None
-    return None
 
 
 def _publish_staged(staged: Path, destination: Path, overwrite: bool) -> None:
@@ -1279,7 +1240,8 @@ def import_rom(download: Path, platform: Platform, library_root: Path, *,
                rename: bool = False,
                platform_folders=None, prefer_hardlinks: bool = False, selected_primaries=None, bundle_routes=None,
                requested_game: str | None = None, catalog_platforms=None,
-               hash_index=None, duplicate_roots=()) -> list[ImportResult]:
+               hash_index=None, duplicate_roots=(),
+               switch_extras: bool = False) -> list[ImportResult]:
     """Place every ROM from a finished download into the library.
 
     A cartridge zip may hold several games (a 3-in-1 collection, a bundle)
@@ -1292,6 +1254,8 @@ def import_rom(download: Path, platform: Platform, library_root: Path, *,
     keep-both case where a T-En patch sits beside the original dump.
     The rename option uses verified DAT names for single-file ROMs, retaining
     the physical extension. Multi-file members keep their reference names.
+    `switch_extras` files a Switch update or DLC inside its game's folder
+    when that game already has one (see switch_attach).
     """
     if not download.exists():
         msg = (
@@ -1327,7 +1291,8 @@ def import_rom(download: Path, platform: Platform, library_root: Path, *,
             platform_folders=platform_folders, prefer_hardlinks=prefer_hardlinks,
             selected_primaries=selected_primaries, bundle_routes=bundle_routes,
             requested_game=requested_game, catalog_platforms=catalog_platforms,
-            hash_index=hash_index, duplicate_roots=duplicate_roots)
+            hash_index=hash_index, duplicate_roots=duplicate_roots,
+            switch_extras=switch_extras)
     finally:
         source.close()
 
@@ -1339,7 +1304,8 @@ def _import_rom_from_source(source, candidates, chosen_sets, download, platform,
                             platform_folders=None, prefer_hardlinks=False,
                             selected_primaries=None, bundle_routes=None,
                             requested_game=None, catalog_platforms=None,
-                            hash_index=None, duplicate_roots=()):
+                            hash_index=None, duplicate_roots=(),
+                            switch_extras=False):
     """Finish import while the validated source and its scratch ZIPs remain open."""
     if selected_primaries is not None:
         selected = set(selected_primaries)
@@ -1376,6 +1342,7 @@ def _import_rom_from_source(source, candidates, chosen_sets, download, platform,
     results: list[ImportResult] = []
     published_hashes = {}
     planned = []
+    attached: dict[Path, Path] = {}
     destinations = {}
     file_destinations = {}
     destination_parents = {}
@@ -1412,13 +1379,6 @@ def _import_rom_from_source(source, candidates, chosen_sets, download, platform,
                                   layout=layout, translation=translation,
                                   platform_folders=platform_folders)
 
-        if platform.slug == "switch":
-            # An update or DLC for a game already on disk goes inside that
-            # game's folder (update/, dlc/), where RomM looks for it.
-            attach = switch_attach_dir(Path(chosen.primary).name, target_dir)
-            if attach is not None:
-                target_dir = attach
-
         if chosen.is_multi_file:
             name = (_digital_set_name(download) if platform.media == "digital"
                     else _set_name(chosen.primary))
@@ -1433,6 +1393,11 @@ def _import_rom_from_source(source, candidates, chosen_sets, download, platform,
                     results.append(ImportResult(False, None, "invalid reviewed destination; review the bundle again"))
                     continue
                 destination = target_dir / relative
+            elif switch_extras and platform.slug in ATTACH_PLATFORMS:
+                attach = switch_attach_dir(Path(chosen.primary).name, target_dir)
+                if attach is not None:
+                    destination = attach / destination.name
+                    attached[destination] = target_dir
         destination_keys = {Path(str(destination).casefold())}
         if not chosen.is_multi_file and bundle_routes is not None:
             destination_keys.add(Path(str(destination.parent.resolve() / destination.name).casefold()))
@@ -1459,6 +1424,10 @@ def _import_rom_from_source(source, candidates, chosen_sets, download, platform,
             source.transfers = {}
         target_dir = destination.parent
         if not chosen.is_multi_file:
+            if destination in attached and not is_real_directory_chain(attached[destination], target_dir):
+                results.append(ImportResult(False, destination,
+                                            "the game's folder changed into a link before import; nothing published"))
+                continue
             try:
                 target_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:

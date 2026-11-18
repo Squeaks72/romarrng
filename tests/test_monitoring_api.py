@@ -143,7 +143,57 @@ def test_igdb_search_is_never_sent_with_sort():
     assert "platforms = (8)" in seen["body"]
 
 
-def test_queue_endpoint_carries_a_timestamp_and_accepts_refresh(server):
-    base, _ = server
-    code, out = call(base, "/api/v1/queue?refresh=1")
-    assert code == 200 and out["items"] == [] and out["at"]
+def test_non_latin_titles_remain_distinct(server):
+    _, svc = server
+    svc.store.want("日本語", "switch")
+    assert svc._game_state("日本語", "switch") == "monitored"
+    assert svc._game_state("別の名前", "switch") == ""
+
+
+def test_monitoring_persists_without_enabling_wishlist(server):
+    _, svc = server
+    from romarr.store import Store
+    svc.store.want("Ico", "ps2", monitored=False)
+    assert Store(svc.store.path).wanted[0].monitored is False
+    svc.store.set_monitored("Ico", "ps2", True)
+    assert Store(svc.store.path).wanted[0].monitored is True
+
+
+@pytest.mark.parametrize("key", ["monitored", "search"])
+def test_add_rejects_string_booleans(server, key):
+    base, svc = server
+    code, _ = call(base, "/api/v1/wanted/add", {"game":"Ico", "platform":"ps2", key:"false"})
+    assert code == 400
+    assert not svc.store.wanted
+
+
+def test_disabled_igdb_provider_is_not_queried(server, monkeypatch):
+    base, svc = server
+    svc.store.put_item("metadata_providers", {"type":"igdb", "client_id":"a", "token":"b", "enable":False})
+    def forbidden(*args, **kwargs):raise AssertionError("disabled provider was queried")
+    monkeypatch.setattr("romarr.app.igdb_catalog_search", forbidden)
+    assert call(base, "/api/v1/lookup?q=ico")[1] == {"configured":False, "items":[]}
+
+
+def test_same_game_ids_are_scoped_to_library_source(server):
+    base, svc = server
+    svc._library_cache=([Game(id="42",name="First",platform="PlayStation 2",platform_slug="ps2",source="A"),
+                         Game(id="42",name="Second",platform="PlayStation 2",platform_slug="ps2",source="B")],0.0,"")
+    assert call(base,"/api/v1/game/detail?platform=ps2&id=42")[1]["ambiguous"] is True
+    d=call(base,"/api/v1/game/detail?platform=ps2&id=42&source=B")[1]
+    assert d["title"]=="Second" and d["item"]["source"]=="B"
+
+
+def test_cloud_catalogue_does_not_block_requests(server):
+    base, svc = server
+    svc._library_cache=([Game(id="42",name="Ico",platform="PlayStation 2",platform_slug="ps2",origin="cloud")],0.0,"")
+    d=call(base,"/api/v1/wanted/add",{"game":"Ico","platform":"ps2","monitored":False})[1]
+    assert d["ok"] and len(svc.store.wanted)==1
+    assert call(base,"/api/v1/game/detail?platform=ps2&id=42")[1]["in_library"] is False
+
+
+def test_kana_voicing_marks_keep_titles_apart_but_latin_accents_fold(server):
+    _, svc = server
+    assert svc._title_key("ガンダム") != svc._title_key("カンダム")
+    assert svc._title_key("Pokémon Snap") == svc._title_key("Pokemon Snap")
+    assert svc._title_key("ＦＩＮＡＬ ＦＡＮＴＡＳＹ") == svc._title_key("Final Fantasy")

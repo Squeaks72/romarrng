@@ -18,6 +18,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+import re
 import requests
 
 from .libraries import (DEFAULT_BACKGROUND_TIMEOUT, Game,
@@ -211,11 +212,6 @@ class QBittorrent:
     def last_error(self) -> str:
         return getattr(self._added, "error", "")
 
-    @property
-    def last_reject(self) -> str:
-        """"not_accepted" when the last add got HTTP 200 with a "Fails." body."""
-        return getattr(self._added, "reject", "")
-
     def _url(self, path: str) -> str:
         return f"{self._config.base_url.rstrip('/')}/api/v2/{path.lstrip('/')}"
 
@@ -330,7 +326,8 @@ class QBittorrent:
             except requests.RequestException:
                 log.warning("qbittorrent category restore error for %s", torrent_hash[:12])
 
-    def _adopt_duplicate_magnet(self, magnet_or_url: str, tag: str) -> bool:
+    def _adopt_duplicate_magnet(self, magnet_or_url: str, tag: str,
+                                category: str | None = None) -> bool:
         """Attach an existing unowned qBittorrent torrent atomically."""
         if not str(magnet_or_url or "").startswith("magnet:"):
             return False
@@ -358,7 +355,7 @@ class QBittorrent:
                 return False
             original_category = str(existing[0].get("category") or "").strip()
             restore_cat = (original_category
-                           if original_category != self._config.category else None)
+                           if original_category != (category or self._config.category) else None)
             tag_added = False
             category_changed = False
             try:
@@ -373,7 +370,7 @@ class QBittorrent:
                 categorized = self._post(
                     "torrents/setCategory",
                     data={"hashes": torrent_hash,
-                          "category": self._config.category},
+                          "category": (category or self._config.category)},
                     timeout=self._config.timeout,
                 )
                 if categorized is None or not categorized.ok:
@@ -394,7 +391,7 @@ class QBittorrent:
                     if isinstance(row, dict)
                     and _row_has_tag(row, tag)
                     and _row_matches_infohash(row, infohash)
-                    and (row.get("category") or "") == self._config.category
+                    and (row.get("category") or "") == (category or self._config.category)
                 ]
                 if len(matches) == 1:
                     self._added.job_id = "qbit-tag:" + tag
@@ -411,9 +408,11 @@ class QBittorrent:
                     restore_category=restore_cat if category_changed else None)
                 return False
 
-    def add(self, magnet_or_url: str, *, save_path: str | None = None, category: str | None = None) -> bool:
+    def add(self, magnet_or_url: str, *, save_path: str | None = None,
+            category: str | None = None) -> bool:
         """Add a torrent, attaching a verified duplicate to this request."""
         self._added.job_id = ""
+        self._added.error = ""
         if not self._authed:
             self.login()
         tag = "romarr-" + secrets.token_hex(12)
@@ -421,20 +420,14 @@ class QBittorrent:
                 "tags": tag}
         if save_path:
             data["savepath"] = save_path
-        self._added.reject = ""
         response = self._post("torrents/add", data=data, timeout=self._config.timeout)
-        if response.status_code == 409 and self._adopt_duplicate_magnet(magnet_or_url, tag):
+        if response.status_code == 409 and self._adopt_duplicate_magnet(magnet_or_url, tag, category):
             return True
         if not response.ok:
             log.warning("qbittorrent add failed: %s", response.status_code)
             return False
-        # qBittorrent answers HTTP 200 either way: "Ok." when it took the
-        # torrent and "Fails." when it did not (a link it could not fetch, or a
-        # torrent it already has). Treating every 200 as success marked grabs
-        # that never happened, which then sat in the queue forever.
         if str(getattr(response, "text", "") or "").strip().lower().startswith("fails"):
-            log.warning("qbittorrent did not accept the torrent")
-            self._added.reject = "not_accepted"
+            self._added.error = "qBittorrent did not accept the torrent"
             return False
         self._added.job_id = "qbit-tag:" + tag
         return True
@@ -1158,37 +1151,39 @@ class QBittorrent:
                 done.append(row)
         return done
 
-    def progress(self) -> dict[str, dict]:
-        """Live state of every torrent in our category, keyed by info-hash.
-
-        What the Queue page shows so nobody has to open qBittorrent: percent
-        done, seconds left (None when qBittorrent has no estimate, which it
-        reports as 8640000), and current speed. `tags` carries the romarr-<id>
-        tag ROMarr put on the torrent, which is how a row whose job id is a
-        tag (not a hash) finds its torrent.
-        """
-        if not self._authed:
-            self.login()
-        response = self._get("torrents/info",
-                             params={"category": self._config.category},
-                             timeout=self._config.timeout)
+    def progress(self, *, deadline: float | None = None) -> dict[str, dict]:
+        """Read category-scoped progress, without changing torrent state."""
+        import math
+        if deadline is None:
+            deadline = time.monotonic() + 2
+        if not self._authed and not self.login(_deadline=deadline):
+            return {}
+        response = self._get("torrents/info", params={"category": self._config.category},
+                             _deadline=deadline, timeout=2)
         response.raise_for_status()
-        out: dict[str, dict] = {}
-        for row in response.json():
-            key = str(row.get("hash") or "").lower()
-            if not key:
+        payload = response.json()
+        if not isinstance(payload, list):
+            return {}
+        out = {}
+        for row in payload[:10000]:
+            if not isinstance(row, dict):
                 continue
-            eta = row.get("eta")
-            out[key] = {
-                "name": str(row.get("name") or ""),
-                "tags": [t.strip() for t in str(row.get("tags") or "").split(",")
-                         if t.strip()],
-                "progress": round(float(row.get("progress") or 0.0) * 100, 1),
-                "eta": int(eta) if isinstance(eta, (int, float)) and 0 <= eta < 8640000 else None,
-                "speed": int(row.get("dlspeed") or 0),
-                "dl_state": str(row.get("state") or ""),
-                "total": int(row.get("total_size") or row.get("size") or 0),
-            }
+            key = str(row.get("hash") or "").lower()
+            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", key):
+                continue
+            try:
+                percent = float(row.get("progress") or 0)
+                eta = float(row.get("eta", -1))
+                speed = float(row.get("dlspeed") or 0)
+                if not all(math.isfinite(v) for v in (percent, eta, speed)):
+                    continue
+            except (ValueError, TypeError, OverflowError):
+                continue
+            out[key] = {"tags": [t.strip() for t in str(row.get("tags") or "").split(",") if t.strip()],
+                        "progress": round(max(0, min(1, percent)) * 100, 1),
+                        "eta": int(eta) if 0 <= eta < 8640000 else None,
+                        "speed": max(0, int(speed)),
+                        "dl_state": str(row.get("state") or "")[:80]}
         return out
 
     def reselect(self, row: dict) -> bool:
@@ -1399,9 +1394,6 @@ class Romm:
         self._token_from_login = bool(self._token)
         return self._token or None
 
-    #: What a soundtrack upload needs on top of reading. Kept apart from SCOPES
-    #: on purpose: the token ROMarr uses all day stays read-only, and this one is
-    #: asked for only when somebody uploads or removes a soundtrack.
     WRITE_SCOPES = "roms.read roms.write"
 
     def write_token(self, refresh: bool = False) -> str | None:
@@ -1426,13 +1418,14 @@ class Romm:
             f"{self._config.base_url.rstrip('/')}/api/token",
             data={"grant_type": "password", "username": self._config.username,
                   "password": self._config.password, "scope": self.WRITE_SCOPES},
-            timeout=self._config.timeout)
+            timeout=self._config.timeout, allow_redirects=False)
         if not response.ok:
             log.warning("romm write auth failed with status %s", response.status_code)
             self._write_token = ""
             return None
         self._write_token = response.json().get("access_token", "")
         return self._write_token or None
+
 
     def _token_refused_with_500(self) -> bool:
         """Whether a 500 is RomM 5.3.1 rejecting our expired bearer token.

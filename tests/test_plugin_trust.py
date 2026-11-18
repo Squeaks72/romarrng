@@ -1,8 +1,8 @@
 """What a plugin subprocess is handed.
 
-ROM Hub's seccomp filter confines network and execution, and ROMarr adds
-Landlock filesystem rules. The environment allowlist remains a separate
-boundary and must not hand plugins ROMarr's or its clients' credentials.
+ROM Hub plugins are code, and running one means running it with ROMarr's
+privileges -- there is no sandbox and SECURITY.md says so. That makes the
+environment the one boundary actually being enforced, so it is worth a test.
 
 It used to be `dict(os.environ, ...)`: every plugin inherited ROMARR_API_KEY,
 ROMARR_PASSWORD, PROWLARR_API_KEY, QBITTORRENT_PASS and LIBRARY_PASSWORD. A
@@ -20,11 +20,10 @@ from romarr import hub
 
 
 @pytest.fixture(autouse=True)
-def plugin_environment_is_confined(monkeypatch):
-    # These tests pin the environment allowlist; sandbox availability belongs
-    # to the separate sandbox tests and varies with the host running pytest.
-    monkeypatch.setattr(hub, "sandbox_state",
-                        lambda: (True, "Landlock and seccomp available"))
+def sandbox_available(monkeypatch):
+    """These tests isolate credential grants from platform-specific sandbox support."""
+    monkeypatch.setattr(hub, "sandbox_state", lambda: (True, "test sandbox available"))
+    monkeypatch.delenv("ROMARR_PLUGIN_BACKEND_CREDENTIALS", raising=False)
 
 
 @pytest.fixture
@@ -64,15 +63,22 @@ def test_no_secret_value_reaches_a_plugin_under_any_name(environment):
         assert value not in present, f"{name}'s value reached the plugin"
 
 
-def test_the_library_credentials_get_through_only_when_opted_in(
-        environment, monkeypatch):
-    """A plugin that imports itself needs somewhere to import into, so the
-    operator can opt in. By default it gets the URL and no password."""
-    monkeypatch.setenv("ROMARR_PLUGIN_BACKEND_CREDENTIALS", "1")
+def test_library_credentials_require_an_explicit_grant(environment, monkeypatch):
+    """Ordinary search/fetch needs no backend password; legacy CLI import can opt in."""
     env = hub._plugin_env()
     assert env.get("ROMM_URL") == "http://romm:8080"
-    assert env.get("ROMM_USER") == "romarr"
-    assert env.get("ROMM_PASSWORD") == "library-password"
+    assert "ROMM_USER" not in env and "ROMM_PASSWORD" not in env
+    monkeypatch.setenv("ROMARR_PLUGIN_BACKEND_CREDENTIALS", "1")
+    env = hub._plugin_env()
+    assert env["ROMM_USER"] == "romarr"
+    assert env["ROMM_PASSWORD"] == "library-password"
+
+
+def test_embedded_backend_url_credentials_are_not_an_implicit_grant(monkeypatch):
+    monkeypatch.setenv("LIBRARY_URL", "https://username:password@romm.example/prefix?token=secret#private")
+    assert hub._plugin_env()["ROMM_URL"] == "https://romm.example/prefix"
+    monkeypatch.setenv("ROMARR_PLUGIN_BACKEND_CREDENTIALS", "1")
+    assert hub._plugin_env()["ROMM_URL"].startswith("https://username:password@")
 
 
 def test_a_plugin_can_still_run_at_all(environment):
@@ -115,3 +121,8 @@ def test_what_the_docs_claim_matches_what_the_code_does():
     else:
         assert "no confinement" in security.lower(), (
             "confinement is off and SECURITY.md does not say so")
+
+
+def test_invalid_backend_url_does_not_leak_or_break_plugin_environment(monkeypatch):
+    monkeypatch.setenv("LIBRARY_URL", "http://user:password@[invalid")
+    assert "ROMM_URL" not in hub._plugin_env()

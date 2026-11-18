@@ -64,3 +64,13 @@ def test_a_new_secret_value_is_kept(tmp_path):
     svc.store.settings["metadata_providers"] = [{"id": "1", "token": "old"}]
     patch = svc.restore_masked_items({"metadata_providers": [{"id": "1", "token": "new"}]})
     assert patch["metadata_providers"][0]["token"] == "new"
+
+
+def test_apprise_plural_urls_are_masked_and_preserved(tmp_path):
+    from romarr.app import ROMarr
+    svc=ROMarr({"ROMARR_DATA":str(tmp_path/"s.json")})
+    row=svc.store.put_item("connections",{"type":"apprise","urls":"discord://user:token@example.invalid"})
+    masked=svc.safe_settings()["connections"][0]
+    assert masked["urls"]=="********"
+    patch=svc.restore_masked_items({"connections":[masked]})
+    assert patch["connections"][0]["urls"]==row["urls"]

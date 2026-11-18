@@ -245,7 +245,6 @@ _TOKEN_TO_REGIONS = {
     "jue": {"japan", "usa", "europe"}, "uej": {"usa", "europe", "japan"}, "jeu": {"japan", "europe", "usa"},
 }
 
-
 def detect_regions(title: str) -> set[str]:
     lowered = title.lower()
     detected = set()
@@ -1058,7 +1057,9 @@ def judge(release: Release, wanted: str,
             add(*size_adj)
 
     if profile:
-        for delta, text in profile.adjustments(lowered, platform.slug if platform else ""):
+        for delta, text in profile.adjustments(lowered, platform.slug if platform else "",
+                                               content_path=release.torrent_file_path,
+                                               platform_evidence=has_platform_evidence):
             add(delta, text)
 
     # Last, and never below 1: it ranks a NUP under an equal installable

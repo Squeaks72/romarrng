@@ -48,6 +48,8 @@ These entries and their tagged source repositories were checked on **2026-10-24*
 | **Igir 1G1R Collection Manager** | Igir v5.8.0 1G1R DAT verification, patching (BPS/IPS/UPS/Xdelta3/PMSR) & cleanup for RomM, Gaseous, Retrom, ES-DE & Batocera | [rom-hub-igir v0.1.0](https://github.com/BlizzHacker/rom-hub-igir/tree/v0.1.0) |
 | **eXo2romm** | Repackage eXoDOS game zips for standalone RomM playback by rewriting pack-root `dosbox.conf` mounts (credits [derkommutator/eXo2romm](https://github.com/derkommutator/eXo2romm); inspired to assist more users) | [rom-hub-exo2romm v0.1.0](https://github.com/BlizzHacker/rom-hub-exo2romm/tree/v0.1.0) |
 
+eXo2romm only reads and writes inside your configured library folders, download folders, ROMarr data folder and the default eXoDOS paths (`/data/eXoDOS`, `/var/lib/romm/library`). Download-client staging folders count as download folders. To use another folder, add it to the `EXO2ROMM_ROOTS` environment variable of the ROMarr service or container (separate entries with `:` on Linux, `;` on Windows). It is deliberately not a web setting, so an API client cannot widen its own access.
+
 The [full catalogue](https://github.com/BlizzHacker/rom-hub/blob/master/catalog/plugins.json) also includes Archive.org, Demozoo, IF Archive and the expanded **Guides, Tutorials, Open-Source Games/Bots, and Mod Communities** plugins below.
 
 ### Expanded Ecosystem: Guides, Tutorials, Open-Source Repos, Mods & Bots
@@ -94,7 +96,7 @@ Install Git using your operating system's package manager. Then install the host
 ```bash
 # Proxmox installation path; change it for your own source checkout.
 /opt/romarr/.venv/bin/python -m pip install \
-  "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/ef025c056827423b370e8fe626cd8c4ebdc034ed.tar.gz"
+  "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/0d4f7114db4b047bc90a78912574a823e3b10527.tar.gz"
 ```
 
 For a checkout using `.venv`, use `.venv/bin/python` instead. Installing into system Python or another virtual environment will not make the package available to ROMarr. Refresh the Plugins page after installing; restart ROMarr after a package upgrade if it has already loaded an older module.
@@ -102,10 +104,39 @@ For a checkout using `.venv`, use `.venv/bin/python` instead. Installing into sy
 For the advanced [Windows source helper](INSTALL.md#windows-source-install), run from the repository directory:
 
 ```powershell
-.\.venv-windows\Scripts\python.exe -m pip install "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/ef025c056827423b370e8fe626cd8c4ebdc034ed.tar.gz"
+.\.venv-windows\Scripts\python.exe -m pip install "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/0d4f7114db4b047bc90a78912574a823e3b10527.tar.gz"
 ```
 
 Use your chosen virtual-environment path if you changed `-VenvDirectory`. Git must be on `PATH` when installing plugin repositories. The Hub page reports the lack of Linux sandbox support on Windows; do not assume it is confined there.
+
+### Plugin execution policy
+
+Linux needs a working `pyseccomp` filter for plugin execution by default.
+If the Plugins page reports confinement unavailable, install the missing
+runtime dependency or use a Linux host with seccomp support. ROMarr itself
+continues to run when plugin execution is refused.
+
+On a Linux host whose kernel lacks usable seccomp, an operator can explicitly
+set `ROMARR_ALLOW_UNSANDBOXED_PLUGINS=1` in ROMarr's service/container
+environment and restart. This runs plugins **with no confinement**; it is not a
+filesystem allowlist. Windows and macOS have no seccomp at all, so the desktop
+apps run plugins unconfined and the Hub page says so; install only plugins you
+trust there. An old
+`ROM_HUB_ALLOW_UNSANDBOXED=1` setting alone no longer enables fallback.
+
+Search and fetch do not need library passwords: ROMarr files the results.
+Legacy Hub CLI workflows that need the library login can explicitly enable
+`ROMARR_PLUGIN_BACKEND_CREDENTIALS=1`. This grants the trusted Hub CLI the
+configured backend username/password and preserves URL credentials; it never
+grants ROMarr's API key or download-client secrets. Separate credentials
+configured deliberately on a plugin remain that plugin's responsibility.
+
+The worker bootstrap uses isolated Python startup and loads the SDK and
+seccomp binding before allowing imports from the plugin directory. Existing
+plugins use the same manifest, configuration and protocol. Python startup
+hooks and shadow SDK packages inside a plugin are not supported extension
+points. The sandbox still allows ordinary filesystem reads as ROMarr's user;
+install only authors you trust. See [SECURITY.md](../SECURITY.md#plugins--read-this-before-installing-one).
 
 Installed plugin state lives under `ROM_HUB_HOME`. Docker sets this to `/config/rom-hub`, so it survives container recreation when `/config` is mounted. Source installs should set it to a writable persistent directory before starting ROMarr.
 
