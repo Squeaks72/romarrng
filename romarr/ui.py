@@ -6623,8 +6623,12 @@ RENDER.getstarted=async()=>{
 };
 
 RENDER.collections=async()=>{
+  const version=pageVersion;
+  const current=()=>activePage==='collections'&&pageVersion===version;
   const st=await j('/api/v1/collection').catch(()=>({dats:[],batches:[]}));
+  if(!current())return;
   const sourceState=await j('/api/v1/collection/source').catch(()=>({torrents:[],jobs:[]}));
+  if(!current())return;
   const sourceTorrents=sourceState.torrents||[];
   const dats=st.dats||[];
   $('#page').innerHTML='<div class="card"><h3>Plan a set</h3>'
@@ -6678,7 +6682,7 @@ RENDER.collections=async()=>{
     +'<div class="card" style="margin-top:16px"><h3>Acquire missing files from a set torrent</h3>'
     +(sourceState.errors||[]).map(error=>'<div class="panel-note panel-warn">'+esc(error)+'</div>').join('')
     +(sourceTorrents.length&&dats.length
-      ?'<p class="help">Preview a DAT plan against one existing qBittorrent torrent. ROMarr selects only matching missing files, stages one budgeted batch at a time, verifies each staged set against the DAT, then restores the torrent’s original file priorities and paused state. The cap limits ROMarr staging copies; downloaded torrent files remain in qBittorrent and need separate source storage.</p>'
+      ?'<p class="help">Preview a DAT plan against one existing qBittorrent or Transmission torrent. ROMarr selects only matching missing files, stages one budgeted batch at a time, verifies each staged set against the DAT, then restores the torrent’s original file priorities and paused state. The cap limits ROMarr staging copies; downloaded torrent files remain in the torrent client and need separate source storage.</p>'
        +'<div class="row" style="flex-wrap:wrap">'
        +'<select id="csrc-torrent">'+sourceTorrents.map(t=>
          '<option value="'+esc(t.hash)+'" data-client="'+esc(t.client_id)+'">'
@@ -6688,14 +6692,17 @@ RENDER.collections=async()=>{
        +'<div id="csrc-out" style="margin-top:10px"></div>'
       :(sourceTorrents.length
         ?'<p class="help">Load a DAT before previewing missing collection files.</p>'
-        :'<p class="help">Enable a qBittorrent download client to use this workflow.</p>'))
+        :'<p class="help">No existing set torrents were found. Add the set torrent to qBittorrent or Transmission'
+         +' (and enable that client under Download Clients if it is off), then come back here.</p>'))
     +'<div id="csrc-jobs" style="margin-top:10px"></div></div>'
     +'<div class="card" style="margin-top:16px"><h3>Batches</h3>'
     +'<div id="cbatch"></div></div>';
 
   const drawBatches=async()=>{
+    if(!current())return;
     const s=await j('/api/v1/collection').catch(()=>({batches:[]}));
-    const cb=$('#cbatch'); if(!cb) return;   // left the Collections page
+    if(!current())return;
+    const cb=$('#cbatch');
     const b=s.batches||[];
     cb.innerHTML=b.length
       ?'<table><thead><tr><th>Set</th><th>Progress</th><th>Done</th>'
@@ -6733,14 +6740,19 @@ RENDER.collections=async()=>{
   };
   drawBatches();
 
+  let sourceJobsSeq=0;
   const drawSourceJobs=async()=>{
-    const node=$('#csrc-jobs'); if(!node)return;
+    if(!current())return;
+    const seq=++sourceJobsSeq;
     const state=await j('/api/v1/collection/source').catch(()=>({jobs:[]}));
+    if(!current()||seq!==sourceJobsSeq)return;
+    const node=$('#csrc-jobs');
     const jobs=state.jobs||[];
     node.innerHTML=jobs.length?'<h4>Selective torrent jobs</h4>'+jobs.map(x=>
       '<div class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding:7px 0">'
       +'<span class="help">'+esc(x.torrent_name)+' · '+esc(x.status)+' · batch '
       +(x.batch||1)+'/'+(x.batches||1)+' · '+(x.done||0)+'/'+(x.total||0)+'</span>'
+      +(x.errors||[]).map(error=>'<div class="panel-note panel-warn">'+esc(error)+'</div>').join('')
       +(x.status==='running'?'<span class="row"><button class="btn ghost csrc-step" data-id="'
        +esc(x.id)+'">Run next</button><button class="btn ghost csrc-cancel" data-id="'
        +esc(x.id)+'">Cancel</button></span>'
@@ -6751,6 +6763,7 @@ RENDER.collections=async()=>{
       btn.disabled=true;
       const r=await j('/api/v1/collection/source/step',{method:'POST',
         headers:{'Content-Type':'application/json'},body:JSON.stringify({id:btn.dataset.id})});
+      if(!current())return;
       if(r.error)toast(r.error);
       drawSourceJobs();
     });
@@ -6759,6 +6772,7 @@ RENDER.collections=async()=>{
       const r=await j('/api/v1/collection/source/control',{method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({id:btn.dataset.id,action:'restore'})});
+      if(!current())return;
       if(r.error)toast(r.error);
       drawSourceJobs();
     });
@@ -6768,6 +6782,7 @@ RENDER.collections=async()=>{
       const r=await j('/api/v1/collection/source/control',{method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({id:btn.dataset.id,action:'cancel'})});
+      if(!current())return;
       if(r.error)toast(r.error);
       drawSourceJobs();
     });
@@ -6776,21 +6791,33 @@ RENDER.collections=async()=>{
   const sourceSelect=$('#csrc-torrent');
   const sourcePlanButton=$('#csrc-plan');
   const sourcePlatform=$('#cplat');
+  const sourceDat=$('#cdat');
+  const sourceCap=$('#csrc-cap');
+  let sourcePlanSeq=0;
   const invalidateSourcePreview=()=>{
+    sourcePlanSeq++;
     const out=$('#csrc-out');
     if(out)out.innerHTML='<p class="help">Selection changed. Preview the source plan again before starting.</p>';
   };
-  [sourcePlatform,$('#cdat'),sourceSelect,$('#csrc-cap')].filter(Boolean)
+  [sourcePlatform,sourceDat,sourceSelect].filter(Boolean)
     .forEach(input=>input.addEventListener('change',invalidateSourcePreview));
-  if(sourceSelect&&sourcePlanButton)sourcePlanButton.onclick=async()=>{
+  if(sourceCap)sourceCap.addEventListener('input',invalidateSourcePreview);
+  const sourceRequest=()=>{
     const opt=sourceSelect.selectedOptions[0];
-    const cap=Math.floor((parseFloat($('#csrc-cap').value)||0)*1024*1024*1024);
-    const request={client_id:opt.dataset.client,torrent_hash:opt.value,
-      dat:$('#cdat').value,platform:$('#cplat').value,cap_bytes:cap};
+    const cap=Math.floor((parseFloat(sourceCap.value)||0)*1024*1024*1024);
+    return {client_id:opt.dataset.client,torrent_hash:opt.value,
+      dat:sourceDat.value,platform:sourcePlatform.value.trim(),cap_bytes:cap};
+  };
+  if(sourceSelect&&sourcePlanButton)sourcePlanButton.onclick=async()=>{
+    const seq=++sourcePlanSeq;
+    const request=sourceRequest();
+    const body=JSON.stringify(request);
+    const matchesPreview=()=>seq===sourcePlanSeq&&body===JSON.stringify(sourceRequest());
     const out=$('#csrc-out');
     out.innerHTML='<div class="empty">Reading source file list…</div>';
     const d=await j('/api/v1/collection/source/plan',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify(request)});
+      headers:{'Content-Type':'application/json'},body});
+    if(!current()||!matchesPreview())return;
     if(d.error){out.innerHTML='<div class="panel-note panel-warn">'+esc(d.error)+'</div>';return;}
     const groups=(d.batches||[]).flatMap((b,n)=>
       (b.groups||[]).map(g=>'<li>Batch '+(n+1)+': '+esc(g.title)+' · '
@@ -6804,15 +6831,16 @@ RENDER.collections=async()=>{
         d.unmatched.length+')</summary><div class="help">'+d.unmatched.map(x=>
         esc(x.title)+' — '+esc(x.reason)).join('<br>')+'</div></details>':'')
       +'<button class="btn" id="csrc-start"'+(sourcePlatform.value.trim()?'':' disabled')+'>Start selective acquisition</button>';
-    const start=$('#csrc-start'); if(!start)return;
+    const start=$('#csrc-start');
     start.onclick=async()=>{
-      if(request.platform!==sourcePlatform.value.trim()
-          ||request.dat!==$('#cdat').value){invalidateSourcePreview();return;}
+      if(!current()||seq!==sourcePlanSeq)return;
+      if(!matchesPreview()){invalidateSourcePreview();return;}
       if(!request.platform){start.disabled=true;return;}
       if(!confirm('Start this selective torrent workflow? ROMarr will temporarily change the selected torrent’s file priorities and restore their original values when the job ends or is cancelled.'))return;
       start.disabled=true;
       const r=await j('/api/v1/collection/source/start',{method:'POST',
-        headers:{'Content-Type':'application/json'},body:JSON.stringify(request)});
+        headers:{'Content-Type':'application/json'},body});
+      if(!current())return;
       if(r.error){toast(r.error);start.disabled=!request.platform;return;}
       toast('Selective acquisition started');
       drawSourceJobs();
@@ -6826,7 +6854,6 @@ RENDER.collections=async()=>{
   planBtn.onclick=async()=>{
     const out=$('#cres');
     const seq=++cplanSeq;
-    const planVer=typeof pageVersion==='number'?pageVersion:0;
     out.innerHTML='<div class="empty">Planning…</div>';
     const ex=[...document.querySelectorAll('.cex')].filter(c=>c.checked)
       .map(c=>c.value);
@@ -6851,7 +6878,7 @@ RENDER.collections=async()=>{
       +'&preferred_languages='+encodeURIComponent(previewPolicy.preferred_languages.join(','))
       +'&exclude='+encodeURIComponent(previewPolicy.exclude.join(','));
     const d=await j('/api/v1/collection/plan?'+q).catch(()=>({error:'plan failed'}));
-    if((typeof activePage!=='undefined'&&activePage!=='collections')||(typeof pageVersion==='number'&&pageVersion!==planVer)||seq!==cplanSeq) return;
+    if(!current()||seq!==cplanSeq)return;
     if(d.error){out.innerHTML='<div class="panel-note panel-warn">'+esc(d.error)+'</div>';return;}
     const c=d.counts;
     const tile=(n,label,colour)=>'<div style="flex:1;min-width:110px;padding:10px 12px;'
@@ -6915,12 +6942,123 @@ RENDER.collections=async()=>{
         body:JSON.stringify({
           ...previewPolicy,
           per_pass:parseInt($('#cpp').value,10)||5})});
+      if(!current())return;
       toast(r.error?r.error:('Queued '+(r.queued||0)+' titles'));
       e.target.disabled=false; e.target.textContent='Request missing';
       drawBatches();
     };
   };
 };
+
+RENDER.manualimport=async()=>{
+  $('#page').innerHTML='<div class="card"><h3>Manual Import</h3>'
+    +'<p class="help">Point ROMarr at a directory you already have. It works out '
+    +'which platform each file belongs to and verifies against your DATs, then '
+    +'you choose what to adopt.</p>'
+    +'<div class="row"><input id="mipath" placeholder="/downloads/roms" '
+    +'style="flex:1;padding:8px 12px;background:var(--bg);color:var(--fg);'
+    +'border:1px solid var(--line);border-radius:6px">'
+    +'<button class="btn" id="miscan">Scan</button></div>'
+    +'<div id="mires" style="margin-top:14px"></div></div>';
+
+  const opts=sel=>PLATFORMS.map(p=>'<option value="'+esc(p.slug)+'"'
+      +(p.slug===sel?' selected':'')+'>'+esc(p.name)+'</option>').join('');
+
+  // The distinction the whole page turns on. UNKNOWN means "not in the DAT you
+  // loaded" -- normal for homebrew, translations and anything newer than your
+  // DAT -- and must never be presented as a problem. Only a bad dump is.
+  const verdict=v=>v==='verified'
+    ? '<span class="pill" style="background:var(--ok);color:#08210d">verified</span>'
+    : v==='bad-dump'
+      ? '<span class="pill" style="background:var(--bad);color:#2a0b0b">bad dump</span>'
+      : '<span class="pill" title="Not in your DAT. Often perfectly fine.">unknown</span>';
+
+  // The bytes' opinion when it contradicts the platform. A warning, never a
+  // refusal: shown on the scan row and again on the import result, because
+  // the operator may have picked the other platform after the scan.
+  const headerPill=x=>x.header_says
+    ? '<br><span class="pill" style="background:var(--warn);color:#2a1c05" title="'
+      +esc(x.header_detail||'')+'">header says '+esc(x.header_says)+'</span>'
+    : '';
+
+  async function adopt(row, force){
+    const btn=row.querySelector('.mi-go');
+    const st=row.querySelector('.mi-st');
+    btn.disabled=true; st.textContent='Importing…';
+    const d=await j('/api/v1/manualimport',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({path:row.dataset.path,
+        platform:row.querySelector('.mi-pf').value, force:!!force})})
+      .catch(()=>({ok:false,refused:[{reason:'request failed'}]}));
+
+    if(d.ok){
+      const one=d.imported[0]||{};
+      st.innerHTML=(one.forced
+        ? '<span style="color:var(--warn)">imported (forced)</span>'
+        : '<span style="color:var(--ok)">imported</span>')+headerPill(d);
+      btn.remove();
+      row.querySelector('.mi-pf').disabled=true;
+      return;
+    }
+    const bad=(d.refused||[])[0]||{};
+    st.innerHTML='<span style="color:var(--bad)">'+esc(bad.reason||'refused')+'</span>';
+    btn.disabled=false;
+    if(bad.needs_force){
+      // Never a silent reinterpretation: forcing is a second, separate act,
+      // and the button says exactly what it does.
+      btn.textContent='Import anyway';
+      btn.style.background='var(--bad)';
+      btn.onclick=()=>{
+        if(confirm('This file did not match a known dump.\n\n'
+          +'Import it anyway? It will be recorded as a forced import, and '
+          +'ROMarr will not claim it is verified.')) adopt(row,true);
+      };
+    }
+  }
+
+  $('#miscan').onclick=async()=>{
+    const out=$('#mires');
+    out.innerHTML='<div class="empty">Scanning…</div>';
+    const d=await j('/api/v1/manualimport?path='
+      +encodeURIComponent($('#mipath').value)).catch(()=>({error:'scan failed'}));
+    if(d.error){out.innerHTML='<div class="panel-note panel-warn">'+esc(d.error)+'</div>';return;}
+    const c=d.candidates||[];
+    out.innerHTML='<p class="help">'+c.length+' importable, '+(d.skipped||0)+' skipped.</p>'
+      +(c.length
+        ?'<div class="row" style="margin-bottom:10px">'
+         +'<button class="btn ghost" id="miall">Import everything verified</button></div>'
+         +'<table><thead><tr><th>File</th><th>Platform</th><th>Why</th>'
+         +'<th>DAT</th><th></th><th></th></tr></thead><tbody>'
+         +c.slice(0,200).map(x=>'<tr data-path="'+esc(x.path||'')+'" '
+           +'data-verdict="'+esc(x.verdict)+'">'
+           +'<td>'+esc(x.filename)+'</td>'
+           +'<td><select class="mi-pf">'+opts(x.platform)+'</select></td>'
+           +'<td class="help" style="margin:0">'+esc(x.reason)+'</td>'
+           +'<td>'+(x.hollow?'<span class="pill" style="background:var(--bad);color:#2a0b0b" title="'+esc(x.hollow)+'">EMPTY FILE</span><br>':'')+verdict(x.verdict)+headerPill(x)+'</td>'
+           +'<td><button class="btn mi-go">Import</button></td>'
+           +'<td class="mi-st help" style="margin:0"></td></tr>').join('')
+         +'</tbody></table>'
+        :'<div class="empty-cat"><b>Nothing importable there</b>'
+         +'Check the path, or that the files carry extensions ROMarr knows.</div>');
+
+    out.querySelectorAll('.mi-pf').forEach(el=>enhancePlatformSelect(el));
+    out.querySelectorAll('tbody tr').forEach(row=>{
+      const btn=row.querySelector('.mi-go');
+      if(btn) btn.onclick=()=>adopt(row,false);
+    });
+    const all=out.querySelector('#miall');
+    if(all) all.onclick=async()=>{
+      all.disabled=true;
+      // Verified only. A bulk button that also forced bad dumps would be a
+      // way to override verification without ever deciding to.
+      for(const row of out.querySelectorAll('tbody tr[data-verdict="verified"]')){
+        if(row.querySelector('.mi-go')) await adopt(row,false);
+      }
+      all.disabled=false;
+    };
+  };
+};
+
 
 // ---- Extras: DLC, updates, manuals and the other folders RomM reads inside a game ----------
 // One card per folder. Files go into RomM through its upload API, the same way soundtracks do.
@@ -7204,116 +7342,6 @@ document.addEventListener('keydown',e=>{
   else if(e.key==='/'&&!typing&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();openPalette();}
 });
 document.addEventListener('click',e=>{ if(e.target.closest&&e.target.closest('#palette-btn')) openPalette(); });
-
-RENDER.manualimport=async()=>{
-  $('#page').innerHTML='<div class="card"><h3>Manual Import</h3>'
-    +'<p class="help">Point ROMarr at a directory you already have. It works out '
-    +'which platform each file belongs to and verifies against your DATs, then '
-    +'you choose what to adopt.</p>'
-    +'<div class="row"><input id="mipath" placeholder="/downloads/roms" '
-    +'style="flex:1;padding:8px 12px;background:var(--bg);color:var(--fg);'
-    +'border:1px solid var(--line);border-radius:6px">'
-    +'<button class="btn" id="miscan">Scan</button></div>'
-    +'<div id="mires" style="margin-top:14px"></div></div>';
-
-  const opts=sel=>PLATFORMS.map(p=>'<option value="'+esc(p.slug)+'"'
-      +(p.slug===sel?' selected':'')+'>'+esc(p.name)+'</option>').join('');
-
-  // The distinction the whole page turns on. UNKNOWN means "not in the DAT you
-  // loaded" -- normal for homebrew, translations and anything newer than your
-  // DAT -- and must never be presented as a problem. Only a bad dump is.
-  const verdict=v=>v==='verified'
-    ? '<span class="pill" style="background:var(--ok);color:#08210d">verified</span>'
-    : v==='bad-dump'
-      ? '<span class="pill" style="background:var(--bad);color:#2a0b0b">bad dump</span>'
-      : '<span class="pill" title="Not in your DAT. Often perfectly fine.">unknown</span>';
-
-  // The bytes' opinion when it contradicts the platform. A warning, never a
-  // refusal: shown on the scan row and again on the import result, because
-  // the operator may have picked the other platform after the scan.
-  const headerPill=x=>x.header_says
-    ? '<br><span class="pill" style="background:var(--warn);color:#2a1c05" title="'
-      +esc(x.header_detail||'')+'">header says '+esc(x.header_says)+'</span>'
-    : '';
-
-  async function adopt(row, force){
-    const btn=row.querySelector('.mi-go');
-    const st=row.querySelector('.mi-st');
-    btn.disabled=true; st.textContent='Importing…';
-    const d=await j('/api/v1/manualimport',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({path:row.dataset.path,
-        platform:row.querySelector('.mi-pf').value, force:!!force})})
-      .catch(()=>({ok:false,refused:[{reason:'request failed'}]}));
-
-    if(d.ok){
-      const one=d.imported[0]||{};
-      st.innerHTML=(one.forced
-        ? '<span style="color:var(--warn)">imported (forced)</span>'
-        : '<span style="color:var(--ok)">imported</span>')+headerPill(d);
-      btn.remove();
-      row.querySelector('.mi-pf').disabled=true;
-      return;
-    }
-    const bad=(d.refused||[])[0]||{};
-    st.innerHTML='<span style="color:var(--bad)">'+esc(bad.reason||'refused')+'</span>';
-    btn.disabled=false;
-    if(bad.needs_force){
-      // Never a silent reinterpretation: forcing is a second, separate act,
-      // and the button says exactly what it does.
-      btn.textContent='Import anyway';
-      btn.style.background='var(--bad)';
-      btn.onclick=()=>{
-        if(confirm('This file did not match a known dump.\n\n'
-          +'Import it anyway? It will be recorded as a forced import, and '
-          +'ROMarr will not claim it is verified.')) adopt(row,true);
-      };
-    }
-  }
-
-  $('#miscan').onclick=async()=>{
-    const out=$('#mires');
-    out.innerHTML='<div class="empty">Scanning…</div>';
-    const d=await j('/api/v1/manualimport?path='
-      +encodeURIComponent($('#mipath').value)).catch(()=>({error:'scan failed'}));
-    if(d.error){out.innerHTML='<div class="panel-note panel-warn">'+esc(d.error)+'</div>';return;}
-    const c=d.candidates||[];
-    out.innerHTML='<p class="help">'+c.length+' importable, '+(d.skipped||0)+' skipped.</p>'
-      +(c.length
-        ?'<div class="row" style="margin-bottom:10px">'
-         +'<button class="btn ghost" id="miall">Import everything verified</button></div>'
-         +'<table><thead><tr><th>File</th><th>Platform</th><th>Why</th>'
-         +'<th>DAT</th><th></th><th></th></tr></thead><tbody>'
-         +c.slice(0,200).map(x=>'<tr data-path="'+esc(x.path||'')+'" '
-           +'data-verdict="'+esc(x.verdict)+'">'
-           +'<td>'+esc(x.filename)+'</td>'
-           +'<td><select class="mi-pf">'+opts(x.platform)+'</select></td>'
-           +'<td class="help" style="margin:0">'+esc(x.reason)+'</td>'
-           +'<td>'+(x.hollow?'<span class="pill" style="background:var(--bad);color:#2a0b0b" title="'+esc(x.hollow)+'">EMPTY FILE</span><br>':'')+verdict(x.verdict)+headerPill(x)+'</td>'
-           +'<td><button class="btn mi-go">Import</button></td>'
-           +'<td class="mi-st help" style="margin:0"></td></tr>').join('')
-         +'</tbody></table>'
-        :'<div class="empty-cat"><b>Nothing importable there</b>'
-         +'Check the path, or that the files carry extensions ROMarr knows.</div>');
-
-    out.querySelectorAll('.mi-pf').forEach(el=>enhancePlatformSelect(el));
-    out.querySelectorAll('tbody tr').forEach(row=>{
-      const btn=row.querySelector('.mi-go');
-      if(btn) btn.onclick=()=>adopt(row,false);
-    });
-    const all=out.querySelector('#miall');
-    if(all) all.onclick=async()=>{
-      all.disabled=true;
-      // Verified only. A bulk button that also forced bad dumps would be a
-      // way to override verification without ever deciding to.
-      for(const row of out.querySelectorAll('tbody tr[data-verdict="verified"]')){
-        if(row.querySelector('.mi-go')) await adopt(row,false);
-      }
-      all.disabled=false;
-    };
-  };
-};
-
 
 RENDER.tasks=async()=>{
   const d=await j('/api/v1/system/tasks').catch(()=>({items:[]}));
