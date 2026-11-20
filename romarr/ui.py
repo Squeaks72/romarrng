@@ -2040,8 +2040,23 @@ RENDER.add=async()=>{
       <button class="btn ghost" id="g-wish" style="margin-top:20px">Save to wishlist</button>
       <button class="btn" id="g-go" style="margin-top:20px">Search &amp; Grab</button>
     </div>
+    <div class="row" id="g-parts" style="display:none;margin-top:10px;gap:14px">
+      <span class="help" style="margin:0">Game packages:</span>
+      <label><input type="checkbox" data-part="base" checked> Base game</label>
+      <label><input type="checkbox" data-part="update"> Update</label>
+      <label><input type="checkbox" data-part="dlc"> DLC</label>
+    </div>
     <div id="g-out" style="margin-top:16px"></div></div>`;
   enhancePlatformSelect($('#g-plat'), 'Select a platform');
+  // Platforms whose games ship as base game, update and DLC packages (the
+  // server marks them "parts"). A combined pack is preferred; whatever an
+  // import does not bring stays on Wanted.
+  const hasParts=slug=>PLATFORMS.some(p=>p.slug===slug&&p.parts);
+  const syncParts=()=>{$('#g-parts').style.display=hasParts($('#g-plat').value)?'flex':'none';};
+  $('#g-plat').addEventListener('change',syncParts);
+  const chosenParts=platform=>hasParts(platform)
+    ?[...document.querySelectorAll('#g-parts [data-part]')].filter(c=>c.checked).map(c=>c.dataset.part):null;
+  const withParts=(body,platform)=>{const parts=chosenParts(platform);return parts&&parts.length?{...body,parts}:body;};
   $('#g-go').onclick=async()=>{
     const game=$('#g-name').value.trim(), platform=$('#g-plat').value;
     if(!game){toast('Enter a game name');return;}
@@ -2049,7 +2064,7 @@ RENDER.add=async()=>{
     $('#g-out').innerHTML='<div class="empty">Searching indexers…</div>';
     const r=await j('/api/request',{method:'POST',
       headers:{'content-type':'application/json'},
-      body:JSON.stringify({game,platform})});
+      body:JSON.stringify(withParts({game,platform},platform))});
     if(!current())return;
     $('#g-out').innerHTML=r.ok
       ? `<div class="card" style="margin:0"><h3>Grabbed</h3>
@@ -2062,7 +2077,7 @@ RENDER.add=async()=>{
   $('#g-wish').onclick=async()=>{
     const game=$('#g-name').value.trim(),platform=$('#g-plat').value;
     if(!game||!platform){toast('Enter a title and select a platform');return;}
-    const r=await j('/api/v1/wanted/add',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({game,platform,monitored:false})});
+    const r=await j('/api/v1/wanted/add',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(withParts({game,platform,monitored:false},platform))});
     if(!current())return;
     toast(r.ok?'Saved to wishlist; automatic searches are off':r.error||'Could not save');refreshCounts();
   };
@@ -2157,6 +2172,7 @@ RENDER.search=async()=>{
             style="text-decoration:none">&#8599;</a>`:''}
           ${r.torrent_file_path?`<div class="help" title="Only this path is selected from the collection">File: <code>${esc(r.torrent_file_path)}</code></div>`:''}
           ${r.platform?` <span class="pill" title="Target platform">${esc(r.platform)}</span>`:''}
+          ${r.package?` <span class="pill" title="What this release holds: base game, update, DLC or a pack">${esc(r.package)}</span>`:''}
           ${r.private?' <span class="pill">private</span>':''}
           ${r.protocol==='usenet'?' <span class="pill">usenet</span>':''}</td>
         <td style="white-space:nowrap">${mb(r.size)}</td>
@@ -4329,12 +4345,17 @@ RENDER.queue=async()=>{
         <td>${esc(i.primary)}<div class="help">${esc(i.evidence)} (${esc(i.confidence)})<br>${i.bytes==null?'Expanded size unknown':esc(String(i.bytes))+' bytes'}<br>${i.members.map(esc).join('<br>')}</div></td>
         <td><select data-plan-role="${n}"><option value="unknown">Needs review</option><option value="base">Base game</option><option value="update">Update for this base</option><option value="dlc">DLC for this base</option><option value="additional-game">Additional game</option></select></td><td>${esc(i.destination)}</td></tr>`).join('')}</tbody></table>
       <details><summary>${plan.extras.length} excluded files</summary>${plan.extras.map(esc).join('<br>')||'None'}</details>
-      <p><button class="btn" id="q-plan-save">${plan.romm_routing?"Review destinations":"Save selection"}</button> <button class="btn ghost" id="q-plan-back">Back</button></p><div id="q-plan-review"></div>`;
+      <p><button class="btn" id="q-plan-save">${plan.romm_routing||plan.package_routing?"Review destinations":"Save selection"}</button> <button class="btn ghost" id="q-plan-back">Back</button></p><div id="q-plan-review"></div>`;
     $('#q-plan-mode').value=saved.mode||'single';
     if(plan.romm_routing) $('#q-plan-existing').value=saved.existing_game||'';
     plan.items.forEach((i,n)=>document.querySelector(`[data-plan-role="${n}"]`).value=selected.get(i.primary)||i.role);
     $('#q-plan-back').onclick=()=>go('queue');
+    // Bumped whenever the selection changes, so a review answer that arrives
+    // after a change is dropped instead of binding confirmation to old roles.
+    let reviewGen=0;
+    const pageAt=typeof pageVersion==='number'?pageVersion:0;
     $('#q-plan-save').onclick=async()=>{
+      const gen=++reviewGen;
       const choices=plan.items.flatMap((i,n)=>document.querySelector(`[data-plan-check="${n}"]`).checked?[{primary:i.primary,role:document.querySelector(`[data-plan-role="${n}"]`).value}]:[]);
       const selection={token:plan.token,choices,mode:$('#q-plan-mode').value,existing_game:plan.romm_routing?$('#q-plan-existing').value:''};
       const save=async extra=>{
@@ -4342,14 +4363,16 @@ RENDER.queue=async()=>{
         if(result.error){toast(result.error);return;}
         toast('Selection saved. The next import sweep will use it and retain the source.');go('queue');
       };
-      if(!plan.romm_routing){await save({});return;}
+      if(!plan.romm_routing&&!plan.package_routing){await save({});return;}
       const reviewed=await post({review:true,...selection});
+      if(gen!==reviewGen||(typeof activePage!=='undefined'&&activePage!=='queue')
+         ||(typeof pageVersion==='number'&&pageVersion!==pageAt))return;
       if(reviewed.error){toast(reviewed.error);return;}
       const destinations=reviewed.preview.planned_destinations||{};
       $('#q-plan-review').innerHTML=`<h3>Confirm destination tree</h3><p class="help">Files are organized for RomM scanning; updates/DLC are not installed or applied to an emulator. Sources stay intact.</p><ul>${Object.entries(destinations).map(([primary,destination])=>`<li>${esc(primary)} → <code>${esc(destination)}</code></li>`).join('')}</ul><button class="btn" id="q-plan-confirm">Confirm these destinations</button>`;
       $('#q-plan-confirm').onclick=()=>save({reviewed_destinations:destinations});
     };
-    document.querySelectorAll('[data-plan-check],[data-plan-role],#q-plan-mode,#q-plan-existing').forEach(c=>c.onchange=()=>{$('#q-plan-review').innerHTML='';});
+    document.querySelectorAll('[data-plan-check],[data-plan-role],#q-plan-mode,#q-plan-existing').forEach(c=>c.onchange=()=>{reviewGen++;$('#q-plan-review').innerHTML='';});
   });
   document.querySelectorAll('[data-qresume]').forEach(b=>b.onclick=()=>act(b.dataset.qresume,'resume-retained'));
   document.querySelectorAll('[data-qretry]').forEach(b=>b.onclick=()=>act(b.dataset.qretry,'retry'));
@@ -4634,6 +4657,7 @@ RENDER.media=()=>settingsPage('Media Management',
   +chk('rename_on_import','Use DAT names for verified single-file imports (disc-set filenames stay intact)',SETTINGS.rename_on_import)
   +chk('prefer_hardlinks','Prefer hardlinks; copy when unavailable (unchanged files only)',SETTINGS.prefer_hardlinks)
   +chk('switch_attach_extras','File Switch updates and DLC inside their game\'s folder (update/, dlc/) when the game already has one',SETTINGS.switch_attach_extras!==false)
+  +chk('game_package_folders','In RomM libraries, file games with updates and DLC (PlayStation, 3DS, Wii U, Switch) as one game folder: base game in &lt;Title&gt;/, update in update/, DLC in dlc/',SETTINGS.game_package_folders!==false)
   +`<p class="dim">Hardlinks share file contents with the download. Editing either file changes both. Archive members are extracted normally. Shared library read permissions are required; ROMarr never changes source permissions.</p>`
   +chk('retain_downloads_after_import','Keep completed downloads for seeding after import',SETTINGS.retain_downloads_after_import)
   +chk('overwrite_existing','Overwrite an existing file',SETTINGS.overwrite_existing)
@@ -5404,6 +5428,18 @@ RENDER.status=async()=>{
     &&(typeof activePage!=='string'||activePage==='status')
     &&(viewVersion===null||pageVersion===viewVersion);
   const h=await j('/api/v1/system/status');
+  if(h.dats_loading){
+    // Update only the DAT tiles: re-rendering the page would reset its forms.
+    const poll=async()=>{
+      if(!current()||!$('#status-dats'))return;
+      const s=await j('/api/v1/system/status').catch(()=>null);
+      if(!current()||!$('#status-dats'))return;
+      if(!s||s.dats_loading){setTimeout(poll,3000);return;}
+      $('#status-dats').innerHTML='<b>'+(s.dats||0)+'</b><span>DATs loaded</span>';
+      $('#status-dat-games').innerHTML='<b>'+(s.dat_games||0)+'</b><span>Known dumps</span>';
+    };
+    setTimeout(poll,3000);
+  }
   if(!current())return;
   const row=(l,ok,extra='')=>`<tr><td>${l}</td>
     <td><span class="dot ${ok?'up':'down'}"></span>${ok?'OK':'Not available'}</td>
@@ -5466,8 +5502,8 @@ RENDER.status=async()=>{
     <div class="card"><h3>About</h3><div class="st">
       <div><b>${esc(h.version||"unknown")}</b><span>Version</span></div>
       <div><b>${h.platforms}</b><span>Platforms</span></div>
-      <div><b>${h.dats||0}</b><span>DATs loaded</span></div>
-      <div><b>${h.dat_games||0}</b><span>Known dumps</span></div>
+      <div id="status-dats"><b>${h.dats_loading?"…":(h.dats||0)}</b><span>${h.dats_loading?"Loading DATs":"DATs loaded"}</span></div>
+      <div id="status-dat-games"><b>${h.dat_games||0}</b><span>Known dumps</span></div>
       <div><b>${h.events}</b><span>History events</span></div>
       <div><b>${esc(h.uptime)}</b><span>Uptime</span></div>
     </div>${buildIdentityLine(h.build)}<p class="help"><a href="https://romarr.app/privacy" target="_blank" rel="noopener noreferrer">Privacy policy</a> · <a href="mailto:me@romarr.app">Contact support</a> · <a href="https://discord.gg/ywNFceuAd" target="_blank" rel="noopener noreferrer">Discord</a> · <a href="https://opencollective.com/romarr" target="_blank" rel="noopener noreferrer">Open Collective</a> · <a href="https://github.com/BlizzHacker/romarr" target="_blank" rel="noopener noreferrer">GitHub</a></p></div>
@@ -6391,11 +6427,26 @@ RENDER.reports=async()=>{
 
 // The optional guide uses the same editors and connection checks as Settings.
 const SETUP={step:0,mode:'organize',initialized:false};
+const setupDatState=state=>state.dat_loading
+  ?'<p class="help"><b>Loading DATs…</b> Verification starts when they are ready.</p>'
+  :(state.dat_loaded?'<p class="help"><b>'+fmt(state.dat_loaded)+' DAT(s) loaded</b> · '+fmt(state.dat_games)+' games</p>':'');
 RENDER.setup=async()=>{
   const version=typeof pageVersion==='number'?pageVersion:null;
   const current=()=>version===null||(version===pageVersion&&activePage==='setup');
   const state=await j('/api/v1/setup/status').catch(()=>null);
   if(!current())return;
+  if(state&&state.dat_loading){
+    // Refresh only the DAT line, so a half-typed form keeps its input.
+    const poll=async()=>{
+      if(!current())return;
+      const s=await j('/api/v1/setup/status').catch(()=>null);
+      if(!current())return;
+      if(!s||s.dat_loading){setTimeout(poll,3000);return;}
+      Object.assign(state,{dat_loading:false,dat_loaded:s.dat_loaded,dat_games:s.dat_games});
+      const el=$('#setup-dat-state'); if(el) el.innerHTML=setupDatState(state);
+    };
+    setTimeout(poll,3000);
+  }
   if(!state||state.error){
     $('#page').innerHTML='<div class="card"><h3>Setup Guide</h3><p class="help">We could not read your setup. Refresh this page to try again.</p></div>';
     return;
@@ -6440,7 +6491,7 @@ RENDER.setup=async()=>{
   }else if(active===4){
     content='<h3>Add confidence and more sources</h3><p class="help">Both of these are optional. You can start with your existing files and return later.</p>'
       +'<h4>Verify with DATs</h4><p class="help">A No-Intro or Redump DAT is a checklist of known file hashes. It lets ROMarr verify a dump and compare your collection with a complete set.</p>'
-      +(state.dat_loaded?'<p class="help"><b>'+fmt(state.dat_loaded)+' DAT(s) loaded</b> · '+fmt(state.dat_games)+' games</p>':'')
+      +'<div id="setup-dat-state">'+setupDatState(state)+'</div>'
       +'<div class="field"><label for="setup-dat-path">Folder containing your DAT files</label><input id="setup-dat-path" value="'+esc(state.dat_path)+'" placeholder="/dats"></div>'
       +action('setup-dats','Check and load DATs')+'<div id="setup-dat-result" role="status" class="testline"></div>'
       +'<h4 style="margin-top:22px">Explore ROM Hub</h4><p class="help">ROM Hub is the plugin catalogue. Plugins can add supported search sources and download tools. Open a plugin’s details to check what it needs before installing.</p>'
