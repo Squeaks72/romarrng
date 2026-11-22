@@ -187,7 +187,7 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "/api/v1/collection/reconcile": ("POST", "Fulfil Wanted titles whose "
                                              "verified dump is already in the "
                                              "library for a platform."),
-    "/api/v1/collection/source": ("GET", "List qBittorrent set torrents and selective-acquisition jobs."),
+    "/api/v1/collection/source": ("GET", "List game-looking qBittorrent and Transmission set torrents (all=1 lists every torrent) and selective-acquisition jobs."),
     "/api/v1/collection/source/plan": ("POST", "Preview missing DAT files from a set torrent within a staging budget."),
     "/api/v1/collection/source/start": ("POST", "Select only the planned qBittorrent files and start a persistent staged acquisition."),
     "/api/v1/collection/source/step": ("POST", "Stage, verify and import completed files from the current torrent batch."),
@@ -281,6 +281,17 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
                                      "re-runs the request, remove forgets it; resume-retained explicitly resumes an owned retained collection."),
     "/api/v1/queue/clear": ("POST", "Empty the queue, or only the rows in "
                                     "{state} (e.g. failed)."),
+    "/api/v1/discover/platform": ("GET", "Browse one platform's catalogue: "
+                                         "?platform=<slug or name>&sort="
+                                         "popular|released|rating|name&q="
+                                         "<title search>&page=&limit=&provider=, from the "
+                                         "first configured provider that lists "
+                                         "the platform (RAWG or IGDB). Each row "
+                                         "carries state (library, downloading, "
+                                         "monitored, unmonitored or empty) and "
+                                         "owned; has_more says whether a next "
+                                         "page exists. Pass page 1's provider "
+                                         "back as ?provider= for later pages."),
     "/api/v1/discover/library": ("GET", "Browse the library you already "
                                         "have: ?shelf=top-rated|recent|"
                                         "recently-added|hidden-gems|"

@@ -12,7 +12,7 @@ Find games, verify ROMs, and import them into your library.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-Join_ROMarr-5865F2?logo=discord&logoColor=white)](https://discord.gg/ywNFceuAd)
 [![Open Collective](https://opencollective.com/romarr/tiers/badge.svg)](https://opencollective.com/romarr)
-[![GG Requestz](https://img.shields.io/badge/Companion-GG_Requestz-8A2BE2?logo=gamepad&logoColor=white)](https://github.com/BlizzHacker/ggrequestz)
+[![GG Requestz](https://img.shields.io/badge/Companion-GG_Requestz-8A2BE2?logo=gamepad&logoColor=white)](https://github.com/XTREEMMAK/ggrequestz)
 [![RomM Ecosystem](https://img.shields.io/badge/Ecosystem-RomM-blue?logo=gamepad&logoColor=white)](https://github.com/rommapp/romm)
 [![r/romm](https://img.shields.io/badge/Reddit-r%2Fromm-FF4500?logo=reddit&logoColor=white)](https://www.reddit.com/r/romm)
 [![r/arr](https://img.shields.io/badge/Reddit-r%2Farr-FF4500?logo=reddit&logoColor=white)](https://www.reddit.com/r/arr)
@@ -23,11 +23,11 @@ Find games, verify ROMs, and import them into your library.
 [![Microsoft Store](https://img.shields.io/badge/Microsoft_Store-Windows_App-0078D4?logo=windows&logoColor=white)](https://github.com/BlizzHacker/romarr/releases)
 [![Submit Package](https://img.shields.io/badge/Package_Submissions-Submit_ROMarr-purple?logo=github&logoColor=white)](docs/SUBMISSIONS.md)
 
-**[Install](#install)** · **[First setup](docs/GETTING-STARTED.md)** · **[Discord](https://discord.gg/ywNFceuAd)** · **[Open Collective](https://opencollective.com/romarr)** · **[GG Requestz](https://github.com/BlizzHacker/ggrequestz)** · **[RomM](https://github.com/rommapp/romm)** · **[r/romm](https://www.reddit.com/r/romm)** · **[r/arr](https://www.reddit.com/r/arr)** · **[Android App & APK](docs/ANDROID.md)** · **[Unraid App](https://ca.unraid.net/apps/romarr-04jslct0riva81?q=romarr)** · **[Plugins](docs/PLUGINS.md)** · **[Roadmap](ROADMAP.md)** · **[Releases](https://github.com/BlizzHacker/romarr/releases)** · **[Submit Package](docs/SUBMISSIONS.md)** · **[Privacy](docs/PRIVACY.md)**
+**[Install](#install)** · **[First setup](docs/GETTING-STARTED.md)** · **[Discord](https://discord.gg/ywNFceuAd)** · **[Open Collective](https://opencollective.com/romarr)** · **[GG Requestz](https://github.com/XTREEMMAK/ggrequestz)** · **[RomM](https://github.com/rommapp/romm)** · **[r/romm](https://www.reddit.com/r/romm)** · **[r/arr](https://www.reddit.com/r/arr)** · **[Android App & APK](docs/ANDROID.md)** · **[Unraid App](https://ca.unraid.net/apps/romarr-04jslct0riva81?q=romarr)** · **[Plugins](docs/PLUGINS.md)** · **[Roadmap](ROADMAP.md)** · **[Releases](https://github.com/BlizzHacker/romarr/releases)** · **[Submit Package](docs/SUBMISSIONS.md)** · **[Privacy](docs/PRIVACY.md)**
 
 > [!NOTE]
 > **Community & Support:**  
-> Join the official **[ROMarr Discord](https://discord.gg/ywNFceuAd)**, follow or sponsor the project on **[Open Collective](https://opencollective.com/romarr)**, or hang out on Reddit in **[r/romm](https://www.reddit.com/r/romm)** and **[r/arr](https://www.reddit.com/r/arr)**. Connect companion game request workflows via **[GG Requestz](https://github.com/BlizzHacker/ggrequestz)** and frontend setups via **[RomM](https://github.com/rommapp/romm)**.
+> Join the official **[ROMarr Discord](https://discord.gg/ywNFceuAd)**, follow or sponsor the project on **[Open Collective](https://opencollective.com/romarr)**, or hang out on Reddit in **[r/romm](https://www.reddit.com/r/romm)** and **[r/arr](https://www.reddit.com/r/arr)**. Connect companion game request workflows via **[GG Requestz](https://github.com/XTREEMMAK/ggrequestz)** and frontend setups via **[RomM](https://github.com/rommapp/romm)**.
 
 > [!TIP]
 > **Android Beta, Handhelds & Argosy Launcher Integration!**  

@@ -2653,7 +2653,7 @@ function editList(item){
   };
 }
 
-let DISC={mode:'library',shelf:'top-rated',genre:''};
+let DISC={mode:'library',shelf:'top-rated',genre:'',platform:'',sort:'popular',q:''};
 RENDER.discover=async()=>{
   // Two sources, and the local one is the default because it works with
   // nothing configured: your own library already carries genres, ratings
@@ -2664,7 +2664,8 @@ RENDER.discover=async()=>{
                  ['multiplayer','Multiplayer'],['anniversary','On this day'],
                  ['by-genre','Genre'],['by-franchise','Franchise'],
                  ['by-company','Company']];
-  const webTabs=[['popular','Popular'],['new','New releases'],['upcoming','Upcoming']];
+  const webTabs=[['popular','Popular'],['new','New releases'],['upcoming','Upcoming'],
+                 ['platform','By platform']];
   const tabs=mine?libTabs:webTabs;
   if(mine&&!libTabs.some(t=>t[0]===DISC.shelf)) DISC.shelf='top-rated';
   if(!mine&&!webTabs.some(t=>t[0]===DISC.shelf)) DISC.shelf='popular';
@@ -2726,6 +2727,7 @@ RENDER.discover=async()=>{
     return;
   }
 
+  if(DISC.shelf==='platform'){await discoverPlatform();return;}
   const d=await j('/api/v1/discover?shelf='+DISC.shelf).catch(()=>({items:[]}));
   const shelf=DISC.shelf;
   if(!d.items||!d.items.length){
@@ -2778,6 +2780,108 @@ RENDER.discover=async()=>{
     refreshCounts();
   });
 };
+
+// One platform's whole catalogue (issue #238): pick a system, sort it,
+// search inside it, and add games without leaving the page. Every row is about
+// a platform ROMarr files, so each says whether it is already yours.
+async function discoverPlatform(){
+  const version=pageVersion;
+  const current=()=>activePage==='discover'&&pageVersion===version;
+  const sorts=[['popular','Popular'],['released','Release date'],['rating','Rating'],['name','A–Z']];
+  const stateLabel={library:'In library',downloading:'Downloading',
+                    monitored:'Wanted',unmonitored:'Wishlist'};
+  $('#d-genres').innerHTML=`<div class="row" style="gap:6px;flex-wrap:wrap">
+      <select id="dp-plat"><option value="">Choose a platform…</option>${
+        PLATFORMS.map(x=>`<option value="${esc(x.slug)}" ${x.slug===DISC.platform?'selected':''}>${esc(x.name)}</option>`).join('')}</select>
+      <select id="dp-sort">${sorts.map(([k,l])=>`<option value="${k}" ${k===DISC.sort?'selected':''}>${l}</option>`).join('')}</select>
+      <input id="dp-q" placeholder="Search this platform" value="${esc(DISC.q)}" style="min-width:200px">
+      <button class="btn ghost" id="dp-go">Search</button></div>`;
+  const rerun=()=>{
+    DISC.platform=$('#dp-plat').value; DISC.sort=$('#dp-sort').value;
+    DISC.q=$('#dp-q').value.trim(); go('discover');
+  };
+  $('#dp-plat').onchange=rerun; $('#dp-sort').onchange=rerun; $('#dp-go').onclick=rerun;
+  $('#dp-q').onkeydown=e=>{if(e.key==='Enter')rerun();};
+  if(!DISC.platform){
+    $('#d-out').innerHTML='<div class="empty">Choose a platform to browse its games.</div>';
+    return;
+  }
+  const items=[];
+  // Game titles with a save in flight, and whether a page is loading: both
+  // survive redraws, so a rebuilt button cannot send the same request twice.
+  const saving=new Set();
+  let page=0, providerLabel='', providerType='', more=false, loading=false, pageError='';
+  const tile=(g,i)=>{
+    const st=g.state||'';
+    const href=gameHref(DISC.platform,'',g.title);
+    const busy=saving.has(g.title)?' disabled':'';
+    return `<div class="tile">
+      <a href="${esc(href)}"><div class="art" style="background-image:url('${esc(g.cover_url||'')}')"></div></a>
+      <div class="nm" title="${esc(g.summary||'')}">${esc(g.title)}</div>
+      <div class="pf">${esc((g.released||'').slice(0,4))}${g.rating?' · ★'+Number(g.rating).toFixed(1):''}</div>
+      ${st?`<div class="pf" style="padding-top:0"><span class="pill">${esc(stateLabel[st]||st)}</span></div>`
+        :`<div class="rowact" style="margin-top:4px">
+          <button data-dpadd="${i}" data-search="1"${busy}>${busy?'Saving…':'Want + search'}</button>
+          <button data-dpadd="${i}" data-search="0"${busy}>Wishlist</button></div>`}</div>`;
+  };
+  const draw=()=>{
+    $('#d-out').innerHTML=`<p class="help">${fmt(items.length)} game(s) from
+        ${esc(providerLabel||'a metadata provider')}'s catalogue for this platform.
+        Badges show what is already in your library or Wanted.</p>
+      <div class="grid">${items.map(tile).join('')}</div>
+      ${pageError?`<p class="help" role="alert">${esc(pageError)}</p>`:''}
+      ${more?`<div class="row" style="margin-top:10px"><button class="btn ghost" id="dp-more"${loading?' disabled':''}>${
+        loading?'Loading…':pageError?'Try again':'Load more'}</button></div>`:''}`;
+    document.querySelectorAll('[data-dpadd]').forEach(b=>b.onclick=async()=>{
+      const g=items[Number(b.dataset.dpadd)], search=b.dataset.search==='1';
+      if(!g||saving.has(g.title))return;
+      saving.add(g.title); draw();
+      const r=await j('/api/v1/wanted/add',{method:'POST',
+        headers:{'content-type':'application/json'},
+        body:JSON.stringify({game:g.title,platform:DISC.platform,monitored:search,search})})
+        .catch(()=>({ok:false,error:'Could not save'}));
+      saving.delete(g.title);
+      refreshCounts();
+      if(!current())return;
+      if(r.ok)g.state=r.state||(search?'monitored':'unmonitored');
+      toast(r.ok?(r.search?.ok?'Download started':search?'No release yet; monitoring is on':'Saved to wishlist')
+        :(r.error||'Could not save'));
+      draw();
+    });
+    const btn=$('#dp-more'); if(btn) btn.onclick=load;
+  };
+  const load=async()=>{
+    if(loading)return;
+    loading=true; if(items.length)draw();
+    const d=await j('/api/v1/discover/platform?platform='+encodeURIComponent(DISC.platform)
+      +'&sort='+encodeURIComponent(DISC.sort)+'&q='+encodeURIComponent(DISC.q)
+      +'&page='+(page+1)+'&limit=40'
+      +(providerType?'&provider='+encodeURIComponent(providerType):''))
+      .catch(()=>({items:[],error:'Browse failed'}));
+    loading=false;
+    if(!current())return;
+    const rows=d.items||[];
+    if(!rows.length){
+      if(!items.length){
+        $('#d-out').innerHTML=`<div class="empty">${esc(d.error||'Nothing to show.')}</div>`;
+        return;
+      }
+      // Keep what is loaded and offer the same page again.
+      pageError=d.error||'The next page did not load.';
+      if(!d.error)more=false;
+      draw();
+      return;
+    }
+    page+=1; pageError='';
+    providerLabel=d.provider_label||providerLabel;
+    providerType=providerType||d.provider||'';
+    items.push(...rows);
+    more=!!d.has_more;
+    draw();
+  };
+  $('#d-out').innerHTML='<div class="empty">Browsing…</div>';
+  await load();
+}
 
 RENDER.peers=async()=>{
   const d=await j('/api/v1/peer').catch(()=>({peers:[]}));
@@ -6742,14 +6846,21 @@ RENDER.getstarted=async()=>{
     +'</p></div>';
 };
 
+// Shared torrent clients also hold films and TV. The picker lists only
+// game-looking torrents; the rest are fetched too but stay hidden until
+// "Show them anyway" reveals them in place, so DAT, platform and plan
+// choices already made on this page are kept.
 RENDER.collections=async()=>{
   const version=pageVersion;
   const current=()=>activePage==='collections'&&pageVersion===version;
   const st=await j('/api/v1/collection').catch(()=>({dats:[],batches:[]}));
   if(!current())return;
-  const sourceState=await j('/api/v1/collection/source').catch(()=>({torrents:[],jobs:[]}));
+  const sourceState=await j('/api/v1/collection/source?all=1').catch(()=>({torrents:[],jobs:[]}));
   if(!current())return;
-  const sourceTorrents=sourceState.torrents||[];
+  const allSources=sourceState.torrents||[];
+  const sourceTorrents=allSources.filter(t=>t.game!==false)
+    .concat(allSources.filter(t=>t.game===false));
+  const hiddenSources=allSources.length-allSources.filter(t=>t.game!==false).length;
   const dats=st.dats||[];
   $('#page').innerHTML='<div class="card"><h3>Plan a set</h3>'
     +(dats.length
@@ -6801,11 +6912,19 @@ RENDER.collections=async()=>{
     +'<div id="cres" style="margin-top:16px"></div></div>'
     +'<div class="card" style="margin-top:16px"><h3>Acquire missing files from a set torrent</h3>'
     +(sourceState.errors||[]).map(error=>'<div class="panel-note panel-warn">'+esc(error)+'</div>').join('')
+    +(hiddenSources>0
+      ?'<p class="help" id="csrc-hidden">'+esc(String(hiddenSources))
+       +(hiddenSources===1?' torrent that does not look like a game is':' torrents that do not look like games are')
+       +' hidden (films, TV, music). '
+       +'<a href="#collections" id="csrc-show-all">Show them anyway</a></p>'
+      :'')
     +(sourceTorrents.length&&dats.length
       ?'<p class="help">Preview a DAT plan against one existing qBittorrent or Transmission torrent. ROMarr selects only matching missing files, stages one budgeted batch at a time, verifies each staged set against the DAT, then restores the torrent’s original file priorities and paused state. The cap limits ROMarr staging copies; downloaded torrent files remain in the torrent client and need separate source storage.</p>'
-       +'<div class="row" style="flex-wrap:wrap">'
+       +'<div class="row" id="csrc-row" style="flex-wrap:wrap'
+       +(hiddenSources===allSources.length?';display:none':'')+'">'
        +'<select id="csrc-torrent">'+sourceTorrents.map(t=>
-         '<option value="'+esc(t.hash)+'" data-client="'+esc(t.client_id)+'">'
+         '<option value="'+esc(t.hash)+'" data-client="'+esc(t.client_id)+'"'
+         +(t.game===false?' hidden data-nongame="1"':'')+'>'
          +esc(t.client_name+' · '+t.name+' · '+t.state)+'</option>').join('')+'</select>'
        +'<label class="help">Staging cap (GiB) <input id="csrc-cap" type="number" min="0.01" step="1" value="100" style="width:90px"></label>'
        +'<button class="btn" id="csrc-plan">Preview source plan</button></div>'
@@ -6817,6 +6936,13 @@ RENDER.collections=async()=>{
     +'<div id="csrc-jobs" style="margin-top:10px"></div></div>'
     +'<div class="card" style="margin-top:16px"><h3>Batches</h3>'
     +'<div id="cbatch"></div></div>';
+  const showAllSources=$('#csrc-show-all');
+  if(showAllSources)showAllSources.onclick=e=>{
+    e.preventDefault();
+    document.querySelectorAll('#csrc-torrent option[data-nongame]').forEach(o=>{o.hidden=false;});
+    const row=$('#csrc-row'); if(row)row.style.display='';
+    const note=$('#csrc-hidden'); if(note)note.textContent='Showing every torrent in the client.';
+  };
 
   const drawBatches=async()=>{
     if(!current())return;

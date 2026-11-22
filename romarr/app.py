@@ -101,6 +101,8 @@ from .upgrade import is_upgrade, merge_tags, scan as scan_directory
 from .metadata import (Metadata, calendar as metadata_calendar,
                        igdb_catalog_config, igdb_catalog_platforms, igdb_catalog_search)
 from .metadata import discover as metadata_discover
+from .metadata import browse_platform as metadata_browse_platform
+from .metadata import rawg_platforms
 from .openapi import spec as openapi_spec
 from .ops import (LogRing, RateLimiter, make_backup, read_backup,
                   render_metrics, to_csv)
@@ -4229,14 +4231,20 @@ class ROMarr:
         return {(self._title_key(g.name), self._slug_of(g).casefold())
                 for g in (library or []) if self._is_local(g)}
 
-    def _igdb_platform_ids(self, cfg: dict, slug: str) -> list[int]:
-        """IGDB platform ids whose names resolve to this ROMarr platform."""
+    def _igdb_platform_ids(self, cfg: dict, slug: str, *, strict: bool = False) -> list[int]:
+        """IGDB platform ids whose names resolve to this ROMarr platform.
+
+        With `strict`, a failure to read IGDB's platform list raises instead
+        of reading as "IGDB does not list this platform".
+        """
         cache = getattr(self, "_igdb_platform_cache", None)
         config_key = (str(cfg.get("id") or ""), str(cfg.get("client_id") or ""), str(cfg.get("token") or ""))
         if cache is None or time.time() - cache[0] > 6 * 3600 or cache[2] != config_key:
             try:
                 cache = (time.time(), igdb_catalog_platforms(cfg), config_key)
             except Exception:  # noqa: BLE001 - search still works unfiltered
+                if strict:
+                    raise
                 return []
             self._igdb_platform_cache = cache
         ids = []
@@ -4245,6 +4253,60 @@ class ROMarr:
             if plat is not None and plat.slug == slug:
                 ids.append(int(row["id"]))
         return ids
+
+    def _rawg_platform_ids(self, cfg: dict, slug: str, *, strict: bool = False) -> list[int]:
+        """RAWG platform ids whose names resolve to this ROMarr platform.
+
+        With `strict`, a failure to read RAWG's platform list raises.
+        """
+        cache = getattr(self, "_rawg_platform_cache", None)
+        config_key = (str(cfg.get("id") or ""), str(cfg.get("api_key") or ""))
+        if cache is None or time.time() - cache[0] > 6 * 3600 or cache[2] != config_key:
+            try:
+                cache = (time.time(), rawg_platforms(cfg), config_key)
+            except Exception:  # noqa: BLE001 - another provider may answer
+                if strict:
+                    raise
+                return []
+            self._rawg_platform_cache = cache
+        return [int(row["id"]) for row in cache[1]
+                if (plat := resolve(row.get("name", ""))) is not None
+                and plat.slug == slug]
+
+    def discover_platform(self, platform_name: str, *, sort: str = "popular",
+                          query: str = "", page: int = 1, limit: int = 40,
+                          provider: str = "") -> dict:
+        """One page of one platform's catalogue, marked with where each game stands.
+
+        Unlike the storefront shelves, every row here is about one platform
+        ROMarr files, so each can say whether it is already in the library,
+        downloading or wanted, and be added without picking a platform.
+        """
+        platform = resolve(platform_name)
+        if platform is None:
+            return {"platform": None, "items": [], "has_more": False,
+                    "provider": None, "provider_label": "",
+                    "error": f"unknown platform: {platform_name!r}"}
+
+        def ids_for(cfg: dict) -> list[int]:
+            kind = str(cfg.get("type") or "").lower()
+            if kind == "igdb":
+                return self._igdb_platform_ids(cfg, platform.slug, strict=True)
+            if kind == "rawg":
+                return self._rawg_platform_ids(cfg, platform.slug, strict=True)
+            return []
+
+        result = metadata_browse_platform(
+            self.store.list_items("metadata_providers"), ids_for,
+            sort=sort, query=query, page=page, limit=limit, provider=provider)
+        known = self._owned_keys()
+        for row in result["items"]:
+            row["state"] = self._game_state(row.get("title", ""), platform.slug, known)
+            row["owned"] = row["state"] == "library"
+        result.update({"platform": {"slug": platform.slug, "name": platform.name},
+                       "sort": sort, "query": str(query or "").strip()[:200],
+                       "page": max(1, int(page or 1))})
+        return result
 
     def _game_state(self, title: str, slug: str, known: set | None = None) -> str:
         """library | downloading | monitored | unmonitored | '' for one game."""
@@ -5407,15 +5469,35 @@ class ROMarr:
                 return None
         return client
 
-    def collection_source_torrents(self) -> dict:
-        """List existing torrent sources and persisted acquisition jobs."""
-        rows, errors = [], []
+    def collection_source_torrents(self, include_all: bool = False) -> dict:
+        """List existing torrent sources and persisted acquisition jobs.
+
+        Torrent clients are usually shared with Radarr and Sonarr, so only
+        torrents that look like game sets are offered unless `include_all`
+        asks for everything. A torrent with an acquisition job is always kept.
+        """
+        from .source_filter import looks_like_game_torrent, torrent_labels
+
+        rows, errors, hidden = [], [], 0
+        jobs = self.store.list_items("collection_sources")
+        job_hashes = {str(job.get("torrent_hash") or "").lower()
+                      for job in jobs if isinstance(job, dict)}
         for client in self.clients:
             if not isinstance(client, QBittorrent) and type(client) is not Transmission:
                 continue
+            config = getattr(client, "_config", None)
+            own = {DEFAULT_CATEGORY, str(getattr(config, "category", "") or "")}
             try:
                 for torrent in client.torrents():
+                    torrent_hash = str(torrent.get("hash") or "").lower()
+                    is_game = (torrent_hash in job_hashes or looks_like_game_torrent(
+                        str(torrent.get("name") or ""),
+                        torrent_labels(torrent), own_categories=own))
+                    if not (include_all or is_game):
+                        hidden += 1
+                        continue
                     rows.append({
+                        "game": is_game,
                         "client_id": getattr(client, "romarr_id", ""),
                         "client_name": getattr(client, "romarr_name", client.name),
                         "hash": str(torrent.get("hash") or ""),
@@ -5430,8 +5512,8 @@ class ROMarr:
                 name = getattr(client, "romarr_name", client.name)
                 log.warning("could not list collection torrents from %s: %s", name, detail)
                 errors.append(f"{name}: {detail}")
-        return {"torrents": rows, "errors": errors,
-                "jobs": self.store.list_items("collection_sources")}
+        return {"torrents": rows, "errors": errors, "hidden": hidden,
+                "jobs": jobs}
 
     def _collection_source_plan(self, client_id: str, torrent_hash: str,
                                 dat_name: str, platform: str,
@@ -10064,6 +10146,18 @@ def make_handler(service: ROMarr):
                     month=(query.get("month") or [""])[0],
                     day=(query.get("day") or [""])[0],
                     limit=int((query.get("limit") or ["200"])[0] or 200)))
+            if route.path == "/api/v1/discover/platform":
+                def _int(name: str, default: int) -> int:
+                    try:
+                        return int((query.get(name) or [str(default)])[0] or default)
+                    except ValueError:
+                        return default
+                return self._json(200, service.discover_platform(
+                    (query.get("platform") or [""])[0],
+                    sort=(query.get("sort") or ["popular"])[0] or "popular",
+                    query=(query.get("q") or [""])[0],
+                    page=_int("page", 1), limit=_int("limit", 40),
+                    provider=(query.get("provider") or [""])[0]))
             if route.path == "/api/v1/discover":
                 return self._json(200, metadata_discover(
                     service.store.list_items("metadata_providers"),
@@ -10295,7 +10389,9 @@ def make_handler(service: ROMarr):
             if route.path == "/api/v1/collection":
                 return self._json(200, service.collection_status())
             if route.path == "/api/v1/collection/source":
-                return self._json(200, service.collection_source_torrents())
+                query = parse_qs(route.query or "")
+                include_all = (query.get("all") or [""])[0].lower() in ("1", "true", "yes")
+                return self._json(200, service.collection_source_torrents(include_all))
             if route.path == "/api/v1/openapi.json":
                 return self._json(200, openapi_spec(VERSION))
             if route.path == "/api/v1/metadataprovider":
