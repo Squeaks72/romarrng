@@ -51,6 +51,7 @@ Forks and code reuse are welcome; independent projects should use their own bran
 | Check what a collection is missing | **Collections** | A No-Intro or Redump DAT and your local library. |
 | Report a suspicious or unwanted file | **Activity → Reports & Help** | A relative library path; available scanners record evidence, quarantine is your choice. [How reporting works](docs/REPORTING.md). |
 | Connect an AI assistant | **Hub → Library Shell → AI agents (MCP)** | Your server URL and API key. [Claude, Codex, Hermes and Antigravity setup](docs/MCP.md). |
+| Chat with your own model about your library | **Hub → Chat Agent** | Ollama, an OpenAI-compatible endpoint or an Anthropic key. Searches, explains refusals and finds set gaps; asks before grabbing or changing Wanted. [How it works](docs/CHAT-AGENT.md). |
 | Reclaim space taken by exact duplicates | **Stats → Audit** | A local library; review the preview before moving duplicates to quarantine. Restore is available. |
 | Add another game source | **Hub → Plugins** | ROM Hub, included in the Windows app and amd64/arm64 Docker images. [Details](docs/PLUGINS.md). |
 | Adopt an existing RomM collection | **Settings → Library & Hub** | Point ROMarr at RomM's roms directory, keep DAT verification automatic, and pair with [Argosy Launcher](docs/ANDROID.md#argosy-launcher-and-frontend-integration). |
@@ -248,6 +249,14 @@ Source plugins live in [ROM Hub](https://github.com/BlizzHacker/rom-hub); see it
 Thanks to the library, emulator and preservation projects ROMarr works with, and to [Radarr](https://github.com/Radarr/Radarr), [Sonarr](https://github.com/Sonarr/Sonarr), [Questarr](https://github.com/Doezer/Questarr) and [gamarr](https://github.com/JeremiahM37/gamarr) for ideas and familiar workflows.
 
 Batch decompression hands disc images to [Compressatorium](https://github.com/pacnpal/compressatorium) by pacnpal over its HTTP API, through the preinstalled [Compressatorium plugin](https://github.com/BlizzHacker/rom-hub-compressatorium); no Compressatorium code is included.
+
+ScreenScraper and SteamGridDB metadata are ported from MIT-licensed [RetroArr](https://github.com/RiDDiX/RetroArr), Copyright (c) 2026 RetroArr.
+
+Demo and executable refusals, Usenet minimum age and retention, and complete-edition detection follow the behaviour of [Gamarr](https://github.com/gamarr-app/Gamarr); no Gamarr code is included.
+
+Signed webhooks, notification links and NZB detection in Torznab feeds follow the behaviour of [Questarr](https://github.com/Doezer/Questarr); no Questarr code is included.
+
+Standalone direct HTTP and BitTorrent downloads use [Mister Download Manager](https://github.com/anefzaoui/misterdownloadmanager) by anefzaoui (GPL-3.0-or-later), run as a separate program or over its Remote HTTPS API, with its settings in the preinstalled [Mister Download Manager plugin](https://github.com/BlizzHacker/rom-hub-mdm); no Mister Download Manager code is included.
 
 Soundtracks, the Switch report, wishlist monitoring and plugin start-up hardening build on MIT-licensed work from [romarrng](https://github.com/Squeaks72/romarrng), Copyright (c) 2026 MOVE WEIGHT.
 

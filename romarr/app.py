@@ -92,7 +92,7 @@ from .capture import status as capture_status
 from .catalogue import (Submission, check_source, facets as hub_facets,
                         search as hub_search, submission_link)
 from .frontends import FORMATS as FRONTEND_FORMATS
-from .metadata import PROVIDERS as METADATA_PROVIDERS
+from .metadata import PROVIDERS as METADATA_PROVIDERS, SECRET_FIELDS as METADATA_SECRET_FIELDS
 from .notify import (NOTIFIERS, Message, Notifier, failed, grabbed, imported,
                      FIELD_HELP, FIELD_LABELS, send_test,
                      update_available)
@@ -122,7 +122,8 @@ LIST_SECRETS = ("api_key", "openxbl_key", "npsso", "itchio_key",
                 "epic_code", "epic_refresh", "ea_token",
                 "battlenet_cookie", "humble_cookie")
 from .scheduler import Scheduler, next_search_due
-from .selection import (Release, best_release, infer_platform, judge, score,
+from .selection import (Release, best_release, clean_group_name, infer_platform,
+                        judge, score,
                         collection_content_kind, collection_content_refusal,
                         package_class)
 from .game_packages import (BASE, DEFAULT_PARTS, GAME_FOLDER_LIBRARIES, PACKAGE_PLATFORMS, PARTS,
@@ -182,8 +183,8 @@ SECRET_MASK = "********"
 #: providers and connections are also served by dedicated endpoints that mask
 #: the same names; import lists use LIST_SECRETS above.
 MASKED_ITEM_FIELDS = {
-    "metadata_providers": ("api_key", "token", "client_id", "client_secret"),
-    "connections": ("url", "urls", "token", "password", "key"),
+    "metadata_providers": METADATA_SECRET_FIELDS,
+    "connections": ("url", "urls", "token", "password", "key", "secret"),
     "import_lists": LIST_SECRETS,
 }
 _SECRET_KEY_WORDS = ("secret", "password", "token", "passkey", "api_key", "apikey")
@@ -2111,8 +2112,16 @@ class ROMarr:
                 urls.append(url)
         return tuple(dict.fromkeys(urls))
 
-    def _build_client(self, cfg: dict):
-        """Instantiate a configured client, preserving legacy 1-arg build_client mocks."""
+    def _build_client(self, cfg: dict, *, use_plugin: bool = True):
+        """Instantiate a configured client, preserving legacy 1-arg build_client mocks.
+
+        An MDM client takes its connection from the Mister Download Manager
+        plugin once that plugin's mode is set (`mdm_plugin.apply`), unless
+        `use_plugin` is off -- the form's Test button tries what the form shows.
+        """
+        if use_plugin:
+            from . import mdm_plugin
+            cfg = mdm_plugin.apply(cfg)
         params = inspect.signature(build_client).parameters.values()
         if any(p.name == "data_dir" or p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
             client = build_client(cfg, data_dir=str(self.store.path.parent))
@@ -2213,7 +2222,12 @@ class ROMarr:
         call site means a new secret field is covered the moment it is declared.
         """
         out = dict(self.store.settings)
-        out["download_clients"] = [redact(c) for c in out.get("download_clients", [])]
+        # An MDM client's form shows the plugin's settings once they are the
+        # ones in force, so what is edited is what runs.
+        from . import mdm_plugin
+        mdm_now = mdm_plugin.settings()
+        out["download_clients"] = [redact(mdm_plugin.apply(c, mdm_now))
+                                   for c in out.get("download_clients", [])]
         out["indexers"] = [redact_indexer(i) for i in out.get("indexers", [])]
         out["libraries"] = [redact_library(lib) for lib in out.get("libraries", [])]
         # General Settings shows the configured, enabled qBittorrent clients.
@@ -2255,6 +2269,11 @@ class ROMarr:
             if (isinstance(value, str) and value
                     and any(t in key.lower() for t in _SECRET_KEY_WORDS)):
                 out[key] = SECRET_MASK
+        if isinstance(out.get("chat_agent"), dict):
+            # The chat agent's provider key is nested, so the rule above misses it.
+            chat = dict(out["chat_agent"])
+            chat["api_key"] = SECRET_MASK if chat.get("api_key") else ""
+            out["chat_agent"] = chat
         return out
 
     def restore_masked_items(self, patch: dict) -> dict:
@@ -2280,6 +2299,9 @@ class ROMarr:
             if (isinstance(patch[key], str) and patch[key] == SECRET_MASK
                     and any(t in key.lower() for t in _SECRET_KEY_WORDS)):
                 patch[key] = self.store.settings.get(key, "")
+        if "chat_agent" in patch:
+            # A settings save echoes this masked; /api/v1/chat/config is where it changes.
+            patch["chat_agent"] = self.store.settings.get("chat_agent", {})
         return patch
 
 
@@ -2493,9 +2515,9 @@ class ROMarr:
                 return {"ok": False, "message": "Rejected the API key"}
             return {"ok": False, "message": f"{type(err).__name__}: {err}"}
 
-    def test_client(self, cfg: dict) -> dict:
+    def test_client(self, cfg: dict, *, use_plugin: bool = True) -> dict:
         """Try a configuration without saving it, the way *arr's Test does."""
-        client = self._build_client(cfg)
+        client = self._build_client(cfg, use_plugin=use_plugin)
         if client is None:
             return {"ok": False, "message": f"unknown client type: {cfg.get('type')!r}"}
         try:
@@ -2674,11 +2696,13 @@ class ROMarr:
             # different question than the request path it claims to mirror.
             releases = releases + self._hub_releases(game, None)
         asked = self._request_parts(game, platform)
+        favoured = self._preferred_group(game, platform)
         pick = best_release(releases, game, platform,
                            profile=self.profile_for(platform), blocklist=self.blocklist,
-                           parts=asked)
+                           parts=asked, preferred_group=favoured)
         scored = sorted(
-            ((score(r, game, platform, profile=self.profile_for(platform), parts=asked), r)
+            ((score(r, game, platform, profile=self.profile_for(platform), parts=asked,
+                    preferred_group=favoured), r)
              for r in releases),
             key=lambda pair: -pair[0])
         # Which indexers actually contributed, and how many of their results
@@ -2892,6 +2916,12 @@ class ROMarr:
                     merged.append(release)
         return merged
 
+    def _preferred_group(self, game: str, platform) -> str:
+        """The release group the Wanted entry for this game favours, or ""."""
+        if platform is None:
+            return ""
+        return self.store.preferred_group(game, platform.slug)
+
     def _request_parts(self, game: str, platform, parts=None):
         """What a request wants (base, update, DLC) on a package platform; None elsewhere.
 
@@ -2935,7 +2965,7 @@ class ROMarr:
         releases = self._search_releases(game, platform)
         pick = best_release(releases, game, platform,
                            profile=self.profile_for(platform), blocklist=self.blocklist,
-                           parts=asked)
+                           parts=asked, preferred_group=self._preferred_group(game, platform))
         if pick is None:
             item = QueueItem(game, platform.slug, "", 0, "failed",
                              f"no usable release among {len(releases)} result(s)",
@@ -3217,7 +3247,9 @@ class ROMarr:
             # A failure to explain must never fail the grab it explains.
             try:
                 reasons = judge(pick, game, resolve(platform_slug),
-                                profile=self.profile_for(platform_slug), parts=asked).why()
+                                profile=self.profile_for(platform_slug), parts=asked,
+                                preferred_group=self.store.preferred_group(
+                                    game, platform_slug)).why()
             except Exception:
                 reasons = ()
             self.notify(grabbed(pick.title, platform_slug,
@@ -3272,15 +3304,18 @@ class ROMarr:
 
         judged = []
         parts_for = {}   # one Wanted lookup per platform, not per release
+        group_for = {}
         for r in releases:
             inferred = platform or infer_platform(r)
             plat_prof = self.profile_for(inferred)
             slug = inferred.slug if inferred is not None else ""
             if slug not in parts_for:
                 parts_for[slug] = self._request_parts(game, inferred)
+                group_for[slug] = self._preferred_group(game, inferred)
             judged.append((judge(r, game, inferred,
                                  profile=plat_prof, blocklist=self.blocklist,
-                                 parts=parts_for[slug]), r))
+                                 parts=parts_for[slug],
+                                 preferred_group=group_for[slug]), r))
         judged.sort(key=lambda pair: (-pair[0].points, pair[1].size))
 
         key = f"{game}|{platform.slug if platform else ''}"
@@ -3766,6 +3801,8 @@ class ROMarr:
         )
         info = mdm.availability(configured_path, data_dir=self.store.path.parent)
         info["configured"] = bool(rows)
+        from . import mdm_plugin
+        info["plugin"] = mdm_plugin.status()
         info["usenet_builtin"] = any(
             type(c).__name__ == "BuiltinNzbClient" and getattr(c, "configured", False)
             for c in self.clients
@@ -4442,8 +4479,11 @@ class ROMarr:
                            or (cfg.get("name") or getattr(backend, "name", "library")) == source)]
         url = ""
         if len(candidates) == 1:
-            url = str(candidates[0].get("public_url") or candidates[0].get("url") or "")
-            if len(self.game_libraries) == 1:
+            # A library's own Browser URL wins; the global public URL is only
+            # the fallback for a single library that names none.
+            own = str(candidates[0].get("public_url") or "")
+            url = own or str(candidates[0].get("url") or "")
+            if not own and len(self.game_libraries) == 1:
                 url = str(settings.get("romm_public_url") or url)
         elif len(self.game_libraries) <= 1 and not source:
             url = str(settings.get("romm_public_url") or settings.get("_romm_url") or "")
@@ -4491,7 +4531,10 @@ class ROMarr:
         self.profile = ReleaseProfile.from_settings(self.store.settings)
         self.blocklist = Blocklist.from_items(
             self.store.list_items("blocklist"))
-        self.notifier = Notifier(self.store.list_items("connections"))
+        self.notifier = Notifier(
+            self.store.list_items("connections"),
+            base_url=(os.environ.get("ROMARR_PUBLIC_URL")
+                      or str(self.store.settings.get("public_url") or "")))
 
     def profile_for(self, platform: Any = None) -> ReleaseProfile:
         """Resolve the release profile for a given platform, with fallback to global."""
@@ -4682,7 +4725,14 @@ class ROMarr:
             try:
                 completed = getattr(client, "completed", None)
                 if callable(completed):
-                    for item in completed():
+                    # Look, don't fetch: the site, hub and debrid lanes download
+                    # inside completed(), and a stall check must not start (or
+                    # fail) the very download it is judging.
+                    try:
+                        finished = completed(fetch=False)
+                    except TypeError:
+                        finished = completed()
+                    for item in finished:
                         if match_queue_item([row], item, client_id=client_id, client_protocol=client_protocol) is not None:
                             return True
             except Exception:
@@ -6054,7 +6104,7 @@ class ROMarr:
                 metadata, snapshot, uuid.uuid4().hex)
             return True
 
-    def identify(self, filename: str = "", verification=None) -> dict:
+    def identify(self, filename: str = "", verification=None, platform: str = "") -> dict:
         """Name a game, and say how confidently.
 
         `matched_by` travels with the answer because "we matched a DAT name"
@@ -6065,7 +6115,7 @@ class ROMarr:
         with self._metadata_lock:
             metadata = self.metadata
         info = metadata.identify(verification=verification,
-                                 filename=filename)
+                                 filename=filename, platform=platform)
         return {
             "found": info.found,
             "title": info.title,
@@ -7908,7 +7958,8 @@ class ROMarr:
             pick = best_release(releases, item.game, platform,
                                profile=self.profile_for(platform), blocklist=self.blocklist,
                                parts=(self._request_parts(item.game, platform, item.parts)
-                                      if item.parts else None))
+                                      if item.parts else None),
+                               preferred_group=item.preferred_group or "")
             if pick is None or not pick.download_url:
                 continue
             result = self._automatic_grab(pick, item.game, platform.slug)
@@ -9694,6 +9745,66 @@ def make_handler(service: ROMarr):
                                    or "The plugin could not be installed. Check ROM Hub availability and try again.")
             return self._json(200 if result.get("ok") else 500, result)
 
+        def _chat_identity(self) -> str:
+            """Whose chat history this request reads: the SSO or OIDC account, else the owner."""
+            if service.sso is not None:
+                identity = service.sso.identify(self.headers, peer=self.client_address[0])
+                if identity.ok and identity.user:
+                    return "sso:" + identity.user
+            cookies = parse_cookies(self.headers.get("Cookie", ""))
+            subject = service.auth.session_subject(cookies.get(SESSION_COOKIE))
+            return "oidc:" + subject if subject else "owner"
+
+        def _chat_stream(self, events):
+            """Stream chat events as newline-delimited JSON, flushing each one."""
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            try:
+                for event in events:
+                    self.wfile.write((json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+            finally:
+                close = getattr(events, "close", None)
+                if close is not None:
+                    close()
+
+        def _chat_post(self, path: str, length: int):
+            """POST /api/v1/chat*: a bounded JSON body, then the chat agent."""
+            from . import chat_agent
+            if length < 0 or length > 65536:
+                self.close_connection = True
+                return self._json(413, {"error": "Chat request exceeds 64 KiB"})
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, UnicodeDecodeError):
+                return self._json(400, {"error": "invalid json"})
+            if not isinstance(body, dict):
+                return self._json(400, {"error": "Send a JSON object"})
+            if path == "/api/v1/chat/config":
+                try:
+                    return self._json(200, chat_agent.save_config(service, body))
+                except ValueError as exc:
+                    return self._json(400, {"error": str(exc)})
+            if path == "/api/v1/chat/models":
+                return self._json(200, chat_agent.models(service, body))
+            if path == "/api/v1/chat/test":
+                return self._json(200, chat_agent.test(service, body))
+            if path == "/api/v1/chat/confirm":
+                if not isinstance(body.get("approve"), bool) or not isinstance(body.get("id"), str):
+                    return self._json(400, {"error": "id and a boolean approve are required"})
+                return self._chat_stream(chat_agent.confirm(
+                    service, self._chat_identity(), body["id"], body["approve"]))
+            if not isinstance(body.get("message"), str):
+                return self._json(400, {"error": "message is required"})
+            return self._chat_stream(chat_agent.chat(service, self._chat_identity(), body["message"]))
+
         def _guard(self, handler):
             """Turn an unhandled failure into a reply instead of a dead socket.
 
@@ -10283,7 +10394,7 @@ def make_handler(service: ROMarr):
             if route.path == "/api/v1/blocklist":
                 return self._json(200, {"items": service.blocklist.as_items()})
             if route.path == "/api/v1/connection":
-                secrets = {"url", "urls", "token", "password", "key"}
+                secrets = {"url", "urls", "token", "password", "key", "secret"}
                 items = []
                 for cfg in service.store.list_items("connections"):
                     items.append({k: ("********" if k in secrets and v else v)
@@ -10306,7 +10417,7 @@ def make_handler(service: ROMarr):
                         ] + [
                             {"name": f, "label": FIELD_LABELS.get(f, f.replace("_", " ").title()),
                              "type": ("secret" if f in ("url", "token",
-                                                        "password", "key")
+                                                        "password", "key", "secret")
                                       else "text"),
                              "default": "",
                              "help": (spec["help"] if f == "url" else
@@ -10396,7 +10507,7 @@ def make_handler(service: ROMarr):
                 return self._json(200, openapi_spec(VERSION))
             if route.path == "/api/v1/metadataprovider":
                 from .metadata import PROVIDERS as _MP
-                secrets = {"api_key", "token", "client_id"}
+                secrets = set(METADATA_SECRET_FIELDS)
                 with service._metadata_lock:
                     providers = service.store.list_items("metadata_providers")
                     revision = service.metadata_revision
@@ -10443,8 +10554,26 @@ def make_handler(service: ROMarr):
                      "fields": list(spec["fields"]), "help": spec["help"]}
                     for name, spec in METADATA_PROVIDERS.items()]})
             if route.path == "/api/v1/metadata/lookup":
+                # A caller holding a verified dump's hashes (and its DAT name)
+                # passes them, and hash-aware providers such as ScreenScraper
+                # look the file up by hash instead of by name.
+                hashes = {}
+                for name, size in (("crc", 8), ("md5", 32), ("sha1", 40)):
+                    value = (query.get(name, [""])[0] or "").strip().lower()
+                    if value:
+                        if not re.fullmatch(r"[0-9a-f]{%d}" % size, value):
+                            return self._json(400, {"error": f"{name} must be {size} hex characters"})
+                        hashes[name] = value
+                filename = query.get("filename", [""])[0]
+                verification = None
+                if hashes:
+                    from types import SimpleNamespace
+                    verification = SimpleNamespace(
+                        status="verified", game=query.get("dat_name", [""])[0][:300],
+                        rom=SimpleNamespace(name=filename, **{k: hashes.get(k, "") for k in ("crc", "md5", "sha1")}))
                 return self._json(200, service.identify(
-                    filename=query.get("filename", [""])[0]))
+                    filename=filename, verification=verification,
+                    platform=query.get("platform", [""])[0][:64]))
             if route.path == "/api/v1/frontend/formats":
                 return self._json(200, {"formats": [
                     {"name": name, "label": spec["label"],
@@ -10741,8 +10870,16 @@ def make_handler(service: ROMarr):
                 return self._json(200, hub.exo2romm_status())
             if route.path == "/api/v1/hub/compressatorium":
                 return self._json(200, _compressatorium_status(service))
+            if route.path == "/api/v1/hub/mdm":
+                return self._json(200, _mdm_status())
             if route.path == "/api/v1/hub/fleet":
                 return self._json(200, hub.fleet_profiles())
+            if route.path == "/api/v1/chat/config":
+                from . import chat_agent
+                return self._json(200, chat_agent.public_config(service))
+            if route.path == "/api/v1/chat/history":
+                from . import chat_agent
+                return self._json(200, chat_agent.view_history(service, self._chat_identity()))
             if route.path == "/api/v1/mcp":
                 from . import mcp
                 if "text/event-stream" in self.headers.get("Accept", ""):
@@ -10762,6 +10899,7 @@ def make_handler(service: ROMarr):
                                         "sandbox_detail": why,
                                         "archive_org_auth": hub.archive_org_auth_status(),
                                         "compressatorium": _compressatorium_status(service),
+                                        "mdm": _mdm_status(),
                                         "flaresolverr_configured": bool(hub.flaresolverr_url()),
                                         "searchable_plugins": searchable,
                                         # The Plugins page says out loud what
@@ -10824,6 +10962,9 @@ def make_handler(service: ROMarr):
             if route.path.startswith("/api/v1/extras/") and (length < 0 or length > 65536):
                 self._discard(max(length, 0))
                 return self._json(413, {"error": "Extras request exceeds size limit"})
+            if route.path in ("/api/v1/chat", "/api/v1/chat/confirm", "/api/v1/chat/config",
+                              "/api/v1/chat/models", "/api/v1/chat/test"):
+                return self._chat_post(route.path, length)
 
 
 
@@ -11083,7 +11224,7 @@ def make_handler(service: ROMarr):
                     str(body.get("platform") or ""),
                     force=bool(body.get("force"))))
             if route.path == "/api/v1/metadataprovider":
-                secrets = {"api_key", "token", "client_id"}
+                secrets = set(METADATA_SECRET_FIELDS)
                 if not isinstance(body, dict):
                     return self._json(400, {"error": "invalid provider configuration"})
                 with service._metadata_lock:
@@ -11137,7 +11278,7 @@ def make_handler(service: ROMarr):
                 service.auth.totp = _Totp(secret="", backup=[])
                 return self._json(200, {"ok": True, "enabled": False})
             if route.path == "/api/v1/connection":
-                secrets = {"url", "urls", "token", "password", "key"}
+                secrets = {"url", "urls", "token", "password", "key", "secret"}
                 cfg = dict(body or {})
                 if cfg.get("id"):
                     old_cfg = service.store.get_item("connections",
@@ -11147,6 +11288,10 @@ def make_handler(service: ROMarr):
                             cfg[key] = old_cfg.get(key, "")
                 if not cfg.get("events"):
                     cfg.pop("events", None)   # absent means every event
+                secret = str(cfg.get("secret") or "")
+                if secret and len(secret) < 16:
+                    return self._json(400, {"error": "A webhook signing secret "
+                                                     "needs at least 16 characters."})
                 saved = service.store.put_item("connections", cfg)
                 service.reload_policy()
                 return self._json(200, {k: ("********" if k in secrets and v
@@ -11162,14 +11307,21 @@ def make_handler(service: ROMarr):
                 if cfg.get("id"):
                     old_cfg = service.store.get_item("metadata_providers",
                                                      str(cfg["id"])) or {}
-                    for key in ("api_key", "token", "client_id"):
+                    for key in METADATA_SECRET_FIELDS:
                         # Absent as well as masked, so testing a saved
                         # provider by id alone reports on the credential
                         # that is stored rather than on an empty one.
                         if cfg.get(key, "") in ("********", ""):
                             cfg[key] = old_cfg.get(key, "")
+                    # Identity fields that are not secret (ScreenScraper's
+                    # dev_id, a username) come back too when the request left
+                    # them out; a value the form sent is kept as sent.
+                    for key, value in old_cfg.items():
+                        cfg.setdefault(key, value)
                 try:
-                    info = spec["lookup"](cfg, "Chrono Trigger")
+                    info = (spec["lookup"](cfg, "Chrono Trigger", {"platform": "snes"})
+                            if spec.get("context") else
+                            spec["lookup"](cfg, "Chrono Trigger"))
                 except Exception as exc:
                     return self._json(200, {
                         "ok": False,
@@ -11560,7 +11712,9 @@ def make_handler(service: ROMarr):
                 if cfg.get("id"):
                     old_cfg = service.store.get_item("connections",
                                                      str(cfg["id"])) or {}
-                    for key in ("url", "token", "password", "key"):
+                    # `secret` too: the GET masks a webhook's signing secret,
+                    # and a test signed with the placeholder fails verification.
+                    for key in ("url", "token", "password", "key", "secret"):
                         if cfg.get(key, "") in ("********", ""):
                             cfg[key] = old_cfg.get(key, "")
                 ok, detail = send_test(cfg)
@@ -11621,6 +11775,25 @@ def make_handler(service: ROMarr):
                 result = compressatorium_plugin.configure(
                     url=url, api_key=api_key,
                     clear_api_key=payload.get("clear_api_key") is True)
+                return self._json(200 if result.get("ok") else 400, result)
+            if route.path == "/api/v1/hub/mdm":
+                from . import mdm_plugin
+                payload = body if isinstance(body, dict) else {}
+                fields = {k: payload.get(k)
+                          for k in ("mode", "remote_url", "api_token", "category")}
+                if any(v is not None and not isinstance(v, str) for v in fields.values()):
+                    return self._json(400, {"ok": False, "error": (
+                        "mode, remote_url, api_token and category must be strings")})
+                conns = payload.get("connections")
+                if conns is not None and (isinstance(conns, bool)
+                                          or not isinstance(conns, (int, str))):
+                    return self._json(400, {"ok": False,
+                                            "error": "connections must be a number"})
+                result = mdm_plugin.configure(
+                    **fields, connections=conns,
+                    clear_api_token=payload.get("clear_api_token") is True)
+                if result.get("ok"):
+                    service.reload_clients()
                 return self._json(200 if result.get("ok") else 400, result)
             if route.path == "/api/v1/hub/archive-org/auth":
                 payload = body if isinstance(body, dict) else {}
@@ -11706,6 +11879,17 @@ def make_handler(service: ROMarr):
                 return self._json(200, service.add_wanted(
                     game, platform, monitored=bool(body.get("monitored", True)),
                     search=bool(body.get("search")), parts=body.get("parts")))
+            if route.path == "/api/v1/wanted/preferred-group":
+                game = str(body.get("game") or "").strip()
+                platform = resolve(str(body.get("platform") or ""))
+                if not game or platform is None:
+                    return self._json(400, {"error": "game and platform are required"})
+                try:
+                    group = clean_group_name(body.get("group"))
+                except ValueError as err:
+                    return self._json(400, {"error": str(err)})
+                ok = service.store.set_preferred_group(game, platform.slug, group)
+                return self._json(200 if ok else 404, {"ok": ok, "preferred_group": group})
             if route.path == "/api/v1/wanted/monitor":
                 game = str(body.get("game") or "").strip()
                 platform = resolve(str(body.get("platform") or ""))
@@ -11743,6 +11927,16 @@ def make_handler(service: ROMarr):
                             merged["timeout"] = indexer_timeout(merged)
                         except ValueError as err:
                             return self._json(400, {"error": str(err)})
+                    else:
+                        # While the MDM plugin is set it is where these
+                        # settings live, so the edit goes there too. The
+                        # plugin is written first: if it refuses, the row
+                        # is not saved either, and the two never disagree.
+                        from . import mdm_plugin
+                        synced = mdm_plugin.sync_from_client(dict(body))
+                        if not synced.get("ok"):
+                            return self._json(400, {"error": synced.get("error")
+                                                    or "could not save the MDM plugin settings"})
                     saved = service.store.put_item(key, merged)
                     service.reload_clients()
                 return self._json(200, redact_indexer(saved) if is_indexer
@@ -11774,7 +11968,10 @@ def make_handler(service: ROMarr):
                 # Tested against the submitted form, with any untouched secret
                 # filled back in, so Test reflects what Save would store.
                 existing = service.store.get_item("download_clients", body.get("id"))                     if body.get("id") else None
-                return self._json(200, service.test_client(merge_secrets(dict(body), existing)))
+                from . import mdm_plugin
+                return self._json(200, service.test_client(
+                    mdm_plugin.for_test(body, merge_secrets(dict(body), existing)),
+                    use_plugin=False))
             if route.path in ("/api/v1/emulators/cores/install", "/api/v1/emulators/cores/configure"):
                 try:
                     core_hub = CoreHub(service.store.path.parent)
@@ -11867,6 +12064,10 @@ def make_handler(service: ROMarr):
             """Dispatch DELETE requests and serialize backend removal with restore."""
             route = urlparse(self.path)
             query_del = parse_qs(route.query)
+            if route.path == "/api/v1/chat/history":
+                from . import chat_agent
+                chat_agent.clear_history(service, chat_agent.user_key(self._chat_identity()))
+                return self._json(200, {"ok": True})
             if route.path == "/api/v1/portal/proxy":
                 length = int(self.headers.get("Content-Length") or 0)
                 raw_body = self.rfile.read(min(length, 25 * 1024 * 1024)) if length > 0 else b""
@@ -12030,6 +12231,12 @@ def _compressatorium_status(service) -> dict:
     return compressatorium_plugin.status(service._env)
 
 
+def _mdm_status() -> dict:
+    """The Mister Download Manager card's state; never the API token itself."""
+    from . import mdm_plugin
+    return mdm_plugin.status()
+
+
 def serve(port: int = 6868, env: dict[str, str] | None = None):
     service = ROMarr(env, defer_dats=True)
     # Reconcile integration rows that were mid-dispatch when the server
@@ -12043,8 +12250,10 @@ def serve(port: int = 6868, env: dict[str, str] | None = None):
     # Plugins ROMarr ships with are installed once, the first time ROM Hub is
     # available; never again, so one the operator disabled stays disabled.
     try:
-        from . import compressatorium_plugin
+        from . import compressatorium_plugin, mdm_plugin, preinstalled_plugins
         compressatorium_plugin.preinstall_in_background()
+        mdm_plugin.preinstall_in_background()
+        preinstalled_plugins.preinstall_defaults_in_background()
     except Exception:
         log.exception("plugin preinstall skipped (non-fatal)")
 

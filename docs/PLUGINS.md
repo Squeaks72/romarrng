@@ -16,7 +16,13 @@
 
 One plugin comes preinstalled: **Compressatorium** ([rom-hub-compressatorium](https://github.com/BlizzHacker/rom-hub-compressatorium)), which holds the address of a [Compressatorium](https://github.com/pacnpal/compressatorium) container for batch decompression (see [Features](FEATURES.md#batch-decompression)). ROMarr installs it once, the first time it starts with ROM Hub available: from a copy bundled in the Docker image, otherwise from GitHub. If you disable it, it stays disabled.
 
+A second plugin comes preinstalled the same way: **Mister Download Manager (direct downloads)** ([rom-hub-mdm](https://github.com/BlizzHacker/rom-hub-mdm)), which holds the settings of the two standalone download clients built on [Mister Download Manager](https://github.com/anefzaoui/misterdownloadmanager) (by anefzaoui, GPL-3.0-or-later). Its card in **Hub → Plugins** takes a mode (`cli` or `remote`), the remote URL, the API token (kept in ROM Hub's secret store), the number of connections for direct HTTP, and an optional MDM category. Once a mode is set, **Standalone Direct HTTP (MDM)** and **Standalone BitTorrent (MDM)** both use these settings, and saving either client in **Settings → Download Clients** writes its settings back to the plugin, so the two always agree. With no mode set, each client keeps its own settings. The plugin's `cores` entries also offer MDM's official release archives for Linux x86_64, Windows x86_64 and macOS, each with the SHA-256 GitHub reports for it and the release's `SHA256SUMS.txt` beside it. No MDM code is included in ROMarr or the plugin.
+
 The top of the Plugins page reports whether plugins can run confined on your host. Installing a plugin runs third-party code with access available to the ROMarr process, so read its repository and install sources you trust.
+
+## Plugins installed with ROMarr
+
+A new ROMarr installs these source plugins on its first start, alongside the Compressatorium and Mister Download Manager plugins: **Archive.org**, **Homebrew** (gbdev), **libretro content**, **ScummVM freeware** and **Universal-DB**. Each was checked against its live source before it was added. They are installed once; disable any of them on the **ROM Hub** page and ROMarr leaves it disabled.
 
 ## Install and use a searchable plugin
 
@@ -162,6 +168,7 @@ ROMarr's **Hub → Library Shell** (`/#portal`), **Hub → Plugins** (`/#hub`), 
 - **Multi-Device & Network Fleet Manager (`/api/v1/hub/fleet`)**: Synchronize verified 1G1R sets and `gamelist.xml` / Playnite / LaunchBox manifests across local LAN/SMB/NFS shares, SSH/Tailscale handhelds, and cloud WebDAV targets — supporting **ES-DE**, **Raspberry Pi / RetroPie / ArcadePunks / Batocera**, **Argosy Launcher**, **Grout** (muOS/NextUI), **DeckRommSync** (Steam Deck), **SwitchRomM / Tinfoil**, **pkgj / pkgi / fpkgi**, **Kekatsu**, and **RetroArch Cloud Sync**.
 - **Igir v5.8.0 1G1R Front-End (`/api/v1/hub/igir`)**: Full GUI and API wrapper for Igir v5.8.0 with native `{romm}`, `{es}`, and `{batocera}` output folder tokens.
 - **ROMarr MCP (`/api/v1/mcp`)**: Connect Claude, Codex, Hermes or Antigravity directly to your own server. Streamable HTTP and a portable stdio bridge support API-key authentication. Read-only tools are enabled by default; [setup and permissions](MCP.md). Open-Eyes is a separate optional desktop-control tool.
+- **Chat Agent (`/api/v1/chat`)**: A built-in chat panel that uses your own Ollama, OpenAI-compatible or Anthropic model with ROMarr's tools. Off until enabled; actions that change your library wait for your confirmation. [Setup and tools](CHAT-AGENT.md).
 
 ### Platform-specific searches
 
