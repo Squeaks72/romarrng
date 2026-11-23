@@ -194,6 +194,11 @@ class QueueItem:
     # The parts the request asked for when this row was grabbed, so an
     # import that brings only some of them can leave the rest on Wanted.
     parts: list[str] = field(default_factory=list)
+    # When a client last reported this download waiting its turn or paused
+    # (qBittorrent queuedDL / pausedDL / stoppedDL). The stall timeout runs
+    # from the later of this and `at`, so a torrent that sat in the queue
+    # past the timeout still gets the whole timeout to start once it leaves.
+    waited_at: str = ""
 
 
 @dataclass
@@ -255,6 +260,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # used by ROM Hub's broker/downloader when an allowed HTTPS source answers
     # with a Cloudflare challenge. Never passed to untrusted plugin code.
     "flaresolverr_url": "",
+    # Extra git forges plugins may be installed from, comma separated. They
+    # add to catalogue.DEFAULT_ALLOWED_HOSTS; they never replace it.
+    "plugin_hosts": "",
     "romm_public_url": "",
     # --- OpenID Connect sign-in (Authentik or any OIDC IdP) ---
     # Off until an issuer + client id exist. Distinct from forward-auth SSO
@@ -279,6 +287,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Confidential-client secret, if the IdP issued one. Underscore prefix
     # marks it a credential so it is masked out of any settings response.
     "_oidc_client_secret": "",
+    # A GitHub token for ROM Hub's GitHub API reads (plugin listings of
+    # releases, cores, cheats, thumbnails). A token with no scopes is enough.
+    # Write-only, like the OIDC secret: never returned by the settings API.
+    "_github_token": "",
     # Read ROM hashes from the library server so netplay can match on bytes.
     # Daily and at startup; off only if you never want the traffic.
     "hash_index": True,
@@ -743,8 +755,8 @@ class Store:
             if notes is not None:
                 row["notes"] = str(notes)
             fields = {k: v for k, v in row.items()
-                      if k in ("status", "rating", "notes")
-                      and v not in ("", 0, None)}
+                      if k in ("status", "rating", "notes", "identity")
+                      and v not in ("", 0, None, {})}
             if fields:
                 row = {**fields, "game": game, "platform": platform}
                 table[key] = row
@@ -756,6 +768,21 @@ class Store:
                 table.pop(key, None)
         self.save()
         return dict(row)
+
+    def set_game_identity(self, platform: str, game: str, identity: dict) -> None:
+        """What the metadata providers said a verified import is (#247).
+
+        Kept beside the operator's own status, rating and notes, under its
+        own key so a provider's rating never overwrites theirs.
+        """
+        key = self._meta_key(platform, game)
+        with self._lock:
+            table = self.settings.setdefault("game_meta", {})
+            row = dict(table.get(key) or {})
+            row.update({"identity": dict(identity), "game": row.get("game") or game,
+                        "platform": row.get("platform") or platform})
+            table[key] = row
+        self.save()
 
     def game_meta(self, platform: str, game: str) -> dict:
         with self._lock:
@@ -870,6 +897,9 @@ class Store:
                 if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
                     raise ValueError("FlareSolverr URL must start with http:// or https://")
             patch = dict(patch, flaresolverr_url=raw_solver)
+        if "plugin_hosts" in patch:
+            from .catalogue import parse_hosts
+            patch = dict(patch, plugin_hosts=", ".join(parse_hosts(patch["plugin_hosts"])))
         with self._lock:
             # No catalog provenance can be trusted without a selected DAT root.
             # Refuse the whole patch before changing memory or the saved file.

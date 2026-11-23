@@ -32,6 +32,7 @@ Routes:
 from __future__ import annotations
 
 import inspect
+import dataclasses
 import json
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -64,6 +65,7 @@ from .clients import QBittorrent, QbitConfig, QbitAuthenticationError, Romm, Rom
 from . import soundtracks as soundtracks_mod
 from . import extras as extras_mod
 from . import hub  # ROM Hub bridge -- the Cartridge plugin layer
+from . import plugin_dashboard  # per-plugin dashboard (settings, how-to, try it)
 from . import clamav, scanners, nup, mdm
 from .emulators import EmulatorHub
 from .libretro import CoreHub
@@ -187,6 +189,7 @@ MASKED_ITEM_FIELDS = {
     "connections": ("url", "urls", "token", "password", "key", "secret"),
     "import_lists": LIST_SECRETS,
 }
+SERVER_OWNED_SETTINGS = ("chat_agent", "cloud_storage")
 _SECRET_KEY_WORDS = ("secret", "password", "token", "passkey", "api_key", "apikey")
 
 
@@ -1020,6 +1023,10 @@ class ROMarr:
             nightly.git_checkout_revision(startup_install)
             if startup_install.kind == "git" else "")
         self._collection_lock = threading.RLock()
+        # One set pass at a time. The scheduler and the page's "Run next"
+        # button both step batches; without this two passes could take the
+        # same slice and request every title in it twice.
+        self._collection_batch_lock = threading.RLock()
         self._probe_lock = threading.Lock()
         self._inflight_probes: dict[int, tuple[object, threading.Event, dict[str, object]]] = {}
         # Background sweeps overlap, and client I/O happens before the queue row
@@ -1078,6 +1085,10 @@ class ROMarr:
         hub.configure_flaresolverr(
             str(self.store.settings.get("flaresolverr_url")
                 or e.get("ROM_HUB_FLARESOLVERR_URL", "") or "")
+        )
+        hub.configure_github_token(
+            str(self.store.settings.get("_github_token")
+                or e.get("ROM_HUB_GITHUB_TOKEN", "") or "")
         )
 
         # The headless RetroArch stream server, if the operator runs one. It is
@@ -1364,6 +1375,20 @@ class ROMarr:
                 return float(self.store.settings.get(key) or 0) * 3600
             return read
 
+        # Cloud storage (romarr/cloud_storage.py, cloud_jobs.py). Built here so
+        # file-host accounts are registered for grabs before anyone opens the
+        # page; rclone itself starts only on first use.
+        from .cloud_storage import CloudStorage
+        from .cloud_jobs import CloudJobs
+        self.cloud = CloudStorage(self)
+        self.cloud_jobs = CloudJobs(self.cloud, self)
+        import atexit
+        atexit.register(self._cloud_close)
+        try:
+            self.cloud_jobs.automount()
+        except Exception:                          # noqa: BLE001 - never fatal
+            log.warning("cloud automount did not start", exc_info=True)
+
         self.scheduler = Scheduler()
         self.scheduler.add("SoundtrackTorrents", "Add finished soundtrack torrents to RomM",
                            lambda: 30 if self._soundtracks_watching() else 0,
@@ -1390,6 +1415,20 @@ class ROMarr:
             lambda: (900 if self.store.settings.get(
                 "blocklist_failed_downloads", True) else 0),
             lambda: self.retire_dead_downloads()["message"])
+        # A set queued on the Collections page used to sit at 0% until someone
+        # pressed "Run next" for every slice -- 380 presses for a 1,900-title
+        # set. One slice per interval keeps the original promise (a set is
+        # not more important than the indexers' other traffic) without
+        # needing a person at the keyboard. Off when nothing is queued.
+        self.scheduler.add(
+            "CollectionSets", "Work through queued collection sets",
+            lambda: (60 * self._collection_interval_minutes()
+                     if self._collection_batches_active() else 0),
+            lambda: self.collection_tick()["message"])
+        self.scheduler.add(
+            "CloudJobs", "Run scheduled cloud storage jobs",
+            lambda: 60 if self.cloud_jobs.scheduled() else 0,
+            lambda: self.cloud_jobs.tick())
         self.scheduler.add(
             "ListSync", "Sync import lists into Wanted",
             _hours("list_sync_interval_hours"),
@@ -2255,8 +2294,9 @@ class ROMarr:
         # here by name for the same reason as the two above: the underscore
         # is a naming convention, not a boundary, and `_romm_url` proves the
         # convention is not a reliable one to filter on.
+        out["github_token_set"] = bool(str(out.get("_github_token") or "").strip())
         for secret in ("_api_key", "_password_hash", "_peers",
-                       "_oidc_client_secret"):
+                       "_oidc_client_secret", "_github_token"):
             out.pop(secret, None)
         # Everything else that carries a credential, by the same masking the
         # dedicated endpoints already use. The dedicated endpoints masked these;
@@ -2299,9 +2339,11 @@ class ROMarr:
             if (isinstance(patch[key], str) and patch[key] == SECRET_MASK
                     and any(t in key.lower() for t in _SECRET_KEY_WORDS)):
                 patch[key] = self.store.settings.get(key, "")
-        if "chat_agent" in patch:
-            # A settings save echoes this masked; /api/v1/chat/config is where it changes.
-            patch["chat_agent"] = self.store.settings.get("chat_agent", {})
+        # Settings owned by their own endpoints (/api/v1/chat/config,
+        # /api/v1/cloud/*): a settings save echoes them, and must not rewrite them.
+        for key in SERVER_OWNED_SETTINGS:
+            if key in patch:
+                patch[key] = self.store.settings.get(key, {})
         return patch
 
 
@@ -2314,6 +2356,14 @@ class ROMarr:
                 self._reports_manager = FileReports(lambda: self.library, self.store.path.parent,
                     lambda: dict(self.store.settings), self._env, version=VERSION)
             return self._reports_manager
+
+    def _cloud_close(self) -> None:
+        """Unmount cloud mounts and stop rclone when ROMarr exits."""
+        try:
+            self.cloud_jobs.unmount_all()
+            self.cloud.close()
+        except Exception:                          # noqa: BLE001 - exiting anyway
+            pass
 
     def setup_status(self) -> dict:
         """A quick setup checklist, without probing services or returning secrets."""
@@ -2789,7 +2839,16 @@ class ROMarr:
             if not row.get("title"):
                 continue
             plugin_slug = str(row.get("plugin") or "")
+            if plugin_slug in hub.NON_GAME_PLUGINS:
+                # Guides, videos, mods and tools are not the game.
+                continue
             extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+            if str(extra.get("downloadable") or "") == "browser":
+                # Arcade Punks and The ROM Depot: the download needs the
+                # member's own browser session, so the Hub cannot fetch it
+                # and a grab would only ever fail. Shown on the plugin's
+                # card instead.
+                continue
             is_minerva = plugin_slug == "minerva-archive"
             magnet = str(row.get("magnet") or "")
             file_path = str(extra.get("path") or "")
@@ -2832,8 +2891,8 @@ class ROMarr:
                 title=row["title"],
                 size=int(row.get("size_bytes") or 0),
                 seeders=0,
-                # A plugin result is a game by definition -- it came from a
-                # ROM source. 1000 is the console range the scorer accepts;
+                # A result from a game source (NON_GAME_PLUGINS are skipped
+                # above) is a game. 1000 is the console range the scorer accepts;
                 # inventing a category would make `is_game_release` reject
                 # every row the Hub returned.
                 categories=(1000,),
@@ -3111,6 +3170,15 @@ class ROMarr:
         except ValueError as err:
             return {"ok": False, "error": str(err)}
         client = pick_client(pick.protocol, self.clients)
+        if client is None and getattr(pick, "mirrors", ()):
+            # A Hydra row offers its other links too: with no client for the
+            # magnet, a mirror the file-host route can fetch still gets it.
+            route = pick_client("hoster", self.clients)
+            if route is not None:
+                pick = dataclasses.replace(pick, protocol="hoster",
+                                           download_url=pick.mirrors[0],
+                                           mirrors=tuple(pick.mirrors[1:]))
+                client = route
         if client is None:
             # Not the release's fault -- blocklisting it here would punish a
             # perfectly good torrent because the operator has not set up a
@@ -3205,6 +3273,15 @@ class ROMarr:
                         else (getattr(client, "last_error", "")
                               or f"{client_label} did not confirm the torrent")
                     )
+        elif getattr(client, "protocol", "") == "hoster":
+            # Every link the source listed, best first: a file host no route
+            # can take falls through to the next instead of failing the grab.
+            ok = client.add(pick.download_url, name=pick.title,
+                            mirrors=getattr(pick, "mirrors", ()))
+            download_id = client.last_job_id if ok else ""
+            release_fault = False
+            if not ok:
+                failure_detail = client.last_error or failure_detail
         else:
             ok, download_id = hand_off_with_id(client, pick.download_url,
                                                name=pick.title)
@@ -3266,6 +3343,53 @@ class ROMarr:
         if not ok:
             result["error"] = failure_detail
         return result
+
+    def grab_arcade_punks(self, url: str, game: str = "", platform_slug: str = "") -> dict:
+        """Send one pasted Arcade Punks link to the client that can take it.
+
+        NZB zips go to the Usenet client, .torrent links to the torrent
+        client, Mega and Rapidgator links to a debrid service. With a
+        platform (given, or read from an Atomiswave-style title) the job is
+        queued like any grab and imported when it finishes. A whole build has
+        no platform to import into, so it is downloaded and recorded only.
+        """
+        from . import arcade_punks
+        try:
+            link = arcade_punks.classify(url)
+        except arcade_punks.LinkError as err:
+            return {"ok": False, "error": str(err)}
+        lane = arcade_punks.ArcadePunksLane(self.clients)
+        if lane.target(link.kind) is None:
+            return {"ok": False, "kind": link.kind, "error": arcade_punks.no_client(link.kind)}
+        label = arcade_punks.job_name(link)
+        pack = arcade_punks.parse_pack(game or link.name)
+        game = str(game or pack.game or label).strip()[:200]
+        platform = None
+        if platform_slug:
+            platform = resolve(platform_slug)
+            if platform is None:
+                return {"ok": False, "error": f"unknown platform: {platform_slug!r}"}
+        elif pack.platform:
+            platform = resolve(pack.platform)
+        out = {"kind": link.kind, "release": label, "pack": pack.as_dict()}
+        if platform is None:
+            ok = lane.add(link.url, name=label)
+            if not ok:
+                return {**out, "ok": False, "error": lane.last_error}
+            self.store.record(Event(
+                kind="grabbed", game=game, platform="", release=label,
+                indexer=f"arcade-punks:{link.kind}",
+                detail=f"sent to {lane.delegate_name}; download only, not imported "
+                       "(no platform)"))
+            return {**out, "ok": True, "queued": False, "client": lane.delegate_name}
+        pick = Release(title=label, size=0, seeders=0, categories=(1000,),
+                       download_url=link.url, protocol=lane.protocol,
+                       indexer=f"arcade-punks:{link.kind}")
+        result = self._submit_grab(lane, pick, game, platform.slug, True, "", None)
+        if not result.get("ok") and lane.last_error:
+            result["error"] = lane.last_error
+        return {**out, **result, "queued": bool(result.get("ok")),
+                "platform": platform.slug, "client": lane.delegate_name}
 
     # -- interactive search -------------------------------------------------
     #
@@ -4709,6 +4833,10 @@ class ROMarr:
                 log.warning("%s failed_jobs() failed: %s", name, err)
         return jobs
 
+    #: qBittorrent states for a torrent that is waiting its turn or was paused
+    #: by the operator -- not stalled, whatever its age (see below).
+    _WAITING_TORRENT_STATES = frozenset({"queuedDL", "pausedDL", "stoppedDL"})
+
     def _is_download_active_or_complete(self, row: QueueItem) -> bool:
         """Return True if a download client reports `row` is completed or actively transferring (#108).
 
@@ -4749,6 +4877,17 @@ class ROMarr:
                             return True
                         dlspeed = int(item.get("dlspeed", 0) or 0)
                         state = str(item.get("state") or "")
+                        # Waiting, not dead. With queueing on, qBittorrent
+                        # holds every torrent past `max_active_downloads` (4
+                        # by default) in queuedDL, and one the operator
+                        # paused sits in pausedDL/stoppedDL. Neither has had
+                        # a chance to download, so the grab's age says
+                        # nothing about the release: retiring them after the
+                        # stall timeout blocklisted and deleted 2,240 queued
+                        # torrents on one install.
+                        if state in self._WAITING_TORRENT_STATES:
+                            row.waited_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                            return True
                         if dlspeed > 0 or state in (
                             "downloading", "forcedDL", "checkingDL",
                             "checkingUP", "allocating", "moving",
@@ -4795,13 +4934,29 @@ class ROMarr:
 
     @staticmethod
     def _row_age_minutes(row, now) -> float | None:
-        """How long this row has been waiting, or None if it will not say."""
+        """How long this row has been eligible to download, or None if it will not say.
+
+        Measured from the grab, or from the last time a client reported the
+        download waiting in its queue or paused, whichever is later: a
+        torrent that waited out the whole stall timeout behind qBittorrent's
+        active-download limit must not be retired the moment it starts.
+        """
         try:
             stamped = datetime.fromisoformat(row.at)
         except (TypeError, ValueError):
             return None
         if stamped.tzinfo is None:
             stamped = stamped.replace(tzinfo=timezone.utc)
+        waited = getattr(row, "waited_at", "") or ""
+        if waited:
+            try:
+                left = datetime.fromisoformat(waited)
+            except (TypeError, ValueError):
+                left = None
+            if left is not None:
+                if left.tzinfo is None:
+                    left = left.replace(tzinfo=timezone.utc)
+                stamped = max(stamped, left)
         return (now - stamped).total_seconds() / 60.0
 
     def unblock(self, entry_id: str) -> bool:
@@ -5061,6 +5216,7 @@ class ROMarr:
             forced = force and status == BAD_DUMP
             self._index_hash(verdict, platform.slug, source.stem,
                              outcome.destination, sha1=outcome.sha1)
+            self._identify_after_import(verdict, platform.slug, source.stem)
             self.store.record(Event(
                 kind="imported", game=source.stem, platform=platform.slug,
                 release=source.name, library=label,
@@ -5418,6 +5574,22 @@ class ROMarr:
 
         from .collections import Batch, BATCH_PENDING
 
+        # Every title in a set is requested for ONE platform. With none, the
+        # request has nowhere to go: each one failed as "unknown platform"
+        # and the batch still read 100% done. Default to the DAT's own
+        # platform, and refuse plainly when that cannot be worked out.
+        dat_name, dat_error = self._loaded_dat_name(str(dat_name or ""))
+        if dat_error:
+            return {"error": dat_error}
+        platform = str(platform or "").strip()
+        if not platform:
+            platform = self._dat_platform(dat_name)
+        chosen = resolve(platform) if platform else None
+        if chosen is None:
+            return {"error": "pick the platform this DAT is for before "
+                             "requesting a set; ROMarr could not work it "
+                             "out from the DAT's name"}
+        platform = chosen.slug
         plan = self.collection_plan(dat_name, platform, **policy_kw)
         if plan.get("error"):
             return plan
@@ -5440,6 +5612,10 @@ class ROMarr:
         other traffic. Draining the queue in one pass would also mean losing
         the lot if the process stopped halfway.
         """
+        with self._collection_batch_lock:
+            return self._collection_step(batch_id)
+
+    def _collection_step(self, batch_id: str) -> dict:
         from .collections import BATCH_DONE, BATCH_PAUSED, BATCH_RUNNING
 
         batches = self._batches()
@@ -5449,21 +5625,90 @@ class ROMarr:
         if batch.status == BATCH_PAUSED:
             return {"paused": True, **batch.progress()}
 
+        if not resolve(batch.platform or ""):
+            guess = self._dat_platform(batch.dat)
+            if guess:
+                batch.platform = guess
         batch.status = BATCH_RUNNING
         for name in batch.take():
+            if not resolve(batch.platform or ""):
+                batch.record(name, ok=False,
+                             reason="this set has no platform; cancel it and "
+                                    "request it again with a platform chosen")
+                continue
             try:
-                self.request(name, batch.platform)
-                batch.record(name, ok=True)
+                # The same once-only handoff RSS and the Wanted sweep use: a
+                # title already queued, downloading or awaiting import review
+                # (from any path, or another set) is not handed off again.
+                result = self._automatic_request(name, batch.platform)
             except Exception as err:  # noqa: BLE001 - one title must not stop the set
                 batch.record(name, ok=False,
                              reason=f"{err.__class__.__name__}: {err}")
+                continue
+            # `request` reports most failures in its result rather than
+            # raising. Counting those as done showed a set as complete when
+            # nothing had been grabbed.
+            if isinstance(result, dict) and result.get("skipped"):
+                # Already on its way. Counted as requested, never as failed.
+                batch.record(name, ok=True)
+                continue
+            if isinstance(result, dict) and result.get("ok") is False:
+                reason = str(result.get("error") or "request failed")
+                if reason.startswith("no usable release"):
+                    # `request` put the title on Wanted; say so, because
+                    # "failed" alone reads as "dropped".
+                    reason += " (kept on Wanted; the Wanted search retries it)"
+                batch.record(name, ok=False, reason=reason)
+            else:
+                batch.record(name, ok=True)
         if not batch.queue:
             batch.status = BATCH_DONE
         self.store.put_item("batches", batch.to_dict())
         self.store.save()
         return batch.progress()
 
+    #: Minutes between scheduled set passes when the setting is absent.
+    COLLECTION_INTERVAL_MINUTES = 10
+
+    def _collection_interval_minutes(self) -> int:
+        """Minutes between scheduled set passes (setting, at least 1)."""
+        try:
+            value = int(self.store.settings.get("collection_batch_interval_minutes")
+                        or self.COLLECTION_INTERVAL_MINUTES)
+        except (TypeError, ValueError):
+            value = self.COLLECTION_INTERVAL_MINUTES
+        return max(1, value)
+
+    def _collection_batches_active(self) -> bool:
+        """Whether any queued set still has titles to request."""
+        from .collections import BATCH_PENDING, BATCH_RUNNING
+        return any(raw.get("queue") and raw.get("status") in (BATCH_PENDING, BATCH_RUNNING)
+                   for raw in self.store.list_items("batches"))
+
+    def collection_tick(self) -> dict:
+        """One scheduled pass: the next slice of every set that is not paused."""
+        from .collections import BATCH_PENDING, BATCH_RUNNING
+        stepped, requested, failed = 0, 0, 0
+        for batch in list(self._batches().values()):
+            if batch.status not in (BATCH_PENDING, BATCH_RUNNING) or not batch.queue:
+                continue
+            before_done, before_failed = len(batch.done), len(batch.failed)
+            after = self.collection_step(batch.id)
+            if after.get("error") or after.get("paused"):
+                continue
+            stepped += 1
+            requested += max(0, int(after.get("done", 0)) - before_done)
+            failed += max(0, int(after.get("failed", 0)) - before_failed)
+        if not stepped:
+            return {"stepped": 0, "message": "no collection set is queued"}
+        return {"stepped": stepped, "requested": requested, "failed": failed,
+                "message": f"{stepped} set(s): {requested} requested, {failed} failed"}
+
     def collection_control(self, batch_id: str, action: str) -> dict:
+        with self._collection_batch_lock:
+            return self._collection_control(batch_id, action)
+
+    def _collection_control(self, batch_id: str, action: str) -> dict:
         from .collections import BATCH_PAUSED, BATCH_PENDING
 
         batches = self._batches()
@@ -5486,9 +5731,47 @@ class ROMarr:
         self.store.save()
         return batch.progress()
 
+    def _loaded_dat_name(self, dat_name: str) -> tuple[str, str]:
+        """The loaded DAT a set will use, as (name, error).
+
+        `collection_plan` falls back to the first loaded DAT when the name is
+        empty. A NAMED DAT that is not loaded must not take that fallback: the
+        platform would be inferred from the requested name while the titles
+        came from a different system's DAT.
+        """
+        names = self.dat_names()
+        if dat_name:
+            if dat_name in names:
+                return dat_name, ""
+            return "", (f"DAT {dat_name!r} is not loaded; pick one of the "
+                        "loaded DATs")
+        if not names:
+            return "", ("no DAT loaded. Point DAT_PATH at a No-Intro or "
+                        "Redump directory, or add one under Settings.")
+        return names[0], ""
+
+    def _dat_platform(self, dat_name: str) -> str:
+        """The platform slug a DAT most likely covers, or "" (a UI default)."""
+        from .collections import platform_for_dat
+        catalog = self.store.settings.get("dat_catalog_platforms")
+        return platform_for_dat(dat_name, catalog if isinstance(catalog, dict) else None)
+
+    #: How many failure reasons each batch row carries to the page. Enough
+    #: to see the pattern ("no usable release" forty times); the full list
+    #: stays in the store for Retry failed.
+    _BATCH_FAILURES_SHOWN = 20
+
     def collection_status(self) -> dict:
-        return {"batches": [b.progress() for b in self._batches().values()],
-                "dats": self.dat_names()}
+        dats = self.dat_names()
+        return {"batches": [
+                    {**b.progress(),
+                     "failures": [{"title": name, "reason": reason}
+                                  for name, reason in
+                                  list(b.failed.items())[:self._BATCH_FAILURES_SHOWN]]}
+                    for b in self._batches().values()],
+                "dats": dats,
+                "dat_platforms": {name: self._dat_platform(name) for name in dats},
+                "interval_minutes": self._collection_interval_minutes()}
 
     def _is_source_torrent(self, client, row) -> bool:
         """Keep active DAT sources out of ordinary completion and import previews."""
@@ -5622,7 +5905,10 @@ class ROMarr:
         import shutil
         import uuid
 
-        platform = str(platform or "").strip()
+        dat_name, dat_error = self._loaded_dat_name(str(dat_name or ""))
+        if dat_error:
+            return {"error": dat_error}
+        platform = str(platform or "").strip() or self._dat_platform(dat_name)
         if not platform:
             return {"error": "select a platform before starting source acquisition"}
         selected_platform = resolve(platform)
@@ -6923,6 +7209,51 @@ class ROMarr:
         roots = [self.library]
         roots.extend(self.library_root(cfg) for cfg, _ in self.game_libraries)
         return {"hash_index": index, "duplicate_roots": tuple(dict.fromkeys(roots))}
+
+    def _identify_after_import(self, verdict, platform: str, game: str) -> None:
+        """Name a verified import from its hashes, in the background (#247).
+
+        The import has already verified the file against a DAT, so it holds
+        the dump's CRC, MD5 and SHA-1; hash-aware providers (ScreenScraper)
+        identify by those far more reliably than by a file name. Queued on one
+        worker and never awaited: metadata must not slow, block or fail an
+        import, and a provider that is down costs nothing but the metadata.
+        """
+        from .dat import VERIFIED
+        if getattr(verdict, "status", "") != VERIFIED or not game:
+            return
+        with self._metadata_lock:
+            metadata = self.metadata
+        try:
+            if metadata is None or not metadata.can_identify():
+                return
+        except Exception:                          # noqa: BLE001 - enhancement only
+            return
+
+        def job():
+            try:
+                info = metadata.identify(verification=verdict, platform=platform)
+                if not info.found:
+                    return
+                self.store.set_game_identity(platform, game, {
+                    "title": info.title, "summary": info.summary,
+                    "released": info.released, "rating": info.rating,
+                    "genres": list(info.genres), "cover_url": info.cover_url,
+                    "source": info.source, "matched_by": info.matched_by,
+                    "identified_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                })
+            except Exception:                      # noqa: BLE001 - enhancement only
+                log.debug("metadata for %s could not be fetched", game, exc_info=True)
+
+        with self._lock:
+            pool = getattr(self, "_identify_pool", None)
+            if pool is None:
+                pool = self._identify_pool = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="romarr-identify")
+        try:
+            pool.submit(job)
+        except RuntimeError:                       # interpreter shutting down
+            pass
 
     def _index_hash(self, verdict, platform: str, fallback: str,
                     destination=None, *, sha1: str = "") -> None:
@@ -9418,6 +9749,7 @@ class ROMarr:
                     if outcome.sha1:
                         self._index_hash(outcome.verification, platform.slug, game_title,
                                          outcome.destination, sha1=outcome.sha1)
+                        self._identify_after_import(outcome.verification, platform.slug, game_title)
                     self.store.record(Event(kind="imported", game=game_title,
                                             platform=platform.slug, release=name,
                                             library=label,
@@ -9775,6 +10107,21 @@ def make_handler(service: ROMarr):
                 if close is not None:
                     close()
 
+        def _cloud_post(self, path: str, length: int):
+            """POST /api/v1/cloud/*: a bounded JSON body, then cloud storage."""
+            from .cloud_routes import post as cloud_post
+            if length < 0 or length > 65536:
+                self.close_connection = True
+                return self._json(413, {"error": "Cloud request exceeds 64 KiB"})
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, UnicodeDecodeError):
+                return self._json(400, {"error": "invalid json"})
+            if not isinstance(body, dict):
+                return self._json(400, {"error": "Send a JSON object"})
+            code, payload = cloud_post(service, path, body)
+            return self._json(code, payload)
+
         def _chat_post(self, path: str, length: int):
             """POST /api/v1/chat*: a bounded JSON body, then the chat agent."""
             from . import chat_agent
@@ -10106,6 +10453,21 @@ def make_handler(service: ROMarr):
             """Serve UI HTML pages and JSON API GET endpoints."""
             route = urlparse(self.path)
             query = parse_qs(route.query)
+            if route.path == "/api/v1/cloud/oauth/callback":
+                from .cloud_routes import oauth_callback
+                ok, message = oauth_callback(service, {k: v[0] for k, v in query.items()})
+                if ok:
+                    self.send_response(302)
+                    self.send_header("Location", "/#cloud")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return None
+                return self._json(400, {"error": message})
+            if route.path == "/api/v1/cloud" or route.path.startswith("/api/v1/cloud/"):
+                from .cloud_routes import get as cloud_get
+                code, payload = cloud_get(service, route.path,
+                                          {k: v[0] for k, v in query.items()})
+                return self._json(code, payload)
 
 
 
@@ -10284,12 +10646,27 @@ def make_handler(service: ROMarr):
                 items = [redact_indexer(i)
                          for i in service.store.list_items("indexers")]
                 proxied, err = [], None
-                try:
-                    proxied = service.prowlarr.indexers()
-                except Exception as exc:
-                    err = str(exc)
+                prowlarr_cfg = getattr(service.prowlarr, "_config", None)
+                if str(getattr(prowlarr_cfg, "base_url", "") or "").strip():
+                    try:
+                        proxied = service.prowlarr.indexers()
+                    except Exception as exc:
+                        # A sentence, not a Python exception: the card shows it.
+                        log.warning("prowlarr indexer list failed: %s", exc)
+                        err = ("Prowlarr did not answer. Check its address and API key "
+                               "under Indexers.")
                 return self._json(200, {"items": items, "proxied": proxied,
                                         "error": err})
+            if route.path == "/api/v1/hydra/library":
+                from .hydra import library_sources
+
+                try:
+                    rows = library_sources(query=(query.get("q") or [""])[0][:100])
+                except Exception as err:
+                    return self._json(502, {"items": [], "error":
+                                            f"library.hydra.wiki did not answer "
+                                            f"({type(err).__name__})"})
+                return self._json(200, {"items": rows})
             if route.path == "/api/v1/downloadclient":
                 return self._json(200, {"items": service.download_clients()})
             if route.path == "/api/v1/downloadclient/schema":
@@ -10864,6 +11241,12 @@ def make_handler(service: ROMarr):
                     game, (query.get("platform") or [""])[0]))
             if route.path == "/api/v1/hub/plugins":
                 return self._json(200, hub.plugins())
+            if route.path == "/api/v1/hub/plugin/detail":
+                slug = (query.get("slug") or [""])[0].strip()
+                if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+                    return self._json(400, {"error": "a plugin slug is required"})
+                result = plugin_dashboard.detail(slug)
+                return self._json(200 if result.get("ok") else 404, result)
             if route.path == "/api/v1/hub/igir":
                 return self._json(200, hub.igir_status())
             if route.path == "/api/v1/hub/exo2romm":
@@ -10872,6 +11255,16 @@ def make_handler(service: ROMarr):
                 return self._json(200, _compressatorium_status(service))
             if route.path == "/api/v1/hub/mdm":
                 return self._json(200, _mdm_status())
+            if route.path == "/api/v1/arcade-punks":
+                return self._json(200, _arcade_punks_status(service))
+            if route.path == "/api/v1/arcade-punks/search":
+                from . import arcade_punks
+                try:
+                    limit = int(query.get("limit", ["25"])[0] or 25)
+                except ValueError:
+                    return self._json(400, {"error": "limit must be a number"})
+                return self._json(200, arcade_punks.search(
+                    query.get("q", [""])[0], limit=limit))
             if route.path == "/api/v1/hub/fleet":
                 return self._json(200, hub.fleet_profiles())
             if route.path == "/api/v1/chat/config":
@@ -10900,6 +11293,7 @@ def make_handler(service: ROMarr):
                                         "archive_org_auth": hub.archive_org_auth_status(),
                                         "compressatorium": _compressatorium_status(service),
                                         "mdm": _mdm_status(),
+                                        "arcade_punks": _arcade_punks_status(service),
                                         "flaresolverr_configured": bool(hub.flaresolverr_url()),
                                         "searchable_plugins": searchable,
                                         # The Plugins page says out loud what
@@ -10965,6 +11359,8 @@ def make_handler(service: ROMarr):
             if route.path in ("/api/v1/chat", "/api/v1/chat/confirm", "/api/v1/chat/config",
                               "/api/v1/chat/models", "/api/v1/chat/test"):
                 return self._chat_post(route.path, length)
+            if route.path.startswith("/api/v1/cloud/"):
+                return self._cloud_post(route.path, length)
 
 
 
@@ -11795,11 +12191,40 @@ def make_handler(service: ROMarr):
                 if result.get("ok"):
                     service.reload_clients()
                 return self._json(200 if result.get("ok") else 400, result)
+            if route.path == "/api/v1/arcade-punks/grab":
+                payload = body if isinstance(body, dict) else {}
+                fields = {k: payload.get(k, "") for k in ("url", "game", "platform")}
+                if any(not isinstance(v, str) for v in fields.values()):
+                    return self._json(400, {"ok": False,
+                                            "error": "url, game and platform must be strings"})
+                result = service.grab_arcade_punks(
+                    fields["url"], game=fields["game"], platform_slug=fields["platform"])
+                return self._json(200 if result.get("ok") else 400, result)
             if route.path == "/api/v1/hub/archive-org/auth":
                 payload = body if isinstance(body, dict) else {}
                 result = hub.archive_org_auth_configure(
                     email=payload.get("email", ""), password=payload.get("password", ""),
                     clear=payload.get("clear", False))
+                return self._json(200 if result.get("ok") else 400, result)
+            if route.path in ("/api/v1/hub/plugin/config", "/api/v1/hub/plugin/run"):
+                payload = body if isinstance(body, dict) else {}
+                slug = str(payload.get("slug") or "").strip()
+                if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+                    return self._json(400, {"error": "a plugin slug is required"})
+                if route.path == "/api/v1/hub/plugin/config":
+                    values, secrets_in = payload.get("values") or {}, payload.get("secrets") or {}
+                    clear = payload.get("clear") or []
+                    if not (isinstance(values, dict) and isinstance(secrets_in, dict)
+                            and isinstance(clear, list)):
+                        return self._json(400, {"error": "values and secrets are objects, clear a list"})
+                    result = plugin_dashboard.save(slug, values, secrets_in, clear)
+                else:
+                    result = plugin_dashboard.run(
+                        slug, str(payload.get("action") or ""),
+                        query=str(payload.get("query") or ""),
+                        platform=str(payload.get("platform") or ""),
+                        rom_id=str(payload.get("rom_id") or ""),
+                        source_id=str(payload.get("source_id") or ""))
                 return self._json(200 if result.get("ok") else 400, result)
             if route.path == "/api/v1/hub/plugin":
                 slug = (body.get("slug") or "").strip()
@@ -12186,6 +12611,11 @@ def make_handler(service: ROMarr):
                 secret = body.get("_oidc_client_secret")
                 if "_oidc_client_secret" in body and secret in ("", "********"):
                     body.pop("_oidc_client_secret")
+                # Same rule for the GitHub token; `clear_github_token` empties it.
+                if body.pop("clear_github_token", False):
+                    body["_github_token"] = ""
+                elif "_github_token" in body and body["_github_token"] in ("", "********"):
+                    body.pop("_github_token")
                 # Serialize public settings writes with the updater launch.
                 try:
                     with service._lock:
@@ -12193,6 +12623,8 @@ def make_handler(service: ROMarr):
                         updated = service.store.update_settings(body)
                         if "flaresolverr_url" in body:
                             hub.configure_flaresolverr(str(updated.get("flaresolverr_url") or ""))
+                        if "_github_token" in body:
+                            hub.configure_github_token(str(updated.get("_github_token") or ""))
                 except ValueError as exc:
                     return self._json(400, {"error": str(exc)})
                 if any(str(k).startswith("oidc") or k == "_oidc_client_secret"
@@ -12225,6 +12657,12 @@ def make_handler(service: ROMarr):
     return Handler
 
 
+def _arcade_punks_status(service) -> dict:
+    """The Arcade Punks card's state: plugin, link routes and setup hints."""
+    from . import arcade_punks
+    return arcade_punks.status(service._env, service.clients)
+
+
 def _compressatorium_status(service) -> dict:
     """The Compressatorium card's state; never the API key itself."""
     from . import compressatorium_plugin
@@ -12254,6 +12692,8 @@ def serve(port: int = 6868, env: dict[str, str] | None = None):
         compressatorium_plugin.preinstall_in_background()
         mdm_plugin.preinstall_in_background()
         preinstalled_plugins.preinstall_defaults_in_background()
+        from . import arcade_punks
+        arcade_punks.preinstall_in_background()
     except Exception:
         log.exception("plugin preinstall skipped (non-fatal)")
 

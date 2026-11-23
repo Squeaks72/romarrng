@@ -108,6 +108,56 @@ def is_translation(name: str) -> bool:
     return "translation" in flags_in(name)
 
 
+#: Bracketed DAT tags that mark a set of non-game media. Redump publishes
+#: "Sony - PlayStation Portable (UMD Video)" and "(UMD Music)": films and
+#: albums on PSP discs. Defaulting them to the PSP platform would plan a set
+#: of PSP "games" that are not games, so they get no default platform.
+_NON_GAME_DAT_TAGS = frozenset({"umd video", "umd music"})
+
+
+def platform_for_dat(dat_name: str, catalog: dict | None = None) -> str:
+    """The ROMarr platform a No-Intro or Redump DAT most likely describes.
+
+    Only a default for the Collections page, never a decision: the operator
+    can pick any platform. Without one the plan compared a DAT against the
+    first page of the whole library and every request had nowhere to go, which
+    is the most common way a first set "did nothing".
+
+    `catalog` is the operator's own `dat_catalog_platforms` mapping and wins
+    when it names this DAT. Otherwise the DAT's name is matched with
+    `platforms.resolve`, which only accepts exact names and aliases: first the
+    whole name without its bracketed tags, then the name without its vendor
+    ("Nintendo - Game Boy Advance" -> "Game Boy Advance"), then each remaining
+    part on its own ("Sega - Master System - Mark III" -> "Master System").
+    The vendor part is never tried alone: "Nintendo" is an NES alias, and a
+    Game Boy DAT must not default to the NES. Returns "" when nothing matches.
+    """
+    from .platforms import resolve
+
+    name = str(dat_name or "").strip()
+    if not name:
+        return ""
+    for key, slug in (catalog or {}).items():
+        if str(key).strip().casefold() == name.casefold():
+            chosen = resolve(str(slug or ""))
+            if chosen is not None:
+                return chosen.slug
+    tags = {t.strip().casefold() for t in _PAREN.findall(name)}
+    if tags & _NON_GAME_DAT_TAGS:
+        return ""
+    base = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", "", name).strip()
+    candidates = [base]
+    parts = [p.strip() for p in base.split(" - ") if p.strip()]
+    if len(parts) > 1:
+        candidates.append(" - ".join(parts[1:]))
+        candidates.extend(parts[1:])
+    for text in candidates:
+        platform = resolve(text) if text else None
+        if platform is not None:
+            return platform.slug
+    return ""
+
+
 def flags_in(name: str) -> set[str]:
     """Which categories a DAT name declares.
 

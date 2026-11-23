@@ -48,10 +48,11 @@ Forks and code reuse are welcome; independent projects should use their own bran
 |---|---|---|
 | Import ROMs I already have | **Manual Import** | A destination folder and access to the source files. No indexer or download client needed. |
 | Find and download a particular game | **Add New** or **Interactive Search** | A search source, a matching download client, and a destination folder. |
-| Check what a collection is missing | **Collections** | A No-Intro or Redump DAT and your local library. |
+| Check what a collection is missing | **Collections** ([guide](docs/COLLECTIONS.md)) | A No-Intro or Redump DAT and your local library. |
 | Report a suspicious or unwanted file | **Activity → Reports & Help** | A relative library path; available scanners record evidence, quarantine is your choice. [How reporting works](docs/REPORTING.md). |
 | Connect an AI assistant | **Hub → Library Shell → AI agents (MCP)** | Your server URL and API key. [Claude, Codex, Hermes and Antigravity setup](docs/MCP.md). |
 | Chat with your own model about your library | **Hub → Chat Agent** | Ollama, an OpenAI-compatible endpoint or an Anthropic key. Searches, explains refusals and finds set gaps; asks before grabbing or changing Wanted. [How it works](docs/CHAT-AGENT.md). |
+| Back up, offload, mount or import from cloud storage | **Settings → Cloud & File Hosts** | Google Drive, OneDrive, Dropbox, MEGA, S3 and 70+ more through rclone, or the built-in Google Drive and OneDrive. Also Rapidgator and 1fichier premium accounts and MultiUp mirrors for downloads. [Guide](docs/CLOUD-STORAGE.md). |
 | Reclaim space taken by exact duplicates | **Stats → Audit** | A local library; review the preview before moving duplicates to quarantine. Restore is available. |
 | Add another game source | **Hub → Plugins** | ROM Hub, included in the Windows app and amd64/arm64 Docker images. [Details](docs/PLUGINS.md). |
 | Adopt an existing RomM collection | **Settings → Library & Hub** | Point ROMarr at RomM's roms directory, keep DAT verification automatic, and pair with [Argosy Launcher](docs/ANDROID.md#argosy-launcher-and-frontend-integration). |
@@ -257,6 +258,7 @@ Demo and executable refusals, Usenet minimum age and retention, and complete-edi
 Signed webhooks, notification links and NZB detection in Torznab feeds follow the behaviour of [Questarr](https://github.com/Doezer/Questarr); no Questarr code is included.
 
 Standalone direct HTTP and BitTorrent downloads use [Mister Download Manager](https://github.com/anefzaoui/misterdownloadmanager) by anefzaoui (GPL-3.0-or-later), run as a separate program or over its Remote HTTPS API, with its settings in the preinstalled [Mister Download Manager plugin](https://github.com/BlizzHacker/rom-hub-mdm); no Mister Download Manager code is included.
+The preinstalled [Arcade Punks plugin](https://github.com/BlizzHacker/rom-hub-arcade-punks) searches [Arcade Punks](https://www.arcadepunks.com)' public catalogue, and ROMarr downloads the NZB, torrent, Mega and Rapidgator links its members paste ([guide](docs/ARCADE-PUNKS.md)); no Arcade Punks content is included.
 
 Soundtracks, the Switch report, wishlist monitoring and plugin start-up hardening build on MIT-licensed work from [romarrng](https://github.com/Squeaks72/romarrng), Copyright (c) 2026 MOVE WEIGHT.
 

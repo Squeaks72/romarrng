@@ -26,6 +26,43 @@ log = logging.getLogger(__name__)
 # console range and the PC-games sub-range are of interest here.
 CONSOLE_CATEGORIES = range(1000, 2000)
 PC_GAME_CATEGORIES = range(4050, 4070)
+# Newznab "Other" (8000 Other, 8010 Misc, 8020 Hashed). General-purpose
+# trackers -- BitSearch, Knaben, The Pirate Bay -- file most ROM uploads here,
+# not under Console. A release in Other is a game only when its title proves
+# it (see `other_has_rom_evidence`); a film or an album filed there is not.
+OTHER_CATEGORIES = range(8000, 9000)
+# "PC" (4000) and "PC/ISO" (4020): where general trackers put PC games they do
+# not file under 4050 PC/Games -- next to every application. Same rule as
+# Other: kept only when the title proves a game for the platform asked for.
+PC_GENERIC_CATEGORIES = (4000, 4020)
+
+# What a release in those categories is when it is not a game. Matched as
+# whole words; any one of them refuses the release however good its title.
+_NOT_A_GAME_MARKERS = (
+    "ost", "soundtrack", "soundtracks", "flac", "mp3", "320kbps", "lossless",
+    "artbook", "art book", "artworks", "ai generated", "wallpaper", "wallpapers",
+    "manga", "comic", "comics", "novel", "cosplay", "audiobook", "magazine",
+    "strategy guide", "players guide", "official guide",
+)
+
+# What a PC game's title carries instead of an extension or region tag.
+_PC_GAME_EVIDENCE = (
+    "gog", "fitgirl", "dodi", "elamigos", "kaos", "repack", "portable",
+    "x64", "win64", "steam", "steamrip", "multi", "build",
+)
+_VERSION_STRING = re.compile(
+    r"\bv\d+(?:\.\d+){1,3}[a-z]?\b|(?<![\d.])\d+\.\d+\.\d+(?:\.\d+)?(?![\d.])",
+    re.IGNORECASE)
+# A PC build for another operating system is not a Windows game.
+_OTHER_OS_MARKERS = ("linux", "mac", "macos", "osx", "android", "apk")
+
+# A No-Intro / Redump region tag: "(USA)", "(Europe)", "(Japan, USA)",
+# "(World)", "(USA) (En,Fr)". The naming every ROM set uses and almost nothing
+# else does, so it counts as evidence for a release filed under Other.
+_DAT_REGION_TAG = re.compile(
+    r"\((?:(?:USA|Europe|Japan|World|Asia|Korea|Brazil|Australia|Germany|France|"
+    r"Spain|Italy|Netherlands|Sweden|China|Taiwan|Hong Kong|Canada|Russia|Scandinavia)"
+    r"(?:,\s*)?)+\)", re.IGNORECASE)
 
 # Platform names that, when they appear in a title, mean the release is for a
 # DIFFERENT system than the one asked for. A search for a SNES game happily
@@ -417,6 +454,13 @@ class Release:
     # When the indexer says the release was posted, as ISO-8601 UTC, or ""
     # when it did not say. Usenet minimum age and retention read it.
     published: str = ""
+    # The platform the source itself files this release under (a Hydra
+    # source's `platform` code, resolved to a ROMarr slug). Evidence for that
+    # platform and a refusal for every other one.
+    platform_hint: str = ""
+    # Other links to the same release, best first, tried in order when the
+    # download link cannot be fetched (a Hydra row's other file hosts).
+    mirrors: tuple[str, ...] = ()
 
 
 def collection_content_kind(path: str) -> str:
@@ -452,6 +496,43 @@ def is_game_release(release: Release) -> bool:
         c in CONSOLE_CATEGORIES or c in PC_GAME_CATEGORIES
         for c in release.categories
     )
+
+
+def is_other_release(release: Release) -> bool:
+    """Filed only under Newznab "Other" (8000-8999), or generic PC / PC-ISO."""
+    return bool(release.categories) and all(
+        c in OTHER_CATEGORIES or c in PC_GENERIC_CATEGORIES for c in release.categories)
+
+
+def other_has_rom_evidence(release: Release, platform) -> bool:
+    """Whether an "Other" release's title proves it is a ROM for `platform`.
+
+    A ROM extension of that platform, its name or a scoring alias, or a
+    No-Intro / Redump region tag. Without a platform there is nothing to
+    prove it against, so an Other release is never taken blind.
+    """
+    if platform is None:
+        return False
+    lowered = (release.title or "").lower()
+    spaced = re.sub(r"[._\-]+", " ", lowered)
+    if any(_mentions(spaced, m) for m in _NOT_A_GAME_MARKERS):
+        return False
+    if any(c in PC_GENERIC_CATEGORIES for c in release.categories) and platform.slug != "win":
+        return False
+    if platform.slug == "win":
+        if any(_mentions(spaced, m) for m in _OTHER_OS_MARKERS):
+            return False
+        return bool(any(_mentions(spaced, m) for m in _PC_GAME_EVIDENCE)
+                    or _VERSION_STRING.search(lowered)
+                    or _has_extension(lowered, platform.extensions))
+    if _has_extension(lowered, platform.extensions):
+        return True
+    if _mentions(lowered, platform.slug.lower()) or _mentions(lowered, platform.name.lower()):
+        return True
+    if any(_mentions(lowered, a) for a in platform.aliases
+           if a.lower() not in _NON_SCORING_ALIASES):
+        return True
+    return bool(_DAT_REGION_TAG.search(release.title or ""))
 
 
 def _normalise(text: str) -> str:
@@ -890,7 +971,8 @@ def judge(release: Release, wanted: str,
                                   content_path=release.torrent_file_path)
         if refusal:
             return Judgement(-900, verdict=refusal)
-    if not is_game_release(release):
+    if not is_game_release(release) and not (
+            is_other_release(release) and other_has_rom_evidence(release, platform)):
         return Judgement(-1000, verdict="not a game release (wrong category)")
     if platform is not None and platform.media != "digital" and release.categories:
         if all(4000 <= c < 5000 for c in release.categories):
@@ -902,6 +984,9 @@ def judge(release: Release, wanted: str,
     demo = demo_refusal(release.title, wanted)
     if demo:
         return Judgement(-1000, verdict=demo)
+    hint = getattr(release, "platform_hint", "") or ""
+    if platform is not None and hint and not same_machine(hint, platform.slug):
+        return Judgement(-300, verdict=f"the source files it under another platform ({hint})")
 
     points = 0
     reasons: list[tuple[int, str]] = []
@@ -1145,6 +1230,11 @@ def judge(release: Release, wanted: str,
             if not has_ext:
                 return Judgement(-300, verdict="collection path has no platform evidence")
 
+    if (platform is not None and hint and not path_confirms_platform
+            and same_machine(hint, platform.slug)):
+        add(60, f"the source files it under {platform.name}")
+        path_confirms_platform = True
+
     has_ext = False
     names_plat = False
     names_explicit_name = False
@@ -1293,6 +1383,11 @@ def infer_platform(release: Release) -> Platform | None:
          or Newznab/Torznab PC category IDs (`4050` PC/Games) -> `win`.
     """
     from .platforms import PLATFORMS, resolve
+
+    # 0. The source said which platform it is (a Hydra row's platform code).
+    hinted = resolve(release.platform_hint) if getattr(release, "platform_hint", "") else None
+    if hinted is not None:
+        return hinted
 
     text = f"{release.title or ''} {release.torrent_file_path or ''}".lower()
     # 1. Unique ROM extension

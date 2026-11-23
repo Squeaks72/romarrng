@@ -38,6 +38,11 @@ log = logging.getLogger(__name__)
 
 # Newznab category ids sent with every search. Console + PC games only.
 SEARCH_CATEGORIES = (1000, 4050)
+# Asked for separately, never folded into SEARCH_CATEGORIES: general trackers
+# file ROMs under Other (8000) and PC games under plain PC (4000, with 4020),
+# and in one combined query those categories' films, albums and apps would
+# use up each indexer's result limit before the games did.
+OTHER_SEARCH_CATEGORIES = (8000, 4000)
 
 # A .torrent metainfo file is small compared with the ROMs it describes. Keep
 # the local proxy bounded so a broken or hostile indexer cannot fill RAM.
@@ -345,16 +350,40 @@ class Prowlarr:
             return privacy
 
     def search(self, term: str, *, limit: int = 100) -> list[Release]:
-        """Search every configured indexer for a game."""
-        url = self._url("search", query=term, categories=list(SEARCH_CATEGORIES),
+        """Search every configured indexer for a game.
+
+        Two queries: the game categories, then Other on its own. The second
+        is best-effort -- a failure there never costs the game results -- and
+        what it finds is only kept by the scorer when the title proves it is
+        a ROM (selection.other_has_rom_evidence).
+        """
+        # One after the other, deliberately. Run concurrently (tried in #259)
+        # the two fan-outs queue behind each other inside Prowlarr, which
+        # limits requests per indexer: the Other query then hit the 60s
+        # timeout and its results were lost, for little time saved (82s
+        # against 93s on a 54-indexer install). In sequence each takes ~30s.
+        rows = self._search_rows(term, SEARCH_CATEGORIES, limit)
+        try:
+            other = self._search_rows(term, OTHER_SEARCH_CATEGORIES, limit)
+        except Exception as err:  # noqa: BLE001 - best effort; never costs the game results
+            log.warning("prowlarr Other-category search failed: %s", err.__class__.__name__)
+            other = []
+        seen = {str(r.get("guid") or r.get("downloadUrl") or r.get("title")) for r in rows}
+        rows += [r for r in other
+                 if str(r.get("guid") or r.get("downloadUrl") or r.get("title")) not in seen]
+        privacy = self._private_ids()
+        return [self._to_release(row, privacy) for row in rows]
+
+    def _search_rows(self, term: str, categories, limit: int) -> list[dict]:
+        url = self._url("search", query=term, categories=list(categories),
                         type="search", limit=limit)
         response = self._requests.get(self._session,
             url, headers={"X-Api-Key": self._config.api_key},
             timeout=self._config.timeout,
         )
         response.raise_for_status()
-        privacy = self._private_ids()
-        return [self._to_release(row, privacy) for row in response.json()]
+        body = response.json()
+        return body if isinstance(body, list) else []
 
     def is_prowlarr_download_url(self, url: str) -> bool:
         """Whether a result URL points back to this configured Prowlarr host.
@@ -969,6 +998,12 @@ def build_indexer(cfg: dict):
         return TorrentRss(TorrentRssConfig(
             url=cfg["url"], name=name,
             private=bool(cfg.get("private", True)), timeout=timeout))
+    if driver == "hydra":
+        from .hydra import HydraSource, HydraSourceConfig
+
+        return HydraSource(HydraSourceConfig(
+            url=cfg["url"], name=name,
+            categories=tuple(indexer_categories(cfg)), timeout=timeout))
     if driver == "potato":
         return TorrentPotato(TorrentPotatoConfig(
             url=cfg["url"], name=name,
@@ -1149,6 +1184,26 @@ INDEXER_TYPES = {
                           help="The RSS URL, including any passkey it needs"),
             INDEXER_FIELD("priority", "Priority", "int", 25),
             INDEXER_FIELD("private", "Private tracker", "bool", True),
+        ],
+    },
+    "hydra": {
+        "label": "Hydra Launcher source",
+        "protocol": "any",
+        "driver": "hydra",
+        "help": "A Hydra Launcher download source (a .json URL). Magnets go to "
+                "your torrent client, file links to Mister Download Manager or "
+                "Direct HTTP, and file-host links to a debrid service. Browse "
+                "library.hydra.wiki from the Indexers page to pick one.",
+        "fields": [
+            _TIMEOUT_FIELD,
+            INDEXER_FIELD("name", "Name", default="Hydra source"),
+            INDEXER_FIELD("enable", "Enable", "bool", True),
+            INDEXER_FIELD("url", "Source URL",
+                          help="The source's .json URL, e.g. one listed on library.hydra.wiki"),
+            INDEXER_FIELD("categories", "Categories", default="",
+                          help="Leave empty: rows with a platform are filed as console "
+                               "(1000), rows without as PC (4050)"),
+            INDEXER_FIELD("priority", "Priority", "int", 25),
         ],
     },
     "torrentpotato": {

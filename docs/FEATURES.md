@@ -14,6 +14,12 @@ Demo, kiosk and trial builds are refused, as are executables named like a ROM or
 
 ScreenScraper can be added under **Settings → Metadata**. It identifies a verified ROM by its hash and needs ScreenScraper developer credentials. SteamGridDB, with a free API key, only supplies a cover when the provider that named the game had none.
 
+### Hydra Launcher sources
+
+A **Hydra Launcher source** is an indexer type: one `.json` list of releases and their links, as Hydra Launcher reads it. **Settings → Indexers → Browse the library** lists the sources catalogued on [library.hydra.wiki](https://library.hydra.wiki) and adds one with a click. ROMarr reads a source at most once an hour and searches it locally.
+
+Console sources such as Redump, No-Intro and Rutracker consoles name each row's platform. That platform counts as evidence for it, and a row filed under a different platform is refused, so a PS2 request never takes the PS3 game of the same name. Magnets go to your torrent client, links to a file go to Mister Download Manager or Direct HTTP, and links to a file host's page (1fichier, Gofile, pixeldrain and others) take the first route that can fetch them: the host's own public download API where it has one, otherwise Real-Debrid or AllDebrid. A row's other links are kept as mirrors and tried in turn. ROMarr never solves a captcha or waits out a free-download timer; a link nothing can fetch fails the grab with the host's name and what to add. The reader is ported from RetroArr (MIT).
+
 ## Files, verification and names
 
 The importer reads supported archives, identifies ROM candidates and files them under the destination platform. Multi-track discs need all referenced tracks. Arcade/Neo Geo and DOS archives can be kept intact because their internal layout matters to the emulator.
@@ -32,7 +38,7 @@ RAR archives, split RAR sets (`.part01.rar`, `.rar` + `.r00`, `.001`) and any ot
 
 ![Collections 1G1R comparison and set torrent planner](img/collections.png)
 
-**Collections** compares a loaded DAT with the selected library/platform. You can review missing entries and apply the available region/1G1R policy. A DAT describes a set; it does not supply downloads.
+**Collections** compares a loaded DAT with the selected library/platform. You can review missing entries and apply the available region/1G1R policy. A DAT describes a set; it does not supply downloads. The [Collections guide](COLLECTIONS.md) walks through a first set, every option, worked examples and every status and error.
 
 For an existing qBittorrent or Transmission set torrent, selective acquisition first previews matched files and sidecars. ROMarr changes file priorities for a batch within your staging budget, verifies downloaded data before importing, and saves progress across restarts. Completion or cancellation restores the original file selection, priorities and paused state. The workflow does not delete the source torrent or its original downloaded data. Account for those source files separately from the staging budget.
 
@@ -100,6 +106,10 @@ Use `ws://HOST:3000` as Browser Host, with an address reachable from ROMarr. Kee
 CAPTCHAs, access challenges and blocked downloads can stop a fetch. The client reports the reason; it does not promise to bypass source restrictions.
 
 `GET /api/v1/downloadclient/browser` reports availability and why the client cannot run when a requirement is missing.
+
+## Cloud storage and file-host accounts
+
+Connect Google Drive, OneDrive, Dropbox, MEGA, Box, pCloud, S3/B2/Wasabi/R2 and every other provider rclone supports, or use the built-in Google Drive and OneDrive clients. Jobs back up, mirror or offload library folders, import from a cloud folder or a Google Drive share link, and back up ROMarr's settings; an rclone mount can be a library root. Rapidgator and 1fichier premium accounts fetch those hosts' links, and MultiUp links are split into their mirrors. See [Cloud storage](CLOUD-STORAGE.md).
 
 ## Notifications
 

@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir --prefix=/install -r /tmp/requirements.txt
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" != "arm" ]; then \
       pip install --no-cache-dir --prefix=/install \
-        "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/0d4f7114db4b047bc90a78912574a823e3b10527.tar.gz"; \
+        "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/a563e70dd3792568c97cc8342935d359e0a7a7ea.tar.gz"; \
     fi
 
 
@@ -47,17 +47,25 @@ ARG TARGETARCH
 # libseccomp is the runtime half of the sandbox pyseccomp was built against.
 # ROM Hub installs catalogue plugins from pinned repository refs, so git is a
 # runtime dependency rather than builder cargo.
-RUN apk add --no-cache su-exec tzdata libarchive-tools libseccomp git
+# rclone is the cloud storage engine (romarr/cloud_rclone.py): Google Drive,
+# OneDrive, Dropbox, MEGA, S3 and the rest. fuse3 lets it mount a cloud folder
+# as a library root when the container is given /dev/fuse.
+RUN apk add --no-cache su-exec tzdata libarchive-tools libseccomp git rclone fuse3
 
-# Plugins ROMarr ships preinstalled (romarr/compressatorium_plugin.py). Each is
+# Plugins ROMarr ships preinstalled (romarr/compressatorium_plugin.py,
+# romarr/arcade_punks.py). Each is
 # a git checkout at a pinned tag, because ROM Hub installs plugins from git;
 # ROMarr installs it into ROM_HUB_HOME on first start, with no network.
 # Not on armv7, which has no ROM Hub.
 ARG COMPRESSATORIUM_PLUGIN_REF=v0.1.0
+ARG ARCADE_PUNKS_PLUGIN_REF=v0.1.0
 RUN if [ "$TARGETARCH" != "arm" ]; then \
       git clone --quiet --depth 1 --branch "$COMPRESSATORIUM_PLUGIN_REF" \
         https://github.com/BlizzHacker/rom-hub-compressatorium \
-        /opt/romarr/bundled-plugins/compressatorium; \
+        /opt/romarr/bundled-plugins/compressatorium && \
+      git clone --quiet --depth 1 --branch "$ARCADE_PUNKS_PLUGIN_REF" \
+        https://github.com/BlizzHacker/rom-hub-arcade-punks \
+        /opt/romarr/bundled-plugins/arcade-punks; \
     fi
 # The Mister Download Manager plugin (romarr/mdm_plugin.py), bundled the same way.
 ARG MDM_PLUGIN_REF=v0.1.0
