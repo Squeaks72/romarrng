@@ -50,7 +50,12 @@ ARG TARGETARCH
 # rclone is the cloud storage engine (romarr/cloud_rclone.py): Google Drive,
 # OneDrive, Dropbox, MEGA, S3 and the rest. fuse3 lets it mount a cloud folder
 # as a library root when the container is given /dev/fuse.
-RUN apk add --no-cache su-exec tzdata libarchive-tools libseccomp git rclone fuse3
+RUN apk add --no-cache su-exec tzdata libarchive-tools libseccomp git rclone fuse3 setpriv
+
+# "Let other users read it" on a cloud mount is rclone's --allow-other, which
+# fusermount3 refuses to a non-root caller unless fuse.conf allows it. The
+# container is the only thing this file governs.
+RUN echo user_allow_other >> /etc/fuse.conf
 
 # Plugins ROMarr ships preinstalled (romarr/compressatorium_plugin.py,
 # romarr/arcade_punks.py). Each is

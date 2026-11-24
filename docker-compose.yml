@@ -49,6 +49,11 @@ services:
       # proxy as the authority and verifies requests came through it. See
       # .env.example for the full set of forward-auth variables.
 
+      # Optional exact chat provider URLs approved by the deployment.
+      ROMARR_CHAT_OLLAMA_URLS: ${ROMARR_CHAT_OLLAMA_URLS:-}
+      ROMARR_CHAT_OPENAI_URLS: ${ROMARR_CHAT_OPENAI_URLS:-}
+      ROMARR_CHAT_ANTHROPIC_URLS: ${ROMARR_CHAT_ANTHROPIC_URLS:-}
+
       # Prowlarr -- how ROMarr finds releases.
       PROWLARR_URL: http://prowlarr:9696
       PROWLARR_API_KEY: ""
@@ -70,6 +75,11 @@ services:
       QBITTORRENT_URL: http://qbittorrent:8080
       QBITTORRENT_USER: ""
       QBITTORRENT_PASS: ""
+      # qBittorrent 5.2+: an API key (Tools > Options > WebUI) replaces
+      # USER/PASS when set. This value is only seeded on the first run. To
+      # migrate existing installs, update the client in Settings > Download
+      # Clients.
+      # QBITTORRENT_API_KEY: ""
 
       # Optional usenet clients.
       # SABNZBD_URL: http://sabnzbd:8080

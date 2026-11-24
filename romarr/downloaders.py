@@ -3955,7 +3955,12 @@ class SiteDownloader:
 
     # -- the client interface ----------------------------------------------
 
-    def add(self, url: str, *, save_path: str | None = None, name: str = "") -> bool:
+    #: `hosters.HosterRoute` passes the original file-host link with a job, so
+    #: an expiring download URL (1fichier: five minutes) is renewed at fetch time.
+    TAKES_SOURCE = True
+
+    def add(self, url: str, *, save_path: str | None = None, name: str = "",
+            source: str = "") -> bool:
         """Record a job. The bytes are fetched by the next `completed` sweep.
 
         Refusals that can be decided without touching the network are decided
@@ -3976,6 +3981,7 @@ class SiteDownloader:
             return True
         rows.append({
             "url": url,
+            "source": str(source or ""),
             "name": name,
             "save_path": save_path or self._config.save_path,
             "state": "pending",
@@ -4051,6 +4057,11 @@ class SiteDownloader:
     def _run(self, row: dict) -> None:
         """Fetch one job, in place, recording why if it did not work."""
         url = row.get("url", "")
+        if row.get("source"):
+            # Unlocked at grab time, but this job may have waited longer than
+            # the host's download URL lives; ask the account again now.
+            from .hosters import fresh_link
+            url = fresh_link(row["source"]) or url
         host = SitePolicy._host(url)
         if host in self._forbidden:
             row.update(state="failed",
@@ -4635,6 +4646,10 @@ CLIENT_TYPES = {
         "fields": _COMMON + [
             FIELD("username", "Username"),
             FIELD("password", "Password", "secret"),
+            FIELD("api_key", "API Key", "secret", clearable=True,
+                  help="qBittorrent 5.2+ (Tools > Options > WebUI). Used "
+                       "instead of the username and password when set; "
+                       "empty the field to remove a saved key."),
             FIELD("category", "Category", default="romarr"),
         ],
     },
@@ -5085,7 +5100,8 @@ def build_client(cfg: dict, *, data_dir: str = ""):
         from .clients import QBittorrent, QbitConfig
         client = QBittorrent(QbitConfig(
             base_url=url, username=cfg.get("username", ""),
-            password=cfg.get("password", ""), category=category))
+            password=cfg.get("password", ""), category=category,
+            api_key=cfg.get("api_key", "")))
     elif kind == "transmission":
         client = Transmission(TransmissionConfig(
             base_url=url, username=cfg.get("username", ""),
@@ -5275,6 +5291,10 @@ def merge_secrets(new: dict, old: dict | None) -> dict:
         if field["type"] != "secret":
             continue
         name = field["name"]
+        # A clearable secret takes an emptied field as "remove it"; only the
+        # placeholder or an omitted key keeps what is stored.
+        if field.get("clearable") and new.get(name) == "":
+            continue
         if new.get(name) in (SECRET_PLACEHOLDER, "", None):
             new[name] = old.get(name, "")
     return new
