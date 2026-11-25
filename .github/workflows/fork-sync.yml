@@ -109,7 +109,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest "mcp==1.30.0"
           # Same pin as upstream's docker.yml: the Archive.org tests import rom_hub.
-          pip install "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/0d4f7114db4b047bc90a78912574a823e3b10527.tar.gz"
+          pip install "rom-hub @ https://github.com/BlizzHacker/rom-hub/archive/3f5180aa336b0c192b86877ea6f3dc59a8075631.tar.gz"
           python -m pytest tests/ -q
 
       - name: Push main
