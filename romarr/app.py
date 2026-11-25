@@ -42,6 +42,7 @@ from copy import copy, deepcopy
 import logging
 from typing import NamedTuple
 import os
+import ssl
 import pathlib
 import re
 import threading
@@ -49,6 +50,7 @@ import subprocess
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
+from http import client as http_client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, unquote_plus, urlparse, urlsplit, urlunsplit
@@ -111,7 +113,7 @@ from .openapi import spec as openapi_spec
 from .ops import (LogRing, RateLimiter, make_backup, read_backup,
                   render_metrics, to_csv)
 from .platforms import PLATFORMS, by_slug, resolve, romm_fs_slug
-from .sso import ForwardAuth
+from .sso import ForwardAuth, trusted_peer
 from .totp import Totp
 from .playability import (
     DOWNLOAD, MOONLIGHT_KINDS, NCI_DEFAULT_PORT, PAIRING_IS_MANUAL, PLAYERS,
@@ -132,6 +134,7 @@ from .selection import (Release, best_release, clean_group_name, infer_platform,
                         package_class)
 from .game_packages import (BASE, DEFAULT_PARTS, GAME_FOLDER_LIBRARIES, PACKAGE_PLATFORMS, PARTS,
                             describe_parts, imported_role, normalise_parts)
+from . import portal_player, portal_socket
 from .store import Event, QueueItem, SeerrRequest, Store, SwitchCompressionJob
 from .ui import favicon_svg as ui_favicon_svg
 from .ui import web_manifest, service_worker, app_icon
@@ -2547,6 +2550,11 @@ class ROMarr:
         have handled differently.
         """
         kind = str(cfg.get("type") or "").lower()
+        if kind == "hydra":
+            # A source has no key to reject. What matters is whether it reads,
+            # and whether each kind of link in it has a client to go to.
+            from .hydra import check_config
+            return check_config(cfg, self.clients)
         url, key = cfg.get("url", ""), cfg.get("api_key", "")
         if not url:
             return {"ok": False, "message": "a URL is required"}
@@ -2749,17 +2757,10 @@ class ROMarr:
         # timeout took the whole request down -- and an unrecognised platform
         # name silently routes here, which is how `?platform=psx` returned no
         # status code at all rather than a result or an error.
-        if platform is not None:
-            releases = self._search_releases(game, platform)
-        else:
-            try:
-                releases = self.prowlarr.search(game)
-            except Exception as err:
-                log.warning("prowlarr search failed for %r: %s", game, err)
-                releases = []
-            # The hub lane joins here too, or this endpoint answers a
-            # different question than the request path it claims to mirror.
-            releases = releases + self._hub_releases(game, None)
+        # Without a platform the same merged search runs with the bare title
+        # only, so every directly added indexer (a Hydra source, a Torznab
+        # feed) is asked too -- not Prowlarr and the Hub alone.
+        releases = self._search_releases(game, platform)
         asked = self._request_parts(game, platform)
         favoured = self._preferred_group(game, platform)
         pick = best_release(releases, game, platform,
@@ -2816,6 +2817,18 @@ class ROMarr:
             return False
         return bool(hub.searchable_plugins())
 
+    def _selective_torrent_client(self):
+        """Choose a configured torrent client that can select one exact file."""
+        return pick_client("torrent", [
+            client for client in self.clients
+            if isinstance(client, QBittorrent) or getattr(client, "supports_selective", False)
+        ])
+
+    def _minerva_search_ready(self, searchable: list[str]) -> bool:
+        """MiNERVA can search and grab with a selective torrent client alone."""
+        return ("minerva-archive" in searchable
+                and self._selective_torrent_client() is not None)
+
     def _hub_releases(self, game: str, platform=None) -> list:
         """Turn ROM Hub search rows into releases for the shared grab flow.
 
@@ -2829,12 +2842,16 @@ class ROMarr:
         Non-torrent plugin rows keep their hub download URL and are fetched
         through ROM Hub's bounded FetchPlan lane.
         """
+        only = None
         if not self._hub_enabled():
-            return []
+            if not self._minerva_search_ready(hub.searchable_plugins()):
+                return []
+            only = "minerva-archive"
         from .selection import Release
         try:
-            rows, err = hub.search(game,
-                                   platform=platform.slug if platform else None)
+            search_options = {"only": only} if only else {}
+            rows, err = hub.search(game, platform=platform.slug if platform else None,
+                                   **search_options)
         except Exception as exc:
             log.warning("rom hub search failed for %r: %s", game, exc)
             return []
@@ -2854,6 +2871,8 @@ class ROMarr:
             if not row.get("title"):
                 continue
             plugin_slug = str(row.get("plugin") or "")
+            if only is not None and plugin_slug != only:
+                continue
             if plugin_slug in hub.NON_GAME_PLUGINS:
                 # Guides, videos, mods and tools are not the game.
                 continue
@@ -2921,6 +2940,9 @@ class ROMarr:
     def _search_releases(self, game: str, platform) -> list:
         """Find releases for a game, favouring recall over a tidy query.
 
+        ``platform`` may be None (a search with no platform chosen): then only
+        the bare title is asked, of every source.
+
         Searching "<game> <platform.name>" alone was far too narrow: indexers
         match the whole string, and almost no release is named "Super Metroid
         Super Nintendo". A real search returned 21 releases; the qualified one
@@ -2967,14 +2989,14 @@ class ROMarr:
         with ThreadPoolExecutor(max_workers=3) as pool:
             hub_search = pool.submit(self._hub_releases, game, platform)
             privacy = {}
-            if isinstance(prowlarr, Prowlarr):
+            if isinstance(prowlarr, Prowlarr) and prowlarr._config.base_url:
                 try:
                     privacy = prowlarr._private_ids()
                 except Exception as err:
                     log.warning("prowlarr privacy lookup failed: %r", err)
-            searches = [pool.submit(search_term, game),
-                        pool.submit(search_term, f"{game} {platform.name}"),
-                        hub_search]
+            searches = [pool.submit(search_term, game), hub_search]
+            if platform is not None:
+                searches.insert(1, pool.submit(search_term, f"{game} {platform.name}"))
         seen: set[tuple[str, str]] = set()
         merged = []
         for search in searches:
@@ -3185,6 +3207,10 @@ class ROMarr:
         except ValueError as err:
             return {"ok": False, "error": str(err)}
         client = pick_client(pick.protocol, self.clients)
+        if pick.protocol == "torrent" and getattr(pick, "file_selection_required", False):
+            selective = self._selective_torrent_client()
+            if selective is not None:
+                client = selective
         if client is None and getattr(pick, "mirrors", ()):
             # A Hydra row offers its other links too: with no client for the
             # magnet, a mirror the file-host route can fetch still gets it.
@@ -3432,9 +3458,10 @@ class ROMarr:
                     "items": []}
 
         try:
-            releases = (self._search_releases(game, platform) if platform
-                        else self.prowlarr.search(game)
-                        + self._hub_releases(game, None))
+            if platform is None and not self.indexers:
+                releases = self.prowlarr.search(game) + self._hub_releases(game, None)
+            else:
+                releases = self._search_releases(game, platform)
         except Exception as err:
             log.warning("interactive search failed for %r: %s", game, err)
             return {"error": f"search failed: {type(err).__name__}",
@@ -3889,6 +3916,7 @@ class ROMarr:
                 "name": getattr(c, "display_name", getattr(c, "name", type(c).__name__)),
                 "protocol": getattr(c, "protocol", ""),
                 "url": getattr(c, "_config").base_url,
+                "save_path": c._config.save_path if isinstance(c, HubDownloader) else "",
                 "category": getattr(getattr(c, "_config"), "category", ""),
                 "configured": configured,
                 "ok": bool(configured and c.reachable()),
@@ -9018,8 +9046,9 @@ class ROMarr:
             return html_bytes
         import re
         text = re.sub(r'\s+crossorigin(?:="[^"]*")?', '', text)
-        safe_origin = json.dumps(origin)
-        safe_path = json.dumps(initial_path if initial_path.startswith("/") else "/" + initial_path)
+        safe_origin = json.dumps(origin).replace("<", "\\u003c")
+        safe_path = json.dumps(initial_path if initial_path.startswith("/") else "/" + initial_path).replace("<", "\\u003c")
+        socket_paths = json.dumps(sorted(portal_socket.SOCKET_PATHS))
         shim = (
             "<script>(function(){"
             f"var TARGET={safe_origin};"
@@ -9044,7 +9073,17 @@ class ROMarr:
             "XMLHttpRequest.prototype.open=function(m,u){"
             "var a=Array.prototype.slice.call(arguments);a[1]=rw(u);"
             "return _o.apply(this,a);};"
-            "})();</script>"
+            "var WS=window.WebSocket;"
+            f"var SOCKETS={socket_paths};"
+            "if(WS){window.WebSocket=new Proxy(WS,{construct:function(c,a,n){"
+            "try{var u=new URL(a[0],location.href);"
+            "if(/^(https?|wss?):$/.test(u.protocol)&&SOCKETS.indexOf(u.pathname)!==-1&&"
+            "(u.host===location.host||u.host===new URL(TARGET).host)){"
+            "var relay=new URL(PROXY+encodeURIComponent(u.pathname+u.search),location.origin);"
+            "relay.protocol=location.protocol==='https:'?'wss:':'ws:';a[0]=relay.href;}"
+            "}catch(e){}return Reflect.construct(c,a,n);}});}"
+            + portal_player.PLAYER_SHIM
+            + "})();</script>"
         )
         lower = text.lower()
         idx = lower.find("<head>")
@@ -11140,8 +11179,11 @@ def make_handler(service: ROMarr):
             if route.path == "/api/v1/library":
                 return self._json(200, {"items": service.libraries_status()})
             if route.path == "/api/v1/library/config":
-                return self._json(200, {"items": [
-                    redact_library(lib) for lib in service.store.list_items("libraries")]})
+                return self._json(200, {
+                    "items": [redact_library(lib) for lib in service.store.list_items("libraries")],
+                    "ggrequestz_url": service.ggrequestz_url,
+                    "library_path": str(service.library),
+                })
             if route.path == "/api/v1/library/schema":
                 return self._json(200, {"types": LIBRARY_TYPES})
             if route.path == "/api/v1/switch/updates":
@@ -11456,6 +11498,7 @@ def make_handler(service: ROMarr):
                 confined, why = hub.sandbox_state()
                 searchable = hub.searchable_plugins()
                 lane_ready = service._hub_enabled()
+                minerva_ready = service._minerva_search_ready(searchable)
                 return self._json(200, {"available": hub.available(),
                                         "sandboxed": confined,
                                         "sandbox_detail": why,
@@ -11465,15 +11508,12 @@ def make_handler(service: ROMarr):
                                         "arcade_punks": _arcade_punks_status(service),
                                         "flaresolverr_configured": bool(hub.flaresolverr_url()),
                                         "searchable_plugins": searchable,
-                                        # The Plugins page says out loud what
-                                        # enabling a plugin now does: its
-                                        # results join Interactive Search,
-                                        # provided the ROM Hub download client
-                                        # is configured to stage the fetches.
+                                        "minerva_search_ready": minerva_ready,
                                         "acquisition": ("ready" if lane_ready
-                                                        else ("no ROM Hub download client configured"
-                                                              if searchable else
-                                                              "no enabled plugin declares search"))})
+                                                        else "selective" if minerva_ready
+                                                        else "no ROM Hub download client configured"
+                                                        if searchable else
+                                                        "no enabled plugin declares search")})
             if route.path == "/api/search":
                 game = (query.get("game") or [""])[0]
                 if not game:
@@ -11486,6 +11526,9 @@ def make_handler(service: ROMarr):
 
         def _serve_portal_proxy(self, target: str, sub_path: str,
                                 method: str = "GET", body: bytes | None = None):
+            upgrade = self.headers.get("Upgrade", "")
+            if upgrade and method == "GET":
+                return self._serve_portal_socket(target, sub_path)
             res = service.proxy_portal(
                 target,
                 sub_path,
@@ -11508,10 +11551,92 @@ def make_handler(service: ROMarr):
                         "Content-Disposition", "Access-Control-Allow-Origin"):
                 if hdr in resp_headers:
                     self.send_header(hdr, resp_headers[hdr])
+            # RomM uses these headers on its standalone emulator pages to
+            # make SharedArrayBuffer available for threaded cores.
+            if code == 200 and ctype.startswith("text/html"):
+                for name, value in (("Cross-Origin-Opener-Policy", "same-origin"),
+                                    ("Cross-Origin-Embedder-Policy", "require-corp")):
+                    if resp_headers.get(name) == value:
+                        self.send_header(name, value)
             if code == 200 and (sub_path.startswith("/assets/") or "/loader.js" in sub_path):
                 self.send_header("Cache-Control", "private, max-age=3600")
             self.end_headers()
             return self.wfile.write(raw)
+
+        def _serve_portal_socket(self, target: str, sub_path: str):
+            """Upgrade a same-origin, signed-in Socket.IO request to its library."""
+            from base64 import b64encode
+            from requests.cookies import get_cookie_header
+            from urllib.parse import urlsplit
+
+            self.close_connection = True
+            if not self._authorised():
+                return self._json(401, {"error": "unauthorised"})
+            key = self.headers.get("Sec-WebSocket-Key", "")
+            if (self.request_version != "HTTP/1.1"
+                    or self.headers.get("Upgrade", "").lower() != "websocket"
+                    or "upgrade" not in portal_socket.connection_tokens(self.headers.get("Connection", ""))
+                    or self.headers.get("Sec-WebSocket-Version", "") != portal_socket.WS_VERSION
+                    or not portal_socket.valid_key(key)
+                    or self.headers.get("Content-Length", "0") != "0"
+                    or self.headers.get("Transfer-Encoding")
+                    or not portal_socket.valid_path(sub_path)):
+                return self._json(400, {"error": "invalid library WebSocket upgrade"})
+            proxies = service._env.get("ROMARR_TRUSTED_PROXIES", "").split(",")
+            forwarded = (self.headers.get("X-Forwarded-Proto", "")
+                         if trusted_peer(self.client_address[0], proxies) else "")
+            if not portal_socket.origin_allowed(
+                    self.headers.get("Origin", ""), self.headers.get("Host", ""), forwarded,
+                    str(service.store.settings.get("public_url") or ""),
+                    "https" if isinstance(self.connection, ssl.SSLSocket) else "http"):
+                return self._json(403, {"error": "library WebSocket origin refused"})
+            try:
+                offered = portal_socket.protocols(self.headers.get("Sec-WebSocket-Protocol", ""))
+                parts = urlsplit(target or service.active_portal_url())
+            except ValueError:
+                return self._json(400, {"error": "invalid library WebSocket request"})
+            origin = f"{parts.scheme}://{parts.netloc}"
+            credentials = service._portal_targets().get(origin)
+            if credentials is None:
+                return self._json(403, {"error": "not a configured library origin"})
+            if not portal_socket.CONNECTIONS.acquire(blocking=False):
+                return self._json(503, {"error": "too many library WebSocket connections"})
+            try:
+                headers = {}
+                try:
+                    username, password = credentials.get("username"), credentials.get("password")
+                    if username and password:
+                        basic = b64encode(f"{username}:{password}".encode("latin-1")).decode("ascii")
+                        headers["Authorization"] = f"Basic {basic}"
+                    elif credentials.get("api_key"):
+                        api_key = credentials["api_key"]
+                        headers.update({"Authorization": f"Bearer {api_key}", "X-Api-Key": api_key})
+                    session = getattr(service, "_portal_sessions", {}).get(origin)
+                    if session is not None:
+                        cookie = get_cookie_header(
+                            session.cookies, requests.Request("GET", origin + sub_path).prepare())
+                        if cookie:
+                            headers["Cookie"] = cookie
+                    upstream, protocol, frames = portal_socket.open_upstream(
+                        origin, sub_path, key, offered, headers)
+                except (OSError, ValueError, http_client.HTTPException, portal_socket.HandshakeError) as exc:
+                    log.warning("library WebSocket handshake failed (%s)", type(exc).__name__)
+                    return self._json(502, {"error": "library WebSocket handshake failed"})
+                try:
+                    header = ("HTTP/1.1 101 Switching Protocols\r\n"
+                              "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                              f"Sec-WebSocket-Accept: {portal_socket.accept_key(key)}\r\n")
+                    if protocol:
+                        header += f"Sec-WebSocket-Protocol: {protocol}\r\n"
+                    self.wfile.write((header + "\r\n").encode("ascii"))
+                    self.wfile.flush()
+                    portal_socket.relay(self.connection, upstream.sock, frames)
+                except OSError:
+                    pass
+                finally:
+                    upstream.close()
+            finally:
+                portal_socket.CONNECTIONS.release()
 
         def _post(self):
             """Dispatch POST requests, coordinating configuration writes and reloads."""
@@ -12508,6 +12633,14 @@ def make_handler(service: ROMarr):
                 key = "indexers" if is_indexer else "download_clients"
                 with service._metadata_lock:
                     existing = service.store.get_item(key, body.get("id")) if body.get("id") else None
+                    if (not is_indexer
+                            and str(body.get("type") or "").lower() == "hub"
+                            and str((existing or {}).get("type") or "").lower() != "hub"
+                            and any(str(row.get("type") or "").lower() == "hub"
+                                    for row in service.store.list_items(key))):
+                        return self._json(409, {
+                            "error": "ROM Hub is already set up. Edit its existing download client."
+                        })
                     # Each family merges against its OWN type specs: the
                     # downloaders merge looks secrets up in CLIENT_TYPES, which
                     # has no entry for "prowlarr" -- it silently merged nothing

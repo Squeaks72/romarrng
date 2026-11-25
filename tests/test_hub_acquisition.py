@@ -7,11 +7,16 @@ network in these tests -- the Hub bridge is stubbed at its seams.
 """
 
 import json
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import pytest
 
 from romarr import hub
+from romarr.app import ROMarr, make_handler
 from romarr.downloaders import HubConfig, HubDownloader, build_client
 
 
@@ -53,6 +58,37 @@ def test_the_hub_client_is_a_download_client_type():
     assert client.protocol == "hub"
     assert client.configured
     assert build_client({"type": "hub", "save_path": ""}).configured is False
+
+
+def test_client_api_prevents_duplicate_hub_setup_and_allows_edits(tmp_path, monkeypatch):
+    monkeypatch.setattr(hub, "available", lambda: False)
+    service = ROMarr({"ROMARR_DATA": str(tmp_path / "state.json"),
+                      "ROMARR_API_KEY": "testkey"})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(service))
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/api/v1/downloadclient"
+
+    def call(body=None):
+        request = Request(url, headers={"X-Api-Key": "testkey", "Content-Type": "application/json"},
+                          data=json.dumps(body).encode() if body is not None else None)
+        with urlopen(request, timeout=5) as response:
+            return json.load(response)
+
+    try:
+        first = call({"type": "hub", "save_path": str(tmp_path / "first")})
+        with pytest.raises(HTTPError) as duplicate:
+            call({"type": "HUB", "save_path": str(tmp_path / "second")})
+        assert duplicate.value.code == 409
+        duplicate.value.close()
+        revised_path = str(tmp_path / "moved")
+        updated = call({**first, "save_path": revised_path})
+        assert updated["id"] == first["id"]
+        [current] = call()["items"]
+        assert current["save_path"] == revised_path
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_add_records_a_job_and_refuses_non_hub_urls(tmp_path):
@@ -296,3 +332,62 @@ def test_clear_authentication_works_after_plugin_uninstall(tmp_path, monkeypatch
         "error": "Install the Archive.org plugin first",
     }
     assert hub.archive_org_auth_configure(clear=True) == {"ok": True, "cleared": True}
+
+
+def test_fetch_uses_the_brokers_operator_grant(monkeypatch, tmp_path):
+    """App staging uses the same grant that validated the plugin's plan."""
+    from types import SimpleNamespace
+
+    import httpx
+
+    from rom_hub import registry
+    from rom_hub.broker.fetcher import HttpxFetcher
+    from rom_hub.manifest import parse_manifest
+
+    shop = "http://127.0.0.1:8080"
+    monkeypatch.setenv("ROM_HUB_NETWORK_TEST_SHOP", shop)
+    manifest = parse_manifest("""
+[plugin]
+slug = "test-shop"
+name = "Fixture Shop"
+version = "1"
+rpp_version = "1"
+
+[capabilities]
+importer = "shop:Import"
+
+[permissions]
+network_from_env = true
+""")
+    (tmp_path / "shop.py").write_text("""
+from rom_hub_sdk import FetchFile, FetchPlan, ImportProvider
+
+class Import(ImportProvider):
+    def plan(self, result):
+        return FetchPlan(platform="nes", files=[
+            FetchFile(url=self.ctx.config["shop"] + "/fixture.nes", filename="fixture.nes")
+        ])
+""", encoding="utf-8")
+
+    plugin = SimpleNamespace(path=tmp_path, manifest=manifest, slug=manifest.slug,
+                             config={"shop": shop}, enabled=True)
+    monkeypatch.setattr(registry, "Registry", lambda _: SimpleNamespace(get=lambda _: plugin))
+    monkeypatch.setattr(hub, "_plugin_secrets", lambda _: {})
+    monkeypatch.setattr(hub, "_unsandboxed", lambda: True)
+    calls = []
+
+    def serve(request):
+        """Serve the fixture through the host's downloader."""
+        assert request.extensions.get("rom_hub_bypass_solver") is True
+        calls.append(str(request.url))
+        return httpx.Response(200, content=b"fixture")
+
+    transport = httpx.MockTransport(serve)
+    monkeypatch.setattr(hub, "_build_fetcher", lambda *args, **kwargs: HttpxFetcher(transport=transport))
+    monkeypatch.setattr(hub, "_wrap_download_transport", lambda _: transport)
+    row = dict(ROW, plugin=manifest.slug, title="Fixture", platform="nes")
+    result = hub.fetch(row, tmp_path / "out")
+
+    assert result["ok"], result
+    assert calls == [shop + "/fixture.nes"]
+    assert Path(result["files"][0]).read_bytes() == b"fixture"

@@ -507,8 +507,13 @@ table .rp-selector .rp-arrow-icon{right:8px;width:12px;height:12px}
   cursor:pointer;transition:all var(--t)}
 .rowact button:hover{color:var(--accent-text);border-color:var(--accent-line);
   background:var(--accent-softer)}
-.testline{font-size:12.5px;margin-top:10px}
-.testline.ok{color:var(--ok)}.testline.bad{color:var(--bad)}
+.testline{font-size:12.5px;margin-top:10px;white-space:pre-line}
+.testline.ok{color:var(--ok)}.testline.bad{color:var(--bad)}.testline.warn{color:var(--warn)}
+details.adv{margin-top:10px}details.adv>summary{cursor:pointer;color:var(--dim);font-size:12.5px}
+.hy-steps{margin:8px 0 12px 18px;padding:0;font-size:13px;line-height:1.6}
+.hy-out{margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-md);font-size:12.5px}
+.hy-out .ln{white-space:pre-line;margin:2px 0}.hy-out .ln.ok{color:var(--ok)}
+.hy-out .ln.bad{color:var(--bad)}.hy-out .ln.warn{color:var(--warn)}
 .toast{position:fixed;right:22px;bottom:22px;background:var(--surface);
   border:1px solid var(--line);border-left:3px solid var(--accent);
   border-radius:var(--r-md);padding:13px 17px;max-width:380px;z-index:50;
@@ -1550,7 +1555,11 @@ RENDER.hub=async()=>{
   // Installing a plugin means running its author's code. Whether that code is
   // confined is the thing to know first, so it goes at the top of the page
   // rather than in a log the operator will never read.
+  const version=typeof pageVersion==='number'?pageVersion:null;
+  const current=()=>version===null||(version===pageVersion&&activePage==='hub');
+  let showingCatalogue=true;
   let hs=await j('/api/v1/hub/status').catch(()=>({}));
+  if(!current())return;
   const p=$('#page');
   p.innerHTML='<div class="empty">Reading the plugin catalogue…</div>';
 
@@ -1682,6 +1691,7 @@ RENDER.hub=async()=>{
   };
 
   const render=d=>{
+  if(!current()||!showingCatalogue)return;
   const confined=hs.sandboxed===true;
   const sandboxNote=hs.available===false ? '' :
     (confined
@@ -1699,6 +1709,9 @@ RENDER.hub=async()=>{
       :acq==='ready'
         ?'<div class="panel-note" style="border-left:3px solid var(--ok)"><b>Ready for search.</b> Enabled sources: '
           +esc((hs.searchable_plugins||[]).join(', '))+'. Choose Interactive Search to try one.</div>'
+        :acq==='selective'
+          ?'<div class="panel-note"><b>MiNERVA is ready for search.</b> Exact files go to your torrent client. '
+            +'Set up ROM Hub downloads to use sources that fetch files directly.</div>'
         :'<div class="panel-note"><b>Finish connecting a source.</b> '
           +((hs.searchable_plugins||[]).length
             ?'Your sources are enabled. Use Set up ROM Hub downloads above to choose where downloads are saved.'
@@ -1880,7 +1893,7 @@ RENDER.hub=async()=>{
     if($('#exo-run')) $('#exo-run').onclick=()=>runExoJob(false);
     const qi=$('#pq');
     let t=null, hubLoadSeq=0;
-    const isCurrentHub=ver=>(typeof activePage==='undefined'||activePage==='hub')&&(typeof pageVersion!=='number'||pageVersion===ver);
+    const isCurrentHub=ver=>showingCatalogue&&(typeof activePage==='undefined'||activePage==='hub')&&(typeof pageVersion!=='number'||pageVersion===ver);
     const reloadAndRender=async(afterRender)=>{
       const seq=++hubLoadSeq;
       const loadVer=typeof pageVersion==='number'?pageVersion:0;
@@ -2019,8 +2032,21 @@ RENDER.hub=async()=>{
       await submitMd({clear_api_token:true},'Mister Download Manager API token cleared');
     };
 
-    const backToHub=async()=>{hs=await j('/api/v1/hub/status').catch(()=>hs); render(await load());};
-    p.querySelectorAll('button[data-open]').forEach(b=>b.onclick=()=>pluginDashboard(b.dataset.open,backToHub));
+    const backToHub=async()=>{
+      hs=await j('/api/v1/hub/status').catch(()=>hs);
+      const data=await load();
+      if(!current())return;
+      showingCatalogue=true;
+      render(data);
+    };
+    const openDashboard=slug=>{
+      if(!current()||!showingCatalogue)return;
+      showingCatalogue=false;
+      hubLoadSeq++;
+      clearTimeout(t);
+      return pluginDashboard(slug,backToHub);
+    };
+    p.querySelectorAll('button[data-open]').forEach(b=>b.onclick=()=>openDashboard(b.dataset.open));
     const apF=$('#ap-form');
     if(apF) apF.onsubmit=async e=>{
       e.preventDefault();
@@ -2099,7 +2125,7 @@ RENDER.hub=async()=>{
       hs=await j('/api/v1/hub/status').catch(()=>hs);
       if(action==='install'&&!actionError){
         toast('Installed. Here is what it does and how to set it up.');
-        return pluginDashboard(slug,backToHub);
+        return openDashboard(slug);
       }
       render(await load());
     });
@@ -2117,7 +2143,7 @@ RENDER.hub=async()=>{
       }catch(e){actionError='Could not reach ROMarr. Please try again.';}
       hs=await j('/api/v1/hub/status').catch(()=>hs);
       render(await load());
-      if(actionError)$('#ownurl').value=url;
+      if(actionError&&current()&&showingCatalogue)$('#ownurl').value=url;
     };
 
     $('#ssubmit').onclick=async()=>{
@@ -3706,15 +3732,13 @@ RENDER.portal=async()=>{
   if(window._portalTab==='mcp'){window._portalTab='shell'; go('agents'); return;}
   const version=pageVersion;
   const current=()=>version===pageVersion&&activePage==='portal';
-  const [libs, fleet, sys] = await Promise.all([
-    j('/api/v1/library').catch(()=>({items:[]})),
-    j('/api/v1/hub/fleet').catch(()=>({profiles:[],kinds:{},igir:{}})),
-    j('/api/v1/system/status').catch(()=>({}))
-  ]);
+  let fleet=null;
+  const fleetRequest=j('/api/v1/hub/fleet').catch(()=>({profiles:[],kinds:{},igir:{}}));
+  const libs=await j('/api/v1/library/config').catch(()=>({items:[]}));
   if(!current()) return;
   const servers=(libs.items||[]).filter(l=>l.url).map(l=>({...l}));
-  if(sys&&sys.ggrequestz&&sys.ggrequestz.url&&!servers.some(s=>s.url===sys.ggrequestz.url)){
-    servers.push({name:'GG Requestz',type:'ggrequestz',url:sys.ggrequestz.url,public_url:sys.ggrequestz.public_url||sys.ggrequestz.url,path:sys.library_path||'/roms'});
+  if(libs.ggrequestz_url&&!servers.some(s=>s.url===libs.ggrequestz_url)){
+    servers.push({name:'GG Requestz',type:'ggrequestz',url:libs.ggrequestz_url,path:libs.library_path||'/roms'});
   }
   let tab=window._portalTab||'shell';
   let currentUrl=window._portalTargetUrl||(servers[0]&&servers[0].url)||'';
@@ -3750,7 +3774,7 @@ RENDER.portal=async()=>{
       const frameSrc=currentUrl
         ? (effectiveProxy ? ('/api/v1/portal/proxy?url='+encodeURIComponent(currentUrl)) : currentUrl)
         : '';
-      const popOutHref=activeSrv?(activeSrv.public_url||activeSrv.url):currentUrl;
+      const popOutHref=effectiveProxy?frameSrc:(activeSrv?(activeSrv.public_url||activeSrv.url):currentUrl);
 
       $('#page').innerHTML=`<div class="card">
         <h3>Your library app</h3>
@@ -3764,7 +3788,7 @@ RENDER.portal=async()=>{
           <button class="btn ghost" id="portal-1g1r">Preview 1G1R (Igir)</button>
           <button class="btn ghost" id="portal-hashes">Seed Netplay Hashes</button>
           <button class="btn ${effectiveProxy?'':'ghost'}" id="portal-shield" title="Toggle Same-Origin Authenticated Proxy">${effectiveProxy?'Proxy: Same-Origin (ON)':'Mode: Direct Iframe'}</button>
-          ${currentUrl?`<a class="btn ghost" href="${esc(popOutHref)}" target="_blank" rel="noopener noreferrer">Open in New Tab ↗</a>`:''}
+          ${currentUrl?`<a class="btn ghost" id="portal-popout" href="${esc(popOutHref)}" target="_blank" rel="noopener noreferrer">Open in New Tab ↗</a>`:''}
         </div>
         <div id="portal-status"></div>
         ${currentUrl&&!canProxy?`<div class="panel-note" style="margin-bottom:12px">
@@ -3782,6 +3806,14 @@ RENDER.portal=async()=>{
           : `<div class="empty-cat"><b>No library server selected</b>Choose a configured library above, add one in <a href="#libraries">Settings → Libraries</a>, or paste a URL to open it here.</div>`}
       </div>`;
 
+      if(effectiveProxy) $('#portal-popout').addEventListener('click',e=>{
+        try{
+          const opened=new URL($('#portal-frame').contentWindow.location.href);
+          if(opened.origin!==location.origin||opened.pathname==='/api/v1/portal/proxy')return;
+          const path=opened.pathname+opened.search;
+          e.currentTarget.href=frameSrc+'&path='+encodeURIComponent(path)+opened.hash;
+        }catch(_){ /* The default link opens the selected library. */ }
+      });
       document.querySelectorAll('[data-srvurl]').forEach(b=>b.onclick=()=>{
         currentUrl=b.dataset.srvurl; currentName=b.dataset.srvname;
         window._portalTargetUrl=currentUrl; window._portalTargetName=currentName;
@@ -3809,11 +3841,13 @@ RENDER.portal=async()=>{
       };
       $('#portal-1g1r').onclick=async()=>{
         const srv=servers.find(s=>s.url===currentUrl)||servers[0]||{};
-        const libPath=srv.path||(sys&&sys.library_path)||'/roms';
+        const libPath=srv.path||libs.library_path||'/roms';
         $('#portal-status').innerHTML='<div class="panel-note">Building Igir 1G1R verification preview for <code>'+esc(libPath)+'</code>…</div>';
         const r=await fetch('/api/v1/hub/igir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({input_paths:[libPath],output_path:libPath+'/{romm}',dry_run:true,preview_only:true})}).then(x=>x.json()).catch(()=>({}));
         $('#portal-status').innerHTML='<div class="panel-note" style="border-left-color:var(--ok)"><b>Igir 1G1R Preview Command (changes nothing):</b><br><code>'+esc(r.command||'')+'</code></div>';
       };
+    } else if(!fleet){
+      $('#page').innerHTML=`<div class="card">${tabBar}<p class="help" role="status">Loading devices…</p></div>`;
     } else if(tab==='fleet'){
       const profiles=fleet.profiles||[];
       const fileProfiles=profiles.filter(p=>(p.kind||'files')==='files');
@@ -3822,7 +3856,7 @@ RENDER.portal=async()=>{
       const selected=profiles.find(p=>p.id===selectedId)||profiles[0]||{id:'es-de',kind:'files',default_path:'~/ROMs',default_ssh_host:'user@device.local',igir_token:'{es}'};
       const isApp=selected.kind==='app';
       const defaultLibUrl=(servers[0]&&(servers[0].public_url||servers[0].url))||location.origin;
-      const defaultSrc=(sys&&sys.library_path)||'/roms';
+      const defaultSrc=libs.library_path||'/roms';
       const igirInfo=fleet.igir||{};
       const igirBadge=igirInfo.available
         ? `<span class="pill" style="border-color:var(--ok);color:var(--ok)">Igir ${esc(igirInfo.version||'installed')} ready</span>`
@@ -3985,6 +4019,10 @@ RENDER.portal=async()=>{
     });
   };
   draw();
+  fleetRequest.then(data=>{
+    fleet=data;
+    if(current()&&tab==='fleet')draw();
+  });
 };
 
 // Chat Agent: provider setup and a streaming chat with ROMarr's own tools.
@@ -5378,7 +5416,18 @@ async function addItem(kind, afterSave){
 }
 
 async function editItem(kind, item, afterSave){
+  const openedOn=pageVersion;
+  if(kind==='downloadclient'&&item.type==='hub'&&!item.id){
+    const config=await j('/api/v1/config').catch(()=>null);
+    if(!config||config.error){toast('Could not load ROM Hub settings');return;}
+    const clients=(config.download_clients||[]).filter(client=>String(client.type).toLowerCase()==='hub');
+    const saved=clients.find(client=>client.enable!==false&&client.save_path)
+      ||clients.find(client=>client.enable!==false)||clients[0];
+    if(saved)item={...saved,type:'hub'};
+  }
   const types = await loadSchema(kind);
+  // Several setup clicks can finish loading together. The first editor owns the form.
+  if(pageVersion!==openedOn||document.querySelector('.modal'))return;
   const spec = types[item.type];
   if(!spec){ toast('Unknown type: ' + item.type); return; }
   const isNew = !item.id;
@@ -5393,7 +5442,9 @@ async function editItem(kind, item, afterSave){
   m.innerHTML = `<div class="box">
     <h3>${isNew ? 'Add' : 'Edit'} ${esc(spec.label)}</h3>
     <div class="sub">${esc(spec.protocol || (KINDS[kind]||{}).label || '')}${spec.managed ? ' · manages its own indexers' : ''}</div>
-    <div id="fields">${spec.fields.map(f => fieldHtml(f, item[f.name])).join('')}</div>
+    <div id="fields">${spec.fields.filter(f => !f.advanced).map(f => fieldHtml(f, item[f.name])).join('')}
+      ${spec.fields.some(f => f.advanced) ? `<details class="adv"><summary>Advanced</summary>
+        ${spec.fields.filter(f => f.advanced).map(f => fieldHtml(f, item[f.name])).join('')}</details>` : ''}</div>
     <div id="testline"></div>
     <div class="foot">
       <button class="btn ghost" id="m-test">Test</button>
@@ -5416,6 +5467,8 @@ async function editItem(kind, item, afterSave){
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload()) });
     line(r.ok, r.message || (r.ok ? 'Connected' : 'Failed'));
+    // A source that reads but has a kind of link with nowhere to go.
+    if(r.ok && r.warn) m.querySelector('#testline').className = 'testline warn';
     e.target.disabled = false;
   };
 
@@ -6050,12 +6103,12 @@ RENDER.clients=async()=>{
       A site that can only be downloaded from by answering a CAPTCHA or a
       bot-detection challenge is reported as unavailable rather than worked
       around.</p>`:''}
-    ${d.items.length?`<table><thead><tr><th>Client</th><th>Protocol</th><th>Address</th>
+    ${d.items.length?`<table><thead><tr><th>Client</th><th>Protocol</th><th>Address / Save Path</th>
       <th>Category</th><th>Status</th><th></th></tr></thead><tbody>
       ${d.items.map((c,i)=>`<tr><td>${esc(c.name)}
         ${c.detail?`<div class="help" style="margin:2px 0 0">${esc(c.detail)}</div>`:''}</td>
         <td><span class="pill">${esc(c.protocol)}</span></td>
-        <td style="color:var(--dim)">${esc(c.url||'—')}</td>
+        <td style="color:var(--dim)">${esc(c.url||c.save_path||'—')}</td>
         <td>${esc(c.category||'—')}</td>
         <td>${state(c)}</td>
         <td><div class="rowact"><button data-edit="${i}">Edit</button></div></td>
@@ -6161,6 +6214,7 @@ RENDER.libraries=async()=>{
 };
 
 RENDER.indexers=async()=>{
+  const HYDRA_GUIDE='https://github.com/BlizzHacker/romarr/blob/main/docs/HYDRA.md';
   const version=typeof pageVersion==='number'?pageVersion:null;
   const d=await j('/api/v1/indexer');
   if(version!==null&&(version!==pageVersion||activePage!=='indexers'))return;
@@ -6199,19 +6253,90 @@ RENDER.indexers=async()=>{
         </tr>`).join('')}</tbody></table></div>`
     :(d.error?`<div class="card"><h3>Via Prowlarr</h3>
         <p class="help" style="color:var(--warn)">${esc(d.error)}</p></div>`:'')}`;
-  $('#page').innerHTML+=`<div class="card"><h3>Hydra Launcher sources</h3>
-    <p class="help">Community download lists from <a href="https://library.hydra.wiki" target="_blank" rel="noopener">library.hydra.wiki</a>.
-      Console lists (Redump, No-Intro, Rutracker consoles) carry each game's platform. Magnets go to your torrent client,
-      file links to Mister Download Manager or Direct HTTP, and file-host links to Real-Debrid or AllDebrid.</p>
-    <div class="row"><input id="hy-q" type="search" placeholder="Filter sources" style="max-width:260px">
+  $('#page').innerHTML+=`<div class="card" id="hydra-card"><h3>Hydra Launcher sources</h3>
+    <p class="help">A Hydra source is a public list of games and their download links, made for Hydra Launcher.
+      It needs no account or API key. ROMarr reads the list, searches it like an indexer, and sends each grab
+      to the client that can fetch that kind of link. <a href="${HYDRA_GUIDE}" target="_blank" rel="noopener">Step-by-step guide</a></p>
+    <ol class="hy-steps">
+      <li><b>Choose a source:</b> browse <a href="https://library.hydra.wiki" target="_blank" rel="noopener">library.hydra.wiki</a> below, or paste a source's .json address.</li>
+      <li><b>Check it:</b> ROMarr reads the list and shows what is in it and which client each kind of link will go to.</li>
+      <li><b>Save it,</b> then search a game in <a href="#search">Interactive Search</a>. The source's releases appear with the others.</li>
+    </ol>
+    <div class="row"><input id="hy-url" type="url" placeholder="https://example.org/source.json" style="flex:1;max-width:460px" aria-label="Hydra source URL">
+      <button class="btn" id="hy-check">Check source</button></div>
+    <div id="hy-result"></div>
+    <div class="row" style="margin-top:14px"><input id="hy-q" type="search" placeholder="Filter sources" style="max-width:260px" aria-label="Filter library sources">
       <button class="btn ghost" id="hy-load">Browse the library</button></div>
+    <p class="help" style="margin-top:8px">Labels come from library.hydra.wiki. <b>Classics</b> lists hold console and retro games,
+      which ROMarr can verify against No-Intro and Redump DATs, so they are listed first. <b>Trusted</b>, <b>Safe For Use</b> and
+      <b>Use At Your Own Risk</b> are the library reviewers' ratings.</p>
     <div id="hy-list" style="margin-top:10px"></div></div>`;
   $('#i-add').onclick=()=>addItem('indexer');
   document.querySelectorAll('[data-iedit]').forEach(b=>b.onclick=()=>
     editItem('indexer', d.items[Number(b.dataset.iedit)]));
 
   const have=new Set(d.items.map(it=>it.url));
-  let hySeq=0;
+  let hySeq=0, hyCheckSeq=0;
+  const hyStale=ver=>ver!==pageVersion||activePage!=='indexers';
+  // Check a source through the same Test the edit form uses, then offer to save it.
+  const hyCheck=async(url,name)=>{
+    const box=$('#hy-result'), mine=++hyCheckSeq, ver=pageVersion;
+    url=String(url||'').trim();
+    $('#hy-url').value=url;
+    box.innerHTML='<div class="hy-out"><div class="ln">Reading the source… a big list can take a minute.</div></div>';
+    let r;
+    try{r=await j('/api/v1/indexer/test',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({type:'hydra',url,name:name||'',timeout:60})});}
+    catch(_){ if(mine===hyCheckSeq&&!hyStale(ver))box.innerHTML='<div class="hy-out"><div class="ln bad">ROMarr did not answer. Try again.</div></div>'; return; }
+    if(mine!==hyCheckSeq||hyStale(ver))return;
+    const lines=String(r.message||'').split('\n').filter(Boolean);
+    const cls=l=>l.startsWith('✓')?(l.includes('Only ')?'warn':'ok'):l.startsWith('✗')||!r.summary?'bad':'';
+    const title=name||(r.summary&&r.summary.name)||'Hydra source';
+    const missing=(r.routes||[]).some(x=>!x.ready||x.partial);
+    // Direct HTTP is built in and needs no account, so it can be added for the
+    // operator: only file links (or file hosts with a public API) use it.
+    const wantsDirect=(r.routes||[]).some(x=>!x.ready&&(x.kind==='direct'||x.kind==='hoster'));
+    box.innerHTML=`<div class="hy-out">${lines.map(l=>`<div class="ln ${cls(l)}">${esc(l)}</div>`).join('')}
+      ${r.summary&&r.summary.samples&&r.summary.samples.length?`<div class="ln" style="color:var(--dim)">For example: ${esc(r.summary.samples.join(' · '))}</div>`:''}
+      <div class="row" style="margin-top:8px;gap:8px">
+        ${r.summary?(have.has(url)?'<span class="pill">already added</span>'
+          :`<button class="btn" id="hy-save">${r.ok?'Save source':'Save anyway'}</button>`):''}
+        ${wantsDirect?'<button class="btn" id="hy-direct">Add Direct HTTP</button>':''}
+        ${missing?'<button class="btn ghost" id="hy-clients">Open Download Clients</button>':''}
+        ${r.summary?'':`<a class="btn ghost" href="${HYDRA_GUIDE}#troubleshooting" target="_blank" rel="noopener">What this means</a>`}
+      </div></div>`;
+    const clientsBtn=$('#hy-clients'); if(clientsBtn)clientsBtn.onclick=()=>go('clients');
+    const directBtn=$('#hy-direct');
+    if(directBtn)directBtn.onclick=async()=>{
+      directBtn.disabled=true;
+      let added;
+      try{
+        const spec=(await loadSchema('downloadclient')).direct;
+        const item={type:'direct'};
+        (spec&&spec.fields||[]).forEach(f=>{item[f.name]=f.default;});
+        added=await j('/api/v1/downloadclient',{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify(item)});
+      }catch(_){added={error:'Could not add Direct HTTP. Add it under Download Clients.'};}
+      if(added.error){toast(added.error);directBtn.disabled=false;return;}
+      toast('Added Direct HTTP');
+      if(mine===hyCheckSeq&&!hyStale(ver))hyCheck(url,name);
+    };
+    const save=$('#hy-save');
+    if(save)save.onclick=async()=>{
+      save.disabled=true;
+      let saved;
+      try{saved=await j('/api/v1/indexer',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({type:'hydra',name:title,url,enable:true,priority:25,timeout:60})});}
+      catch(_){saved={error:'Save failed. Try again.'};}
+      if(saved.error){toast(saved.error);save.disabled=false;return;}
+      toast(`Saved ${title}`);
+      if(!hyStale(ver))go('indexers');
+    };
+  };
+  $('#hy-check').onclick=()=>hyCheck($('#hy-url').value,'');
+  $('#hy-url').onkeydown=e=>{if(e.key==='Enter')hyCheck($('#hy-url').value,'');};
+  const hyRank=s=>{const st=(s.status||[]).map(x=>String(x).toLowerCase());
+    return (st.includes('classics')?0:10)+(st.includes('trusted')?0:st.includes('safe for use')?1:2);};
   const hyLoad=async()=>{
     const box=$('#hy-list'); box.innerHTML='<div class="empty">Loading…</div>';
     const mine=++hySeq, ver=pageVersion;
@@ -6221,14 +6346,16 @@ RENDER.indexers=async()=>{
     catch(_){ if(!stale())box.innerHTML='<p class="help" style="color:var(--warn)">The library did not answer. Try again.</p>'; return; }
     if(stale())return;
     if(r.error){box.innerHTML=`<p class="help" style="color:var(--warn)">${esc(r.error)}</p>`;return;}
+    r.items=(r.items||[]).map((s,i)=>[s,i]).sort((a,b)=>hyRank(a[0])-hyRank(b[0])||a[1]-b[1]).map(p=>p[0]);
     box.innerHTML=(r.items||[]).length?`<table><thead><tr><th>Source</th><th>Status</th><th></th></tr></thead><tbody>
       ${r.items.map((s,i)=>`<tr><td>${esc(s.name)}<div style="color:var(--dim);font-size:11.5px">${esc(s.url)}</div></td>
         <td>${(s.status||[]).map(x=>`<span class="pill">${esc(x)}</span>`).join(' ')}</td>
-        <td>${have.has(s.url)?'<span class="pill">added</span>':`<button class="mini" data-hy="${i}">Add</button>`}</td></tr>`).join('')}
+        <td>${have.has(s.url)?'<span class="pill">added</span>':`<button class="mini" data-hy="${i}">Check</button>`}</td></tr>`).join('')}
       </tbody></table>`:'<div class="empty">No sources match.</div>';
     box.querySelectorAll('[data-hy]').forEach(b=>b.onclick=()=>{
       const s=r.items[Number(b.dataset.hy)];
-      editItem('indexer',{type:'hydra',name:s.name,url:s.url,enable:true,priority:25,timeout:60});
+      hyCheck(s.url,s.name);
+      $('#hy-result').scrollIntoView({block:'nearest'});
     });
   };
   $('#hy-load').onclick=hyLoad;
@@ -6263,7 +6390,9 @@ RENDER.general=async()=>{
            `<input type="text" aria-label="qBittorrent address ${i+1}"
               value="${esc(url)}" disabled>`).join('')
        : '<input type="text" value="" placeholder="No enabled qBittorrent client" disabled>'}
-     <div class="help">Manage connections in <a href="#clients">Download Clients</a>.</div></div>
+     <div class="help">ROMarr searches all enabled <a href="#indexers">Indexers</a> together.
+       Set up Torrent and Usenet in <a href="#clients">Download Clients</a> to use both at the same time.
+       Each grab goes to a client that accepts its protocol.</div></div>
    <div class="field"><label>RomM</label>
      <input type="text" value="${esc(SETTINGS._romm_url||'')}" disabled></div>
    <div class="field"><label>Your public URL (for Friends)</label>
@@ -6299,12 +6428,7 @@ RENDER.general=async()=>{
        Settings &rarr; Developer settings with no repository access: public data needs
        no permissions. Sent only to api.github.com, and never shown again.</div></div>`
   +chk('auto_import','Import completed downloads automatically',SETTINGS.auto_import)
-  +`<div class="field"><label>Protocol</label>
-     <select data-k="protocol">
-       <option value="torrent"${SETTINGS.protocol==='torrent'?' selected':''}>Torrent</option>
-       <option value="usenet"${SETTINGS.protocol==='usenet'?' selected':''}>Usenet</option>
-     </select></div>
-   <h3 style="margin-top:18px">The clock</h3>
+  +`<h3 style="margin-top:18px">The clock</h3>
    <p class="help">How often the scheduled jobs run. Zero turns a job off;
      changes apply at the next tick, no restart.</p>`
   +fld('auto_import_interval_minutes','Import check (minutes)',
@@ -7475,6 +7599,7 @@ RENDER.setup=async()=>{
       +added(state.indexers)+'<div class="row">'+action('setup-newznab','Add a Usenet indexer')
       +action('setup-prowlarr','Connect Prowlarr')+action('setup-indexer','Other indexers')+'</div>'
       +'<p class="help">Use the indexer’s URL and API key, then press <b>Test</b>. Prowlarr is optional if you want to manage several indexers. Torrent sources use Torznab; you can use Usenet without a torrent indexer.</p>'
+      +'<p class="help"><b>No indexer account?</b> A Hydra Launcher source is a public list that needs no key. <a href="#indexers">Indexers → Hydra Launcher sources</a> checks one and tells you which download client it needs before you save it.</p>'
       +'<p class="help">Game coverage varies. In <a href="#search">Interactive Search</a>, try one title your source lists before adding a large Wanted list. No results and a failed download need different checks.</p>'
       +'<p class="help"><a href="#hub">ROM Hub plugins</a> offer other supported sources, including direct downloads. Configure a ROM Hub client and an enabled searchable plugin. Availability and access requirements depend on the source.</p>';
   }else if(active===4){
@@ -7784,7 +7909,8 @@ RENDER.collections=async()=>{
       :(sourceTorrents.length
         ?'<p class="help">Load a DAT before previewing missing collection files.</p>'
         :'<p class="help">No set torrents found. This part is optional: <b>Request missing</b> above '
-         +'searches your indexers instead. To use a set torrent you already have, add it to qBittorrent or '
+         +'searches your configured sources, including enabled game plugins with a download client. '
+         +'To use a set torrent you already have, add it to qBittorrent or '
          +'Transmission (and enable that client under <a href="#clients">Download Clients</a> if it is off), '
          +'then come back here.</p>'))
     +'<div id="csrc-jobs" style="margin-top:10px"></div></div>'
