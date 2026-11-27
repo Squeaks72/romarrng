@@ -23,8 +23,10 @@ def test_the_service_registers_its_jobs(tmp_path):
     assert set(jobs) == {"ImportCompleted", "MissingGameSearch", "RssSync",
                          "ListSync", "UpdateCheck", "PluginUpdate", "HashIndex",
                          "FailedDownloads", "SoundtrackTorrents", "ExtrasTorrents",
-                         "CloudJobs", "CollectionSets", "SwitchCompression"}
+                         "CloudJobs", "CollectionSets", "SwitchCompression",
+                         "FreeGameCollector"}
     assert not jobs["SwitchCompression"]["enabled"]
+    assert jobs["FreeGameCollector"]["interval_seconds"] == 1800
 
 
 def test_collection_sets_job_is_off_until_a_set_is_queued(tmp_path):

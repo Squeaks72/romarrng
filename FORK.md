@@ -33,8 +33,6 @@ What the fork still carries on top of upstream:
 - Extras: DLC, update, manual (and patch/hack/mod/demo/translation/prototype) cards on the game page,
   filled from indexer torrents, the Internet Archive, a pasted link or an uploaded file, through RomM's
   upload API; see docs/EXTRAS.md
-- A global search palette (Ctrl K or "/") over library games, Wanted, pages and settings,
-  with "search for it to add it" handing off to Add New
 - The library is re-read from the server hourly by default (`ROMARR_LIBRARY_REFRESH_SECONDS`)
 
 ## Conflict policy
