@@ -422,11 +422,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # is grabbed in its place. Without this the next missing/RSS sweep re-runs
     # the same scorer over the same results and picks the same dead file.
     "blocklist_failed_downloads": True,
+    # When on, retired/blocklisted failed downloads are removed from the
+    # Activity queue automatically once logged to History and returned to Wanted.
+    "auto_clear_failed_queue": True,
     # How long a grabbed download may sit without finishing before it counts
     # as stalled, in minutes. 0 disables stall detection entirely, leaving
     # only outright failures to be retired. Generous by default: a large disc
     # image on a thin swarm is slow, not dead.
     "stalled_timeout_minutes": 180,
+    # Maximum number of rows kept in the Activity queue (50-50,000). Failed
+    # entries are trimmed before active downloads when the cap is reached.
+    "max_queue": 500,
     # The clock. Zero disables a job; the scheduler reads these live, so a
     # change applies at the next tick without a restart.
     #
@@ -474,9 +480,64 @@ class Store:
     MAX_EVENTS = 2000
 
     # The queue is live state, not a log: rows leave it when they import or
-    # are cleared. The cap is a backstop against a runaway sweep filling the
-    # state file, not an expected working size.
+    # are cleared. The cap defaults to 500 and is configurable via settings
+    # (`max_queue`, between MIN_QUEUE and MAX_QUEUE_LIMIT).
     MAX_QUEUE = 500
+    MIN_QUEUE = 50
+    MAX_QUEUE_LIMIT = 50_000
+
+    @classmethod
+    def parse_max_queue(cls, value: Any) -> int:
+        """Validate a user-supplied max_queue setting."""
+        if isinstance(value, bool):
+            raise ValueError(
+                f"max_queue must be a whole number between {cls.MIN_QUEUE} and {cls.MAX_QUEUE_LIMIT}"
+            )
+        try:
+            parsed = int(str(value).strip()) if isinstance(value, str) else int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"max_queue must be a whole number between {cls.MIN_QUEUE} and {cls.MAX_QUEUE_LIMIT}"
+            ) from exc
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(
+                f"max_queue must be a whole number between {cls.MIN_QUEUE} and {cls.MAX_QUEUE_LIMIT}"
+            )
+        if not (cls.MIN_QUEUE <= parsed <= cls.MAX_QUEUE_LIMIT):
+            raise ValueError(
+                f"max_queue must be between {cls.MIN_QUEUE} and {cls.MAX_QUEUE_LIMIT}"
+            )
+        return parsed
+
+    @property
+    def queue_limit(self) -> int:
+        raw = self.settings.get("max_queue", self.MAX_QUEUE)
+        try:
+            return self.parse_max_queue(raw)
+        except ValueError:
+            return self.MAX_QUEUE
+
+    def _trim_queue_locked(self, *, allow_active: bool = True) -> None:
+        limit = self.queue_limit
+        excess = len(self.queue) - limit
+        if excess <= 0:
+            return
+        # Trim oldest failed rows first so stale failures never evict active downloads.
+        failed_states = {"failed", "import-failed"}
+        drop_indices: set[int] = set()
+        for idx, row in enumerate(self.queue):
+            if len(drop_indices) >= excess:
+                break
+            if row.state in failed_states:
+                drop_indices.add(idx)
+        if allow_active and len(drop_indices) < excess:
+            for idx in range(len(self.queue)):
+                if len(drop_indices) >= excess:
+                    break
+                if idx not in drop_indices:
+                    drop_indices.add(idx)
+        if drop_indices:
+            self.queue = [row for idx, row in enumerate(self.queue) if idx not in drop_indices]
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -550,7 +611,7 @@ class Store:
                 "settings": self.settings,
                 "events": [asdict(e) for e in self.events[-self.MAX_EVENTS:]],
                 "wanted": [asdict(w) for w in self.wanted],
-                "queue": [asdict(q) for q in self.queue[-self.MAX_QUEUE:]],
+                "queue": [asdict(q) for q in self.queue],
                 "switch_compression": [asdict(j) for j in self._switch_compression.values()],
             }
             tmp = None
@@ -775,8 +836,7 @@ class Store:
         """Add one row to the queue and write it down."""
         with self._lock:
             self.queue.append(item)
-            if len(self.queue) > self.MAX_QUEUE:
-                del self.queue[: len(self.queue) - self.MAX_QUEUE]
+            self._trim_queue_locked()
         self.save()
         return item
 
@@ -992,7 +1052,7 @@ class Store:
                 if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
                     raise ValueError("FlareSolverr URL must start with http:// or https://")
             patch = dict(patch, flaresolverr_url=raw_solver)
-        for key in ("compress_switch_imports", "compress_switch_xci"):
+        for key in ("compress_switch_imports", "compress_switch_xci", "auto_clear_failed_queue"):
             if key in patch and not isinstance(patch[key], bool):
                 raise ValueError(f"{key} must be true or false")
         if "nsz_compression" in patch:
@@ -1001,6 +1061,8 @@ class Store:
         if "plugin_hosts" in patch:
             from .catalogue import parse_hosts
             patch = dict(patch, plugin_hosts=", ".join(parse_hosts(patch["plugin_hosts"])))
+        if "max_queue" in patch:
+            patch = dict(patch, max_queue=self.parse_max_queue(patch["max_queue"]))
         with self._lock:
             # No catalog provenance can be trusted without a selected DAT root.
             # Refuse the whole patch before changing memory or the saved file.
@@ -1016,6 +1078,8 @@ class Store:
             for key, value in patch.items():
                 if key in DEFAULT_SETTINGS:
                     self.settings[key] = mapping if key == "dat_catalog_platforms" else value
+            if "max_queue" in patch:
+                self._trim_queue_locked(allow_active=False)
             out = dict(self.settings)
         self.save()
         return out

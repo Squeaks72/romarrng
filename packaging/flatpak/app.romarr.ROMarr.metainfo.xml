@@ -87,6 +87,36 @@
   </keywords>
 
   <releases>
+    <release version="1.15.0" date="2026-11-27">
+      <url type="details">https://github.com/BlizzHacker/romarr/releases/tag/v1.15.0</url>
+      <description>
+        <ul>
+          <li>Expanded curated standalone emulators from 26 to 60 and bundled catalog from 1,220 to 2,089 verified open-source emulators (2,439 total with 350 libretro cores).</li>
+          <li>Automatically removes retired failed downloads from the Activity queue once logged to History and returned to Wanted (configurable via auto_clear_failed_queue).</li>
+        </ul>
+      </description>
+    </release>
+    <release version="1.14.2" date="2026-11-27">
+      <url type="details">https://github.com/BlizzHacker/romarr/releases/tag/v1.14.2</url>
+      <description>
+        <ul>
+          <li>Configurable max queue size (50 to 50,000, default 500) under Settings with live queue counter.</li>
+          <li>Failed queue entries are trimmed before active downloads, and lowering the limit never drops active downloads.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="1.14.1" date="2026-11-27">
+      <url type="details">https://github.com/BlizzHacker/romarr/releases/tag/v1.14.1</url>
+      <description>
+        <ul>
+          <li>Simple/Advanced UX modes, Quick Launch (Cmd+K), wallpapers/textures, and floating AI chat dock.</li>
+          <li>Collection Preview Plan now matches renamed ROM ZIPs by footer size/CRC without unpacking.</li>
+          <li>Owned Game Library and Device Libraries in Lists, plus Giveaway Calendar and store reconnect fixes.</li>
+          <li>FitGirl and DODI Repacks plugin with RSS sync, Switch NSZ/XCZ compression, and Hydra source guide.</li>
+          <li>Docker FUSE mounts fixed for numeric PUID/PGID runs, plus native NAS packages for Synology, QNAP and Asustor.</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.13.2" date="2026-11-23">
       <url type="details">https://github.com/BlizzHacker/romarr/releases/tag/v1.13.2</url>
       <description>

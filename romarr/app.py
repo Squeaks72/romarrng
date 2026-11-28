@@ -4919,6 +4919,9 @@ class ROMarr:
                                     platform=row.platform, release=row.release,
                                     indexer=row.indexer,
                                     detail=f"blocklisted -- {reason}"))
+            if self.store.settings.get("auto_clear_failed_queue", True):
+                with self.store._lock:
+                    self.queue[:] = [q for q in self.queue if q is not row]
             # For a row grabbed by hand (manual=True), do not replace it automatically
             # and do not put the search text on Wanted (#119).
             if getattr(row, "manual", False):
@@ -11019,7 +11022,10 @@ def make_handler(service: ROMarr):
                     (query.get("title") or [""])[0],
                     (query.get("source") or [""])[0]))
             if route.path == "/api/v1/queue":
-                return self._json(200, {"items": service.queue_rows()})
+                return self._json(200, {
+                    "items": service.queue_rows(),
+                    "max_queue": service.store.queue_limit,
+                })
             if route.path == "/api/v1/history":
                 limit = int((query.get("limit") or ["100"])[0])
                 return self._json(200, {"items": service.store.history(limit)})

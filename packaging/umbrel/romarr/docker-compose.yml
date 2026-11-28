@@ -8,7 +8,7 @@ services:
       PROXY_AUTH_WHITELIST: "/api/*"
 
   web:
-    image: ghcr.io/blizzhacker/romarr:1.13.2@sha256:83aa20244b487b91461c756b9dcba8792e8b8b601094c8ac6c1018cf38a62dab
+    image: ghcr.io/blizzhacker/romarr:1.15.0@sha256:7d3b8eb8bff863dc5c3d9468e2c80034e9127c47faf4f6e7a7f800ece7cc69e9
     restart: on-failure
     stop_grace_period: 1m
     volumes:
